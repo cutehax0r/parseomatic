@@ -1,9 +1,7 @@
-.PHONY: help release docker-build docker-shell docker-test
+.PHONY: help install dev build test clean release
 
 # Default target
 .DEFAULT_GOAL := help
-
-IMAGE_NAME := parseomatic-dev
 
 # Help target
 help:
@@ -11,10 +9,12 @@ help:
 	@echo ""
 	@echo "  make help                     Display this help message"
 	@echo ""
-	@echo "Docker/Podman targets:"
-	@echo "  make docker-build             Build the dev/build container image"
-	@echo "  make docker-shell             Open a shell in the container (repo mounted at /app)"
-	@echo "  make docker-test              Run 'cargo test' inside the container"
+	@echo "App targets:"
+	@echo "  make install                  Install frontend dependencies (bun install)"
+	@echo "  make dev                      Run the app locally with hot reload"
+	@echo "  make build                    Produce a native app bundle for this platform"
+	@echo "  make test                     Run Rust tests (cargo test)"
+	@echo "  make clean                    Remove build artifacts (dist/, src-tauri/target)"
 	@echo ""
 	@echo "Release targets:"
 	@echo "  make release VERSION [COMMIT] [DRY]  Create GitHub PR-based release (full workflow)"
@@ -25,15 +25,22 @@ help:
 	@echo "  make release v1.0.0 DRY              Preview what would happen"
 	@echo "  make release v1.0.0 abc123de DRY     Preview from specific commit"
 
-# Docker/Podman targets
-docker-build:
-	podman build -t $(IMAGE_NAME) .
+# App targets
+install:
+	bun install
 
-docker-shell: docker-build
-	podman run --rm -it -v $(CURDIR):/app:Z -w /app $(IMAGE_NAME) bash
+dev: install
+	bun run tauri dev
 
-docker-test: docker-build
-	podman run --rm -v $(CURDIR):/app:Z -w /app $(IMAGE_NAME) bash -c "cargo test"
+build: install
+	bun run tauri build
+
+test:
+	cd src-tauri && cargo test
+
+clean:
+	rm -rf dist
+	cd src-tauri && cargo clean
 
 # Unified GitHub PR-based release target
 release:
