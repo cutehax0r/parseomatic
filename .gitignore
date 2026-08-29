@@ -1,0 +1,24 @@
+# Rust / Tauri build output (matches any depth, e.g. src-tauri/target, crates/*/target)
+target/
+
+# Bun / frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Generic build/package output
+bin/
+build/
+
+# Logs
+logs
+*.log
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# OS
+.DS_Store
