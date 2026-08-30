@@ -1,3 +1,5 @@
+mod parser;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -7,14 +9,7 @@ use tauri::menu::{Menu, MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-// Placeholder for the real parsed-log model in docs/planning.md (mmap,
-// string interning, per-encounter structs, checkpoints). Only enough here
-// to prove the multi-window sharing/lifecycle mechanism end-to-end.
-struct ParsedLog {
-    path: PathBuf,
-    #[allow(dead_code)]
-    bytes: Vec<u8>,
-}
+use parser::ParsedLog;
 
 // Dedup registry keyed by canonical file path. Weak so the registry itself
 // never keeps a ParsedLog alive -- only windows holding a strong Arc do.
@@ -37,9 +32,31 @@ fn set_represented_filename(window: &WebviewWindow, path: &str) {
     }
 }
 
-/// Look up an already-open file by canonical path, or read it fresh.
-/// Blocking file I/O -- fine off the main thread, don't call from a
-/// main-thread-bound handler without dispatching it first.
+/// Notifies every window currently showing `path` that its progress has
+/// changed -- reuses the existing `log-changed` -> `window_info` refetch
+/// path rather than pushing progress data through the event payload
+/// itself.
+fn notify_log_progress(app: &AppHandle, path: &Path) {
+    let window_logs = app.state::<WindowLogs>();
+    let map = window_logs.0.lock().unwrap();
+    let labels: Vec<String> = map
+        .iter()
+        .filter(|(_, log)| log.path == path)
+        .map(|(label, _)| label.clone())
+        .collect();
+    drop(map);
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.emit("log-changed", ());
+        }
+    }
+}
+
+/// Look up an already-open (or in-progress) file by canonical path, or
+/// start counting it fresh. Only fails if the file isn't even openable --
+/// the actual counting happens in the background (see `parser::spawn`)
+/// so this returns immediately regardless of file size, and the window
+/// can appear before counting finishes.
 fn get_or_parse(app: &AppHandle, path: &Path) -> std::io::Result<Arc<ParsedLog>> {
     let canonical = path.canonicalize()?;
     let registry = app.state::<LogRegistry>();
@@ -49,10 +66,14 @@ fn get_or_parse(app: &AppHandle, path: &Path) -> std::io::Result<Arc<ParsedLog>>
         return Ok(existing);
     }
 
-    let bytes = std::fs::read(&canonical)?;
-    let log = Arc::new(ParsedLog {
-        path: canonical.clone(),
-        bytes,
+    // Fail fast if the file can't even be opened; the full scan happens
+    // in the background.
+    std::fs::metadata(&canonical)?;
+
+    let app_for_progress = app.clone();
+    let path_for_progress = canonical.clone();
+    let log = parser::spawn(canonical.clone(), move || {
+        notify_log_progress(&app_for_progress, &path_for_progress);
     });
     map.insert(canonical, Arc::downgrade(&log));
     Ok(log)
@@ -277,16 +298,24 @@ fn open_path_from_os(app: &AppHandle, path: &Path) {
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WindowInfo {
-    filename: String,
+    line_count: u64,
+    percent: f64,
+    done: bool,
 }
 
 #[tauri::command]
 fn window_info(window: WebviewWindow) -> Option<WindowInfo> {
     let window_logs = window.app_handle().state::<WindowLogs>();
     let map = window_logs.0.lock().unwrap();
-    map.get(window.label()).map(|log| WindowInfo {
-        filename: filename_of(log),
+    map.get(window.label()).map(|log| {
+        let progress = log.progress();
+        WindowInfo {
+            line_count: progress.lines,
+            percent: progress.percent,
+            done: progress.done,
+        }
     })
 }
 
@@ -369,11 +398,19 @@ pub fn run() {
             app.set_menu(menu)?;
 
             // This is a file viewer -- a window with nothing open is only
-            // useful for picking a file, so go straight to that.
+            // useful for picking a file, so go straight to that. A path
+            // passed on the command line (`parseomatic /path/to/log.txt`)
+            // skips the dialog and opens directly -- also handy for
+            // scripting/testing without driving the native file picker.
             if let Some(main_window) = app.get_webview_window("main") {
                 register_close_cleanup(&main_window);
                 register_drag_drop(&main_window);
-                pick_and_open_log(main_window);
+
+                if let Some(path) = std::env::args().nth(1) {
+                    open_path_in_window(&main_window, Path::new(&path));
+                } else {
+                    pick_and_open_log(main_window);
+                }
             }
 
             Ok(())

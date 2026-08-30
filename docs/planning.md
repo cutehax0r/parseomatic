@@ -21,10 +21,13 @@ A desktop application that parses World of Warcraft combat logs and presents the
 
 ## Parsing
 
+**Reference:** the combat log line format is documented at [warcraft.wiki.gg/wiki/Combat_Log](https://warcraft.wiki.gg/wiki/Combat_Log) — event names, field order/meaning per event type.
+
 ### Approach
 - **Memory-map the file**, iterate over raw byte slices. No per-line allocation.
-- **Hand-written tokenizer/parser** per line — combat log lines are regular enough that regex is unnecessary for structure. Regex is reserved for optional live search later.
+- **Hand-written tokenizer/parser** per line, working **bytewise** — no regex. Build up tokens/a small tree from the raw bytes first; only cast to `&str`/numbers/enums at the point a field's actual type is needed, and even then prefer borrowing (`&str` slices into the mmap) over owned `String`s wherever the value doesn't need to outlive the parse (interned names are the exception — see Data representation). Regex is reserved for optional live search later, a different feature over already-parsed data, not for structural parsing.
 - **Parse every line uniformly**, including trash. One code path, no special-casing. Parsing is nanosecond-scale; the cost is *storing* and *indexing*, not converting.
+- **Tag parsed structs with their originating byte offset** (into the mmap) for debugging — lets you jump from "this struct looks wrong" straight back to the exact source bytes without re-scanning.
 
 ### Chunking for parallelism
 - Split the mmap into roughly **equal byte-sized chunks** (~1 MB), snapping each boundary to the nearest newline.

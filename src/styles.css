@@ -71,6 +71,42 @@ body {
   color: rgba(0, 0, 0, 0.4);
 }
 
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  background-color: #ececec;
+  font-size: 12px;
+}
+
+/* `display: flex` above otherwise overrides the `hidden` attribute's
+   default `display: none` -- author styles beat the UA stylesheet even
+   without a specificity fight, so this needs to be explicit. */
+.statusbar[hidden] {
+  display: none;
+}
+
+.statusbar-track {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background-color: rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.statusbar-fill {
+  height: 100%;
+  background-color: #396cd8;
+  transition: width 0.1s linear;
+}
+
+.statusbar-text {
+  color: rgba(0, 0, 0, 0.6);
+  white-space: nowrap;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f6f6f6;
@@ -96,5 +132,18 @@ body {
 
   .toolbar-btn:active {
     background-color: rgba(255, 255, 255, 0.18);
+  }
+
+  .statusbar {
+    background-color: #262626;
+    border-top-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .statusbar-track {
+    background-color: rgba(255, 255, 255, 0.15);
+  }
+
+  .statusbar-text {
+    color: rgba(255, 255, 255, 0.6);
   }
 }
