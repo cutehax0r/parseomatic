@@ -1,4 +1,4 @@
-.PHONY: help install dev build test clean release
+.PHONY: help install run build test clean release
 
 # Default target
 .DEFAULT_GOAL := help
@@ -11,7 +11,7 @@ help:
 	@echo ""
 	@echo "App targets:"
 	@echo "  make install                  Install frontend dependencies (bun install)"
-	@echo "  make dev                      Run the app locally with hot reload"
+	@echo "  make run                      Run the app locally with hot reload"
 	@echo "  make build                    Produce a native app bundle for this platform"
 	@echo "  make test                     Run Rust tests (cargo test)"
 	@echo "  make clean                    Remove build artifacts (dist/, src-tauri/target)"
@@ -29,7 +29,7 @@ help:
 install:
 	bun install
 
-dev: install
+run: install
 	bun run tauri dev
 
 build: install

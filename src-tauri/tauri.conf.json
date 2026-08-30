@@ -31,6 +31,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["txt"],
+        "name": "Combat Log",
+        "mimeType": "text/plain",
+        "role": "Viewer",
+        "rank": "None"
+      }
     ]
   }
 }

@@ -22,6 +22,6 @@ Development happens natively on macOS for now (Linux packaging can wait until th
 
 ## Daily Grind
 ```sh
-bun run tauri dev    # run the app locally
-bun run tauri build  # produce a native bundle for this platform
+make run    # run the app locally
+make build  # produce a native bundle for this platform
 ```

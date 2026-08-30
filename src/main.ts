@@ -1,22 +1,28 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
-let greetInputEl: HTMLInputElement | null;
-let greetMsgEl: HTMLElement | null;
+interface WindowInfo {
+  filename: string;
+}
 
-async function greet() {
-  if (greetMsgEl && greetInputEl) {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsgEl.textContent = await invoke("greet", {
-      name: greetInputEl.value,
-    });
-  }
+async function refreshStatus() {
+  const statusEl = document.querySelector("#log-status");
+  if (!statusEl) return;
+
+  const info = await invoke<WindowInfo | null>("window_info");
+  statusEl.textContent = info ? `Viewing: ${info.filename}` : "No combat log open";
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  greetInputEl = document.querySelector("#greet-input");
-  greetMsgEl = document.querySelector("#greet-msg");
-  document.querySelector("#greet-form")?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    greet();
+  refreshStatus();
+
+  document.querySelector("#open-file-btn")?.addEventListener("click", () => {
+    invoke("open_log_file");
   });
+
+  document.querySelector("#new-window-btn")?.addEventListener("click", () => {
+    invoke("new_window_from");
+  });
+
+  listen("log-changed", () => refreshStatus());
 });
