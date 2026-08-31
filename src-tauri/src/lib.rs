@@ -120,6 +120,20 @@ fn get_or_parse(app: &AppHandle, path: &Path) -> std::io::Result<Arc<ParsedLog>>
     Ok(log)
 }
 
+/// Looks up `window`'s current log and hands back an owned `Arc`,
+/// dropping the `WindowLogs` lock immediately rather than holding it for
+/// whatever the caller does next. `debug_lists`/`raw_events` in
+/// particular do real work after this lookup (row-building, string
+/// cloning across thousands of rows) -- holding the lock through that
+/// would block every other window's unrelated `WindowLogs` access
+/// (opening a file, closing, polling `window_info`) behind it for no
+/// reason, since they're touching different entries in the same map.
+fn current_log(window: &WebviewWindow) -> Option<Arc<ParsedLog>> {
+    let window_logs = window.app_handle().state::<WindowLogs>();
+    let map = window_logs.0.lock().unwrap();
+    map.get(window.label()).cloned()
+}
+
 fn attach_window_to_log(window: &WebviewWindow, log: Arc<ParsedLog>) {
     let window_logs = window.app_handle().state::<WindowLogs>();
     window_logs
@@ -353,12 +367,7 @@ fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
 fn spawn_sibling_window(window: &WebviewWindow) {
     let app = window.app_handle().clone();
 
-    let log = {
-        let window_logs = app.state::<WindowLogs>();
-        let map = window_logs.0.lock().unwrap();
-        map.get(window.label()).cloned()
-    };
-    let Some(log) = log else { return };
+    let Some(log) = current_log(window) else { return };
 
     if let Some(new_window) = create_empty_window(&app) {
         attach_window_to_log(&new_window, log.clone());
@@ -405,15 +414,12 @@ struct WindowInfo {
 
 #[tauri::command]
 fn window_info(window: WebviewWindow) -> Option<WindowInfo> {
-    let window_logs = window.app_handle().state::<WindowLogs>();
-    let map = window_logs.0.lock().unwrap();
-    map.get(window.label()).map(|log| {
-        let progress = log.progress();
-        WindowInfo {
-            line_count: progress.lines,
-            percent: progress.percent,
-            done: progress.done,
-        }
+    let log = current_log(&window)?;
+    let progress = log.progress();
+    Some(WindowInfo {
+        line_count: progress.lines,
+        percent: progress.percent,
+        done: progress.done,
     })
 }
 
@@ -517,9 +523,7 @@ struct DebugListsPayload {
 /// client-side rather than duplicated here (kind == Player; owner != null).
 #[tauri::command]
 fn debug_lists(window: WebviewWindow) -> Option<DebugListsPayload> {
-    let window_logs = window.app_handle().state::<WindowLogs>();
-    let map = window_logs.0.lock().unwrap();
-    let log = map.get(window.label())?;
+    let log = current_log(&window)?;
     let data = log.data()?;
     let tables = &data.tables;
     let reports = &data.reports;
@@ -650,9 +654,7 @@ struct RawEventRow {
 /// fetching any rows.
 #[tauri::command]
 fn raw_event_count(window: WebviewWindow) -> Option<usize> {
-    let window_logs = window.app_handle().state::<WindowLogs>();
-    let map = window_logs.0.lock().unwrap();
-    let log = map.get(window.label())?;
+    let log = current_log(&window)?;
     Some(log.data()?.events.len())
 }
 
@@ -703,9 +705,7 @@ fn extract_position(kind: LineKind, has_advanced: bool, raw: &[parser::tokenizer
 /// the visible range changes.
 #[tauri::command]
 fn raw_events(window: WebviewWindow, start: usize, count: usize) -> Option<Vec<RawEventRow>> {
-    let window_logs = window.app_handle().state::<WindowLogs>();
-    let map = window_logs.0.lock().unwrap();
-    let log = map.get(window.label())?;
+    let log = current_log(&window)?;
     let data = log.data()?;
     let mmap = log.mmap_bytes();
     let events = &data.events;
