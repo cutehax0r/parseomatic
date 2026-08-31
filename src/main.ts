@@ -68,6 +68,19 @@ interface DebugListsPayload {
   combatants: CombatantRow[];
 }
 
+interface RawEventRow {
+  row: number;
+  timestampMs: number;
+  kind: string;
+  sourceName: string | null;
+  sourceGuid: string | null;
+  targetName: string | null;
+  targetGuid: string | null;
+  spellName: string | null;
+  position: [number, number] | null;
+  details: string;
+}
+
 interface DebugCounts {
   players: number;
   pets: number;
@@ -101,6 +114,22 @@ const lineFormatter = new Intl.NumberFormat();
 // needing a fresh backend round-trip on every tab click.
 let lastLineCount: number | null = null;
 let lastCounts: DebugCounts | null = null;
+
+type ViewMode = "debug" | "raw";
+let currentViewMode: ViewMode = "debug";
+
+// Raw view virtualization state. Fixed row height means the visible range
+// is a pure function of scrollTop -- no measuring, no dynamic layout.
+const RAW_ROW_HEIGHT = 24;
+const RAW_OVERSCAN = 15;
+let rawTotalRows = 0;
+let rawRenderedStart = -1;
+let rawRenderedEnd = -1;
+// Bumped on every fetch so a slow, superseded raw_events response can't
+// clobber a newer one that already landed (scroll fast enough and two
+// requests can resolve out of order).
+let rawFetchToken = 0;
+let rawScrollScheduled = false;
 
 function makeRow(cells: string[]): HTMLTableRowElement {
   const tr = document.createElement("tr");
@@ -255,29 +284,124 @@ function updateSummaryText() {
   statusEl.textContent = `${lineFormatter.format(lastLineCount)} lines — ${lineFormatter.format(count)} ${noun}`;
 }
 
+function formatRawTimestamp(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number, len = 2) => String(n).padStart(len, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+function rawCell(className: string, text: string, clickable: boolean, tooltip?: string): HTMLSpanElement {
+  const span = document.createElement("span");
+  span.className = clickable ? `raw-col ${className} raw-clickable` : `raw-col ${className}`;
+  span.textContent = text;
+  if (tooltip) span.title = tooltip;
+  return span;
+}
+
+function makeRawRow(r: RawEventRow): HTMLDivElement {
+  const div = document.createElement("div");
+  div.className = "raw-row";
+  div.style.top = `${r.row * RAW_ROW_HEIGHT}px`;
+
+  const position = r.position ? `[${r.position[0].toFixed(1)}, ${r.position[1].toFixed(1)}] ` : "";
+  const details = position + r.details;
+
+  div.append(
+    rawCell("raw-col-time", formatRawTimestamp(r.timestampMs), false),
+    rawCell("raw-col-kind", r.kind, false),
+    rawCell("raw-col-source", r.sourceName ?? "", r.sourceName !== null, r.sourceGuid ?? undefined),
+    rawCell("raw-col-target", r.targetName ?? "", r.targetName !== null, r.targetGuid ?? undefined),
+    rawCell("raw-col-spell", r.spellName ?? "", r.spellName !== null),
+    rawCell("raw-col-details", details, false, details),
+  );
+  return div;
+}
+
+// Computes the currently-visible row range (plus overscan) from scroll
+// position and fetches+renders exactly that page -- never the whole
+// event stream. Skips the fetch entirely if the range hasn't moved
+// enough to matter (small scroll jitter shouldn't spam raw_events).
+async function renderVisibleRawRows() {
+  const scroll = document.querySelector<HTMLElement>("#raw-scroll");
+  const rowsContainer = document.querySelector<HTMLElement>("#raw-rows");
+  if (!scroll || !rowsContainer || rawTotalRows === 0) return;
+
+  const firstVisible = Math.floor(scroll.scrollTop / RAW_ROW_HEIGHT);
+  const lastVisible = Math.ceil((scroll.scrollTop + scroll.clientHeight) / RAW_ROW_HEIGHT);
+  const start = Math.max(0, firstVisible - RAW_OVERSCAN);
+  const end = Math.min(rawTotalRows, lastVisible + RAW_OVERSCAN);
+
+  if (start === rawRenderedStart && end === rawRenderedEnd) return;
+  rawRenderedStart = start;
+  rawRenderedEnd = end;
+
+  const token = ++rawFetchToken;
+  const rows = await invoke<RawEventRow[] | null>("raw_events", { start, count: end - start });
+  if (token !== rawFetchToken || !rows) return; // superseded by a later scroll, or no log open anymore
+
+  rowsContainer.replaceChildren(...rows.map(makeRawRow));
+}
+
+function onRawScroll() {
+  if (rawScrollScheduled) return;
+  rawScrollScheduled = true;
+  requestAnimationFrame(() => {
+    rawScrollScheduled = false;
+    void renderVisibleRawRows();
+  });
+}
+
+// Called whenever the raw view becomes the active one (or the log
+// changes while it's active) -- sizes the virtual-scroll spacer and
+// forces a fresh render regardless of scroll position, since the
+// previous render (if any) was for a different log.
+async function loadRawView() {
+  rawTotalRows = (await invoke<number | null>("raw_event_count")) ?? 0;
+  const spacer = document.querySelector<HTMLElement>("#raw-spacer");
+  if (spacer) spacer.style.height = `${rawTotalRows * RAW_ROW_HEIGHT}px`;
+  rawRenderedStart = -1;
+  rawRenderedEnd = -1;
+  await renderVisibleRawRows();
+}
+
 async function refreshStatus() {
   const content = document.querySelector<HTMLElement>("#content");
   const statusEl = document.querySelector<HTMLElement>("#log-status");
   const debugView = document.querySelector<HTMLElement>("#debug-view");
-  const debugBtn = document.querySelector<HTMLButtonElement>("#debug-view-btn");
+  const rawView = document.querySelector<HTMLElement>("#raw-view");
+  const debugBtn = document.querySelector<HTMLButtonElement>("#view-debug-btn");
+  const rawBtn = document.querySelector<HTMLButtonElement>("#view-raw-btn");
   const statusBar = document.querySelector<HTMLElement>("#status-bar");
   const statusBarFill = document.querySelector<HTMLElement>("#statusbar-fill");
   const statusBarText = document.querySelector("#statusbar-text");
-  if (!content || !statusEl || !debugView || !debugBtn || !statusBar || !statusBarFill || !statusBarText) {
+  if (
+    !content ||
+    !statusEl ||
+    !debugView ||
+    !rawView ||
+    !debugBtn ||
+    !rawBtn ||
+    !statusBar ||
+    !statusBarFill ||
+    !statusBarText
+  ) {
     return;
   }
 
-  const [info, debugVisible] = await Promise.all([
+  const [info, viewId] = await Promise.all([
     invoke<WindowInfo | null>("window_info"),
-    invoke<boolean>("debug_view_visible"),
+    invoke<string>("current_view"),
   ]);
-  debugBtn.setAttribute("aria-pressed", String(debugVisible));
+  currentViewMode = viewId === "raw" ? "raw" : "debug";
+  debugBtn.setAttribute("aria-pressed", String(currentViewMode === "debug"));
+  rawBtn.setAttribute("aria-pressed", String(currentViewMode === "raw"));
 
   if (!info) {
     statusEl.textContent = "No combat log open";
     statusBar.hidden = true;
     content.classList.remove("has-data");
     debugView.hidden = true;
+    rawView.hidden = true;
     lastLineCount = null;
     lastCounts = null;
     return;
@@ -289,6 +413,7 @@ async function refreshStatus() {
     updateSummaryText();
     content.classList.remove("has-data");
     debugView.hidden = true;
+    rawView.hidden = true;
 
     statusBar.hidden = false;
     const percent = Math.round(info.percent);
@@ -307,15 +432,19 @@ async function refreshStatus() {
     updateSummaryText();
     content.classList.remove("has-data");
     debugView.hidden = true;
+    rawView.hidden = true;
     return;
   }
 
   lastCounts = renderDebugLists(lists);
   updateSummaryText();
-  // The debug view only actually shows when there's data *and* the user
-  // hasn't toggled it off (toolbar button / View > Debug menu checkbox).
-  content.classList.toggle("has-data", debugVisible);
-  debugView.hidden = !debugVisible;
+
+  content.classList.add("has-data");
+  debugView.hidden = currentViewMode !== "debug";
+  rawView.hidden = currentViewMode !== "raw";
+  if (currentViewMode === "raw") {
+    await loadRawView();
+  }
 }
 
 function setupTabs() {
@@ -344,9 +473,15 @@ window.addEventListener("DOMContentLoaded", () => {
     invoke("new_window_from");
   });
 
-  document.querySelector("#debug-view-btn")?.addEventListener("click", () => {
-    invoke("toggle_debug_view");
+  document.querySelector("#view-debug-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "debug" });
   });
+
+  document.querySelector("#view-raw-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "raw" });
+  });
+
+  document.querySelector("#raw-scroll")?.addEventListener("scroll", onRawScroll);
 
   listen("log-changed", () => refreshStatus());
   listen("view-changed", () => refreshStatus());

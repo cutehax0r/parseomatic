@@ -23,6 +23,21 @@ pub enum Prefix {
     Environmental,
 }
 
+impl Prefix {
+    /// Inverse of `match_prefix` -- the original subevent-name prefix text,
+    /// for display (the raw view; `LineKind::label`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Prefix::Swing => "SWING",
+            Prefix::Range => "RANGE",
+            Prefix::Spell => "SPELL",
+            Prefix::SpellPeriodic => "SPELL_PERIODIC",
+            Prefix::SpellBuilding => "SPELL_BUILDING",
+            Prefix::Environmental => "ENVIRONMENTAL",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Suffix {
     Damage,
@@ -61,6 +76,51 @@ pub enum Suffix {
     Unknown,
 }
 
+impl Suffix {
+    /// Inverse of `match_suffix`, for display. Note this collapses back to
+    /// the *canonical* suffix name, not necessarily the exact original text
+    /// -- e.g. `SWING_DAMAGE_LANDED` and `DAMAGE_SHIELD` both map to
+    /// `Suffix::Damage` already (see `match_suffix`/`classify`), so both
+    /// display as `DAMAGE` here too. Acceptable per that same
+    /// already-documented simplification.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Suffix::Damage => "DAMAGE",
+            Suffix::Missed => "MISSED",
+            Suffix::Heal => "HEAL",
+            Suffix::HealAbsorbed => "HEAL_ABSORBED",
+            Suffix::Energize => "ENERGIZE",
+            Suffix::Drain => "DRAIN",
+            Suffix::Leech => "LEECH",
+            Suffix::Interrupt => "INTERRUPT",
+            Suffix::Dispel => "DISPEL",
+            Suffix::DispelFailed => "DISPEL_FAILED",
+            Suffix::Stolen => "STOLEN",
+            Suffix::ExtraAttacks => "EXTRA_ATTACKS",
+            Suffix::AuraApplied => "AURA_APPLIED",
+            Suffix::AuraAppliedDose => "AURA_APPLIED_DOSE",
+            Suffix::AuraRemoved => "AURA_REMOVED",
+            Suffix::AuraRemovedDose => "AURA_REMOVED_DOSE",
+            Suffix::AuraRefresh => "AURA_REFRESH",
+            Suffix::AuraBroken => "AURA_BROKEN",
+            Suffix::AuraBrokenSpell => "AURA_BROKEN_SPELL",
+            Suffix::CastStart => "CAST_START",
+            Suffix::CastSuccess => "CAST_SUCCESS",
+            Suffix::CastFailed => "CAST_FAILED",
+            Suffix::Instakill => "INSTAKILL",
+            Suffix::DurabilityDamage => "DURABILITY_DAMAGE",
+            Suffix::DurabilityDamageAll => "DURABILITY_DAMAGE_ALL",
+            Suffix::Create => "CREATE",
+            Suffix::Summon => "SUMMON",
+            Suffix::Resurrect => "RESURRECT",
+            Suffix::EmpowerStart => "EMPOWER_START",
+            Suffix::EmpowerEnd => "EMPOWER_END",
+            Suffix::EmpowerInterrupt => "EMPOWER_INTERRUPT",
+            Suffix::Unknown => "UNKNOWN",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StandaloneKind {
     EncounterStart,
@@ -89,10 +149,55 @@ pub enum StandaloneKind {
     Unrecognized,
 }
 
+impl StandaloneKind {
+    /// Inverse of `classify`'s standalone-name matches, for display.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StandaloneKind::EncounterStart => "ENCOUNTER_START",
+            StandaloneKind::EncounterEnd => "ENCOUNTER_END",
+            StandaloneKind::CombatantInfo => "COMBATANT_INFO",
+            StandaloneKind::ZoneChange => "ZONE_CHANGE",
+            StandaloneKind::MapChange => "MAP_CHANGE",
+            StandaloneKind::WorldMarkerPlaced => "WORLD_MARKER_PLACED",
+            StandaloneKind::WorldMarkerRemoved => "WORLD_MARKER_REMOVED",
+            StandaloneKind::PartyKill => "PARTY_KILL",
+            StandaloneKind::UnitDied => "UNIT_DIED",
+            StandaloneKind::UnitDestroyed => "UNIT_DESTROYED",
+            StandaloneKind::UnitDissipates => "UNIT_DISSIPATES",
+            StandaloneKind::SpellAbsorbed => "SPELL_ABSORBED",
+            StandaloneKind::Emote => "EMOTE",
+            StandaloneKind::EnchantApplied => "ENCHANT_APPLIED",
+            StandaloneKind::EnchantRemoved => "ENCHANT_REMOVED",
+            StandaloneKind::ArenaMatchStart => "ARENA_MATCH_START",
+            StandaloneKind::ArenaMatchEnd => "ARENA_MATCH_END",
+            StandaloneKind::ChallengeModeStart => "CHALLENGE_MODE_START",
+            StandaloneKind::ChallengeModeEnd => "CHALLENGE_MODE_END",
+            StandaloneKind::CombatLogVersion => "COMBAT_LOG_VERSION",
+            StandaloneKind::Unrecognized => "UNRECOGNIZED",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     Composed { prefix: Prefix, suffix: Suffix },
     Standalone(StandaloneKind),
+}
+
+impl LineKind {
+    /// Human-readable subevent-shaped label for display (the raw view) --
+    /// e.g. `"SPELL_DAMAGE"`, `"ENCOUNTER_START"`. Reconstructed from the
+    /// classification, not the original line text (which isn't kept
+    /// around), so see `Suffix::as_str`'s doc comment for the one place
+    /// this loses a distinction the original text had.
+    pub fn label(&self) -> String {
+        match self {
+            LineKind::Composed { prefix, suffix } => {
+                format!("{}_{}", prefix.as_str(), suffix.as_str())
+            }
+            LineKind::Standalone(kind) => kind.as_str().to_string(),
+        }
+    }
 }
 
 /// The parsed event stream, struct-of-arrays per `docs/planning.md`. Every
@@ -650,6 +755,18 @@ mod tests {
             classify("SOME_FUTURE_EVENT_TYPE"),
             LineKind::Standalone(StandaloneKind::Unrecognized)
         ));
+    }
+
+    #[test]
+    fn label_reconstructs_the_subevent_name() {
+        assert_eq!(classify("SPELL_DAMAGE").label(), "SPELL_DAMAGE");
+        assert_eq!(classify("UNIT_DIED").label(), "UNIT_DIED");
+        assert_eq!(classify("ENCOUNTER_START").label(), "ENCOUNTER_START");
+        // Documented collapse (docs/combat-log-format.md, Suffix::as_str's
+        // doc comment): these map to the same canonical label as their
+        // more common counterpart, not their exact original text.
+        assert_eq!(classify("SWING_DAMAGE_LANDED").label(), "SWING_DAMAGE");
+        assert_eq!(classify("DAMAGE_SHIELD_MISSED").label(), "SPELL_MISSED");
     }
 
     // Real line pulled from src-tauri/tests/fixtures/WoWCombatLog-072526_205235.txt.

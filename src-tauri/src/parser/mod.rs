@@ -62,6 +62,13 @@ impl ParsedLog {
     pub fn data(&self) -> Option<&Arc<ParsedData>> {
         self.data.get()
     }
+
+    /// The raw mmap bytes `raw_fields` spans (`EventStore::raw_fields`,
+    /// `FieldSpan`) resolve against -- exposed so callers outside this
+    /// module (the `raw_events` Tauri command) can resolve them too.
+    pub fn mmap_bytes(&self) -> &[u8] {
+        &self.mmap
+    }
 }
 
 /// Chunks are capped at 1MB and (when a file is large enough to want more

@@ -1,11 +1,60 @@
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  /* Catppuccin Macchiato palette -- https://catppuccin.com/palette.
+     The app's one and only theme (not conditional on OS light/dark
+     preference) -- if a light flavor is wanted later, swap this block for
+     Catppuccin Latte and everything below keeps working unchanged, since
+     every rule references the semantic aliases, never these directly. */
+  --ctp-rosewater: #f4dbd6;
+  --ctp-flamingo: #f0c6c6;
+  --ctp-pink: #f5bde6;
+  --ctp-mauve: #c6a0f6;
+  --ctp-red: #ed8796;
+  --ctp-maroon: #ee99a0;
+  --ctp-peach: #f5a97f;
+  --ctp-yellow: #eed49f;
+  --ctp-green: #a6da95;
+  --ctp-teal: #8bd5ca;
+  --ctp-sky: #91d7e3;
+  --ctp-sapphire: #7dc4e4;
+  --ctp-blue: #8aadf4;
+  --ctp-lavender: #b7bdf8;
+  --ctp-text: #cad3f5;
+  --ctp-subtext1: #b8c0e0;
+  --ctp-subtext0: #a5adcb;
+  --ctp-overlay2: #939ab7;
+  --ctp-overlay1: #8087a2;
+  --ctp-overlay0: #6e738d;
+  --ctp-surface2: #5b6078;
+  --ctp-surface1: #494d64;
+  --ctp-surface0: #363a4f;
+  --ctp-base: #24273a;
+  --ctp-mantle: #1e2030;
+  --ctp-crust: #181926;
+
+  /* Semantic aliases -- every rule below uses these, not the ctp-* names
+     directly, so re-theming only ever touches this one block. */
+  --bg: var(--ctp-base);
+  --bg-elevated: var(--ctp-mantle);
+  --bg-hover: var(--ctp-surface0);
+  --bg-active: var(--ctp-surface1);
+  --text: var(--ctp-text);
+  --text-muted: var(--ctp-subtext0);
+  --text-faint: var(--ctp-overlay1);
+  --border: var(--ctp-surface0);
+  --border-strong: var(--ctp-surface2);
+  --accent: var(--ctp-blue);
+  --accent-bg: rgba(138, 173, 244, 0.18); /* --ctp-blue at 18% */
+  --accent-bg-hover: rgba(138, 173, 244, 0.28); /* --ctp-blue at 28% */
+
+  --font-ui: Inter, Avenir, Helvetica, Arial, sans-serif;
+
+  font-family: var(--font-ui);
   font-size: 16px;
   line-height: 24px;
   font-weight: 400;
 
-  color: #0f0f0f;
-  background-color: #f6f6f6;
+  color: var(--text);
+  background-color: var(--bg);
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -34,8 +83,8 @@ body {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-  background-color: #ececec;
+  border-bottom: 1px solid var(--border);
+  background-color: var(--bg-elevated);
 }
 
 /* Rounded-rect box around each group of related toolbar buttons, with a
@@ -46,15 +95,15 @@ body {
   gap: 2px;
   padding: 2px;
   border-radius: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background-color: rgba(0, 0, 0, 0.03);
+  border: 1px solid var(--border);
+  background-color: var(--bg);
 }
 
 .toolbar-divider {
   align-self: stretch;
   width: 1px;
   margin: 2px 0;
-  background-color: rgba(0, 0, 0, 0.15);
+  background-color: var(--border-strong);
 }
 
 .toolbar-btn {
@@ -67,25 +116,26 @@ body {
   border-radius: 6px;
   border: 1px solid transparent;
   background-color: transparent;
-  color: #333;
+  color: var(--text-muted);
   cursor: pointer;
 }
 
 .toolbar-btn:hover {
-  background-color: rgba(0, 0, 0, 0.08);
+  background-color: var(--bg-hover);
+  color: var(--text);
 }
 
 .toolbar-btn:active {
-  background-color: rgba(0, 0, 0, 0.15);
+  background-color: var(--bg-active);
 }
 
 .toolbar-btn[aria-pressed="true"] {
-  background-color: rgba(57, 108, 216, 0.15);
-  color: #396cd8;
+  background-color: var(--accent-bg);
+  color: var(--accent);
 }
 
 .toolbar-btn[aria-pressed="true"]:hover {
-  background-color: rgba(57, 108, 216, 0.22);
+  background-color: var(--accent-bg-hover);
 }
 
 .content {
@@ -107,17 +157,18 @@ body {
 }
 
 .placeholder {
-  color: rgba(0, 0, 0, 0.4);
+  color: var(--text-faint);
 }
 
 .content.has-data .placeholder {
   padding: 6px 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  border-bottom: 1px solid var(--border);
 }
 
 .debug-view {
   display: flex;
   flex-direction: column;
+  flex: 1;
   width: 100%;
   min-height: 0;
 }
@@ -130,7 +181,7 @@ body {
   display: flex;
   gap: 2px;
   padding: 6px 8px 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  border-bottom: 1px solid var(--border);
 }
 
 .tab-btn {
@@ -140,16 +191,16 @@ body {
   border-bottom: 2px solid transparent;
   cursor: pointer;
   font-size: 13px;
-  color: rgba(0, 0, 0, 0.6);
+  color: var(--text-muted);
 }
 
 .tab-btn:hover {
-  color: #0f0f0f;
+  color: var(--text);
 }
 
 .tab-btn.active {
-  color: #0f0f0f;
-  border-bottom-color: #396cd8;
+  color: var(--text);
+  border-bottom-color: var(--accent);
   font-weight: 600;
 }
 
@@ -173,23 +224,23 @@ body {
   top: 0;
   text-align: left;
   padding: 6px 10px;
-  background-color: #ececec;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+  background-color: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-strong);
 }
 
 .data-table td {
   padding: 4px 10px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
 .data-table tbody tr:hover {
-  background-color: rgba(0, 0, 0, 0.04);
+  background-color: var(--bg-hover);
 }
 
 .empty-message {
   padding: 16px 10px;
-  color: rgba(0, 0, 0, 0.4);
+  color: var(--text-faint);
   font-style: italic;
   white-space: normal;
   text-align: center;
@@ -204,8 +255,8 @@ body {
   align-items: center;
   gap: 8px;
   padding: 4px 8px;
-  border-top: 1px solid rgba(0, 0, 0, 0.1);
-  background-color: #ececec;
+  border-top: 1px solid var(--border);
+  background-color: var(--bg-elevated);
   font-size: 12px;
 }
 
@@ -220,110 +271,111 @@ body {
   flex: 1;
   height: 4px;
   border-radius: 2px;
-  background-color: rgba(0, 0, 0, 0.1);
+  background-color: var(--border-strong);
   overflow: hidden;
 }
 
 .statusbar-fill {
   height: 100%;
-  background-color: #396cd8;
+  background-color: var(--accent);
   transition: width 0.1s linear;
 }
 
 .statusbar-text {
-  color: rgba(0, 0, 0, 0.6);
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
+/* Raw log view -- a virtualized scroller (src/main.ts renders only the
+   rows currently in the viewport, absolutely positioned within a tall
+   spacer that gives the scrollbar correct proportions for up to ~1.8M
+   rows). Fixed 24px row height is what makes that possible without
+   measuring anything. */
+.raw-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
 
-  .placeholder {
-    color: rgba(255, 255, 255, 0.4);
-  }
+.raw-view[hidden] {
+  display: none;
+}
 
-  .content.has-data .placeholder {
-    border-bottom-color: rgba(255, 255, 255, 0.1);
-  }
+.raw-header,
+.raw-row {
+  display: grid;
+  grid-template-columns: 100px 190px 150px 150px 160px 1fr;
+  gap: 10px;
+  padding: 0 10px;
+  align-items: center;
+}
 
-  .tabs {
-    border-bottom-color: rgba(255, 255, 255, 0.1);
-  }
+.raw-header {
+  flex-shrink: 0;
+  height: 28px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background-color: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-strong);
+}
 
-  .tab-btn {
-    color: rgba(255, 255, 255, 0.6);
-  }
+.raw-scroll {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 
-  .tab-btn:hover,
-  .tab-btn.active {
-    color: #f6f6f6;
-  }
+/* Zero-width -- exists purely so its height (set from JS to
+   totalRows * 24px) gives .raw-scroll the right scrollHeight. */
+.raw-spacer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+}
 
-  .data-table th {
-    background-color: #262626;
-    border-bottom-color: rgba(255, 255, 255, 0.15);
-  }
+.raw-rows {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
 
-  .data-table td {
-    border-bottom-color: rgba(255, 255, 255, 0.06);
-  }
+.raw-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 24px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
 
-  .data-table tbody tr:hover {
-    background-color: rgba(255, 255, 255, 0.06);
-  }
+.raw-row:hover {
+  background-color: var(--bg-hover);
+}
 
-  .empty-message {
-    color: rgba(255, 255, 255, 0.4);
-  }
+.raw-col {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-  .toolbar {
-    background-color: #262626;
-    border-bottom-color: rgba(255, 255, 255, 0.1);
-  }
+.raw-col-kind {
+  color: var(--accent);
+}
 
-  .toolbar-group {
-    border-color: rgba(255, 255, 255, 0.15);
-    background-color: rgba(255, 255, 255, 0.04);
-  }
+.raw-col-details {
+  color: var(--text-muted);
+}
 
-  .toolbar-divider {
-    background-color: rgba(255, 255, 255, 0.15);
-  }
-
-  .toolbar-btn {
-    color: #f6f6f6;
-  }
-
-  .toolbar-btn:hover {
-    background-color: rgba(255, 255, 255, 0.1);
-  }
-
-  .toolbar-btn:active {
-    background-color: rgba(255, 255, 255, 0.18);
-  }
-
-  .toolbar-btn[aria-pressed="true"] {
-    background-color: rgba(57, 108, 216, 0.3);
-    color: #7aa2f7;
-  }
-
-  .toolbar-btn[aria-pressed="true"]:hover {
-    background-color: rgba(57, 108, 216, 0.4);
-  }
-
-  .statusbar {
-    background-color: #262626;
-    border-top-color: rgba(255, 255, 255, 0.1);
-  }
-
-  .statusbar-track {
-    background-color: rgba(255, 255, 255, 0.15);
-  }
-
-  .statusbar-text {
-    color: rgba(255, 255, 255, 0.6);
-  }
+/* Source/target/spell cells -- hoverable now as groundwork for a future
+   click-to-filter/detail action, no handler wired yet (see main.ts). */
+.raw-clickable:hover {
+  background-color: var(--accent-bg);
+  border-radius: 3px;
 }

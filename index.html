@@ -50,9 +50,10 @@
       <div class="toolbar-divider"></div>
       <div class="toolbar-group">
         <button
-          id="debug-view-btn"
+          id="view-debug-btn"
           class="toolbar-btn"
-          title="Toggle debug view"
+          data-view="debug"
+          title="Debug view"
           aria-pressed="true"
         >
           <svg
@@ -69,6 +70,27 @@
             <path d="M8 6 6.5 4.5M16 6l1.5-1.5"></path>
             <rect x="7" y="8" width="10" height="11" rx="5"></rect>
             <path d="M12 8V5M7 12H3M21 12h-4M7 16H4M20 16h-3M9 19l-2 2M15 19l2 2"></path>
+          </svg>
+        </button>
+        <button
+          id="view-raw-btn"
+          class="toolbar-btn"
+          data-view="raw"
+          title="Raw log view"
+          aria-pressed="false"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M4 6h16M4 12h10M4 18h13"></path>
           </svg>
         </button>
       </div>
@@ -200,6 +222,20 @@
               <tbody id="gear-body"></tbody>
             </table>
           </div>
+        </div>
+      </div>
+      <div id="raw-view" class="raw-view" hidden>
+        <div class="raw-header">
+          <span class="raw-col raw-col-time">Time</span>
+          <span class="raw-col raw-col-kind">Kind</span>
+          <span class="raw-col raw-col-source">Source</span>
+          <span class="raw-col raw-col-target">Target</span>
+          <span class="raw-col raw-col-spell">Spell</span>
+          <span class="raw-col raw-col-details">Details</span>
+        </div>
+        <div id="raw-scroll" class="raw-scroll">
+          <div id="raw-spacer" class="raw-spacer"></div>
+          <div id="raw-rows" class="raw-rows"></div>
         </div>
       </div>
     </main>

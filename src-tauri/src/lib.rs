@@ -9,6 +9,8 @@ use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
+use parser::event::{LineKind, Prefix};
+use parser::intern::{NO_SPELL, NO_UNIT};
 use parser::ParsedLog;
 
 // Dedup registry keyed by canonical file path. Weak so the registry itself
@@ -20,10 +22,44 @@ struct LogRegistry(Mutex<HashMap<PathBuf, Weak<ParsedLog>>>);
 #[derive(Default)]
 struct WindowLogs(Mutex<HashMap<String, Arc<ParsedLog>>>);
 
-// Per-window "is the debug view showing" preference -- absent means the
-// default (true), matching CheckMenuItem's initial checked state.
+/// Which of the app's views a window is currently showing. `Debug` is the
+/// default (matches the pre-Raw-view behavior, and `Default` here doubles
+/// as the fallback for a window with no entry in `WindowViewState` yet).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum ViewKind {
+    #[default]
+    Debug,
+    Raw,
+}
+
+impl ViewKind {
+    fn from_id(s: &str) -> Option<ViewKind> {
+        match s {
+            "debug" => Some(ViewKind::Debug),
+            "raw" => Some(ViewKind::Raw),
+            _ => None,
+        }
+    }
+
+    fn id(&self) -> &'static str {
+        match self {
+            ViewKind::Debug => "debug",
+            ViewKind::Raw => "raw",
+        }
+    }
+
+    fn menu_id(&self) -> &'static str {
+        match self {
+            ViewKind::Debug => "view_debug",
+            ViewKind::Raw => "view_raw",
+        }
+    }
+}
+
+// Per-window "which view is showing" preference -- absent means the
+// default (ViewKind::Debug), matching the View menu's initial checked item.
 #[derive(Default)]
-struct WindowViewState(Mutex<HashMap<String, bool>>);
+struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 
 #[derive(Default)]
 struct NextWindowId(AtomicU32);
@@ -96,43 +132,43 @@ fn attach_window_to_log(window: &WebviewWindow, log: Arc<ParsedLog>) {
     let _ = window.emit("log-changed", ());
 }
 
-fn debug_visible_for(app: &AppHandle, label: &str) -> bool {
+fn current_view_for(app: &AppHandle, label: &str) -> ViewKind {
     let state = app.state::<WindowViewState>();
     let map = state.0.lock().unwrap();
-    map.get(label).copied().unwrap_or(true)
+    map.get(label).copied().unwrap_or_default()
 }
 
-/// Sets the shared View menu's Debug checkbox to `checked`. The menu is
-/// app-level (one menu bar), but debug-view visibility is a per-window
-/// preference, so this must be called both when the preference itself
-/// changes and whenever a different window becomes focused (see
-/// `register_focus_sync`) -- otherwise the checkbox would show whichever
-/// window last touched it rather than the frontmost one's actual state.
-fn sync_debug_menu_checked(window: &WebviewWindow, checked: bool) {
-    if let Some(menu) = window.menu() {
-        if let Some(item) = menu.get("view_debug") {
-            if let Some(check) = item.as_check_menuitem() {
-                let _ = check.set_checked(checked);
-            }
+/// Sets the shared View menu's checkboxes so exactly `current`'s is
+/// checked (radio-group behavior over two independent `CheckMenuItem`s --
+/// muda has no distinct radio-item type, so this is the standard way to
+/// get that behavior). The menu is app-level (one menu bar), but the
+/// current view is a per-window preference, so this must be called both
+/// when the preference changes and whenever a different window becomes
+/// focused (see `register_focus_sync`) -- otherwise the checkboxes would
+/// reflect whichever window last touched them rather than the frontmost
+/// one's actual state.
+fn sync_view_menu(window: &WebviewWindow, current: ViewKind) {
+    let Some(menu) = window.menu() else { return };
+    for view in [ViewKind::Debug, ViewKind::Raw] {
+        if let Some(check) = menu.get(view.menu_id()).and_then(|i| i.as_check_menuitem().cloned()) {
+            let _ = check.set_checked(view == current);
         }
     }
 }
 
-/// Flips `window`'s debug-view visibility, syncs the menu checkbox to
-/// match, and tells its frontend to re-render (`view-changed`, mirroring
-/// the `log-changed` -> refetch pattern used for file state). Shared by
-/// the `toggle_debug_view` command and the `view_debug` menu handler.
-fn apply_debug_view_toggle(window: &WebviewWindow) {
+/// Sets `window`'s current view, syncs the menu checkboxes to match, and
+/// tells its frontend to re-render (`view-changed`, mirroring the
+/// `log-changed` -> refetch pattern used for file state). Shared by the
+/// `set_current_view` command and the `view_debug`/`view_raw` menu
+/// handlers.
+fn apply_view_change(window: &WebviewWindow, view: ViewKind) {
     let app = window.app_handle();
     let label = window.label().to_string();
-    let new_value = {
+    {
         let state = app.state::<WindowViewState>();
-        let mut map = state.0.lock().unwrap();
-        let entry = map.entry(label).or_insert(true);
-        *entry = !*entry;
-        *entry
-    };
-    sync_debug_menu_checked(window, new_value);
+        state.0.lock().unwrap().insert(label, view);
+    }
+    sync_view_menu(window, view);
     let _ = window.emit("view-changed", ());
 }
 
@@ -248,16 +284,16 @@ fn register_close_cleanup(window: &WebviewWindow) {
     });
 }
 
-/// Keeps the shared View menu's Debug checkbox honest across window
-/// switches -- re-syncs it to the newly-focused window's own preference
-/// every time focus changes, since there's one menu bar but each window
-/// has its own debug-visible state.
+/// Keeps the shared View menu's checkboxes honest across window switches
+/// -- re-syncs them to the newly-focused window's own current view every
+/// time focus changes, since there's one menu bar but each window has its
+/// own view state.
 fn register_focus_sync(window: &WebviewWindow) {
     let handle = window.clone();
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::Focused(true) = event {
-            let visible = debug_visible_for(handle.app_handle(), handle.label());
-            sync_debug_menu_checked(&handle, visible);
+            let view = current_view_for(handle.app_handle(), handle.label());
+            sync_view_menu(&handle, view);
         }
     });
 }
@@ -382,13 +418,15 @@ fn window_info(window: WebviewWindow) -> Option<WindowInfo> {
 }
 
 #[tauri::command]
-fn debug_view_visible(window: WebviewWindow) -> bool {
-    debug_visible_for(window.app_handle(), window.label())
+fn current_view(window: WebviewWindow) -> String {
+    current_view_for(window.app_handle(), window.label()).id().to_string()
 }
 
 #[tauri::command]
-fn toggle_debug_view(window: WebviewWindow) {
-    apply_debug_view_toggle(&window);
+fn set_current_view(window: WebviewWindow, view: String) {
+    if let Some(view) = ViewKind::from_id(&view) {
+        apply_view_change(&window, view);
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -592,6 +630,121 @@ fn debug_lists(window: WebviewWindow) -> Option<DebugListsPayload> {
     })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawEventRow {
+    row: usize,
+    timestamp_ms: i64,
+    kind: String,
+    source_name: Option<String>,
+    source_guid: Option<String>,
+    target_name: Option<String>,
+    target_guid: Option<String>,
+    spell_name: Option<String>,
+    position: Option<(f32, f32)>,
+    details: String,
+}
+
+/// Total row count for the window's current log, once parsing has
+/// finished -- lets the raw view size its virtual-scroll spacer without
+/// fetching any rows.
+#[tauri::command]
+fn raw_event_count(window: WebviewWindow) -> Option<usize> {
+    let window_logs = window.app_handle().state::<WindowLogs>();
+    let map = window_logs.0.lock().unwrap();
+    let log = map.get(window.label())?;
+    Some(log.data()?.events.len())
+}
+
+fn resolve_unit_row(tables: &parser::intern::InternTables, id: u32) -> (Option<String>, Option<String>) {
+    if id == NO_UNIT {
+        return (None, None);
+    }
+    let record = tables.guids.get(id);
+    (
+        Some(tables.strings.get(record.name_id).to_string()),
+        Some(record.guid.to_string()),
+    )
+}
+
+/// The 19-field advanced-params block's `positionX`/`positionY` sit at
+/// indices 14/15 within it (`docs/combat-log-format.md` §5). `raw_fields`
+/// only actually starts with that block at index 0 for most prefixes --
+/// `Prefix::Environmental` has one untyped prefix field (environmentalType)
+/// ahead of it (see `event::parse_composed`'s `raw_start`) -- and
+/// standalone events never carry an advanced block at all (`has_advanced`
+/// is always false for them), so this only ever returns `Some` for
+/// `LineKind::Composed`.
+fn extract_position(kind: LineKind, has_advanced: bool, raw: &[parser::tokenizer::FieldSpan], data: &[u8]) -> Option<(f32, f32)> {
+    if !has_advanced {
+        return None;
+    }
+    let LineKind::Composed { prefix, .. } = kind else {
+        return None;
+    };
+    let advanced_start = if prefix == Prefix::Environmental { 1 } else { 0 };
+    let (x_idx, y_idx) = (advanced_start + 14, advanced_start + 15);
+    if raw.len() <= y_idx {
+        return None;
+    }
+    let x: f32 = raw[x_idx].resolve_str(data).parse().ok()?;
+    let y: f32 = raw[y_idx].resolve_str(data).parse().ok()?;
+    Some((x, y))
+}
+
+/// A page of raw events (`start..start+count`, clamped to the event
+/// count), in file order, for the raw view's virtual scroller -- never
+/// the whole event store at once, which for a multi-million-line log
+/// would be an enormous IPC payload. Resolving a row is O(1) array
+/// indexing into the already-parsed `GuidTable`/`StringTable`/`SpellTable`
+/// (per `docs/planning.md`'s design) plus a handful of string clones, so
+/// this comfortably stays fast even for a few hundred rows per call --
+/// no server-side caching needed, the frontend just calls again whenever
+/// the visible range changes.
+#[tauri::command]
+fn raw_events(window: WebviewWindow, start: usize, count: usize) -> Option<Vec<RawEventRow>> {
+    let window_logs = window.app_handle().state::<WindowLogs>();
+    let map = window_logs.0.lock().unwrap();
+    let log = map.get(window.label())?;
+    let data = log.data()?;
+    let mmap = log.mmap_bytes();
+    let events = &data.events;
+    let tables = &data.tables;
+
+    let end = (start + count).min(events.len());
+    if start >= end {
+        return Some(Vec::new());
+    }
+
+    let rows = (start..end)
+        .map(|row| {
+            let (source_name, source_guid) = resolve_unit_row(tables, events.source_unit[row]);
+            let (target_name, target_guid) = resolve_unit_row(tables, events.dest_unit[row]);
+            let spell_name = (events.spell[row] != NO_SPELL)
+                .then(|| tables.strings.get(tables.spells.get(events.spell[row]).name_id).to_string());
+            let details = events.raw_fields[row]
+                .iter()
+                .map(|f| f.resolve_str(mmap))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            RawEventRow {
+                row,
+                timestamp_ms: events.timestamp_ms[row],
+                kind: events.kind[row].label(),
+                source_name,
+                source_guid,
+                target_name,
+                target_guid,
+                spell_name,
+                position: extract_position(events.kind[row], events.has_advanced[row], &events.raw_fields[row], mmap),
+                details,
+            }
+        })
+        .collect();
+    Some(rows)
+}
+
 #[tauri::command]
 fn open_log_file(window: WebviewWindow) {
     pick_and_open_log(window);
@@ -631,13 +784,17 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .select_all()
         .build()?;
 
-    // Checked by default (true) to match WindowViewState's default --
-    // debug is the only view that exists today; more will join this menu
-    // as their own checkbox items later.
+    // A radio group over two independent CheckMenuItems (muda has no
+    // distinct radio-item type) -- Debug starts checked to match
+    // ViewKind::default(). More views join this same group later; see
+    // sync_view_menu for how exclusivity is enforced on selection.
     let debug_view_item =
-        CheckMenuItem::with_id(app, "view_debug", "Debug", true, true, None::<&str>)?;
+        CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, true, None::<&str>)?;
+    let raw_view_item =
+        CheckMenuItem::with_id(app, ViewKind::Raw.menu_id(), "Raw", true, false, None::<&str>)?;
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&debug_view_item)
+        .item(&raw_view_item)
         .build()?;
 
     let mut builder = MenuBuilder::new(app);
@@ -719,12 +876,17 @@ pub fn run() {
                 if let Some(window) = focused_webview_window(app) {
                     std::thread::spawn(move || spawn_sibling_window(&window));
                 }
-            } else if event.id() == "view_debug" {
+            } else if event.id() == "view_debug" || event.id() == "view_raw" {
                 // No window creation involved -- state mutation + an
                 // event emit, both cheap and non-blocking, so this runs
                 // directly rather than spawning a thread.
                 if let Some(window) = focused_webview_window(app) {
-                    apply_debug_view_toggle(&window);
+                    let view = if event.id() == "view_debug" {
+                        ViewKind::Debug
+                    } else {
+                        ViewKind::Raw
+                    };
+                    apply_view_change(&window, view);
                 }
             }
         })
@@ -733,8 +895,10 @@ pub fn run() {
             new_window_from,
             window_info,
             debug_lists,
-            debug_view_visible,
-            toggle_debug_view
+            current_view,
+            set_current_view,
+            raw_event_count,
+            raw_events
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -778,4 +942,113 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parser::event::EventStore;
+    use parser::intern::InternTables;
+    use parser::tokenizer;
+
+    /// Same multi-line parse-into-shared-store harness used by
+    /// `parser::reports`'s tests -- runs real lines through the actual
+    /// tokenize+classify path so `raw_events`' row-resolution helpers are
+    /// tested against genuine parser output, not hand-built fixtures.
+    fn parse_lines(text: &str) -> (Vec<u8>, InternTables, EventStore) {
+        let data = text.trim_start().as_bytes().to_vec();
+        let mut tables = InternTables::default();
+        let mut store = EventStore::default();
+        for (line_start, line) in tokenizer::iter_lines(&data, 0, data.len()) {
+            parser::event::parse_line(&data, line_start, line, &mut tables, &mut store);
+        }
+        (data, tables, store)
+    }
+
+    #[test]
+    fn extract_position_present_for_advanced_composed_event() {
+        // Real line from the fixture (also used in event.rs's own tests).
+        let (data, _, store) = parse_lines(concat!(
+            "7/25/2026 20:52:35.870-6  SWING_DAMAGE,Player-3678-0DCDE18E,\"Frightrogue-Thrall-US\",0x514,0x80000000,",
+            "Creature-0-4227-1592-26103-238693-0000657958,\"Rotmire\",0x10a48,0x80000000,",
+            "Player-3678-0DCDE18E,0000000000000000,446020,446020,2625,436,852,453,0,0,3,51,100,0,",
+            "3909.77,-8650.86,2427,4.3902,285,2099,2290,-1,1,0,0,0,nil,nil,nil\n"
+        ));
+        let position = extract_position(store.kind[0], store.has_advanced[0], &store.raw_fields[0], &data);
+        assert_eq!(position, Some((3909.77, -8650.86)));
+    }
+
+    #[test]
+    fn extract_position_absent_without_advanced_block() {
+        let (data, _, store) = parse_lines(concat!(
+            "7/25/2026 20:52:35.870-6  SPELL_AURA_APPLIED,Creature-0-1-1-1-1-1,\"A\",0x1,0x0,",
+            "Creature-0-1-1-1-1-1,\"A\",0x1,0x0,1,\"Spell\",0x1,BUFF\n"
+        ));
+        assert_eq!(
+            extract_position(store.kind[0], store.has_advanced[0], &store.raw_fields[0], &data),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_position_absent_for_standalone_events() {
+        // UNIT_DIED has a base9 shape but never carries an advanced block
+        // (event::parse_standalone always passes has_advanced=false for it).
+        let (data, _, store) = parse_lines(concat!(
+            "7/25/2026 20:52:35.870-6  UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,",
+            "Creature-0-1-1-1-1-1,\"A\",0x1,0x0,0\n"
+        ));
+        assert_eq!(
+            extract_position(store.kind[0], store.has_advanced[0], &store.raw_fields[0], &data),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_unit_row_handles_present_and_absent_units() {
+        let (_, tables, store) = parse_lines(concat!(
+            "7/25/2026 20:52:35.870-6  UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,",
+            "Creature-0-1-1-1-1-1,\"Bloodworm\",0x2114,0x0,0\n"
+        ));
+
+        // source is the zero-GUID sentinel on UNIT_DIED -> NO_UNIT -> (None, None).
+        let (source_name, source_guid) = resolve_unit_row(&tables, store.source_unit[0]);
+        assert_eq!(source_name, None);
+        assert_eq!(source_guid, None);
+
+        let (target_name, target_guid) = resolve_unit_row(&tables, store.dest_unit[0]);
+        assert_eq!(target_name.as_deref(), Some("Bloodworm"));
+        assert!(target_guid.unwrap().starts_with("Creature-0-1-1-1-1-1"));
+    }
+
+    /// Sweeps `extract_position`/`resolve_unit_row` -- the same logic
+    /// `raw_events` uses per row -- across every row of the real 547MB
+    /// fixture, same style as `parser::mod::tests`'s ignored full-file
+    /// test. Confirms no panics (the real risk here: `raw_fields` shorter
+    /// than expected for some prefix/suffix combination the smaller unit
+    /// tests didn't happen to cover) and spot-checks the one row whose
+    /// content is already known (the file's own first line).
+    #[test]
+    #[ignore = "needs the real fixture log; run with `cargo test -- --ignored --nocapture`"]
+    fn raw_row_resolution_survives_the_real_fixture() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/WoWCombatLog-072526_205235.txt");
+        let log = parser::spawn(path, || {}).expect("mmap+spawn should succeed against a real file");
+        while !log.progress().done {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let data = log.data().expect("data must be set once progress.done is true");
+        let mmap = log.mmap_bytes();
+        let events = &data.events;
+        let tables = &data.tables;
+
+        assert_eq!(events.kind[0].label(), "COMBAT_LOG_VERSION");
+
+        for row in 0..events.len() {
+            let _ = resolve_unit_row(tables, events.source_unit[row]);
+            let _ = resolve_unit_row(tables, events.dest_unit[row]);
+            let _ = extract_position(events.kind[row], events.has_advanced[row], &events.raw_fields[row], mmap);
+        }
+        println!("resolved all {} rows without panicking", events.len());
+    }
 }
