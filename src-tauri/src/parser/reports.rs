@@ -272,7 +272,7 @@ pub fn build_reports(data: &[u8], events: &EventStore, tables: &mut InternTables
                     span_index += 1;
                 }
 
-                match parse_encounter_start(data, &events.raw_fields[row], tables) {
+                match parse_encounter_start(data, events.raw_fields(row), tables) {
                     Some((name_id, encounter_id, difficulty_id, group_size, instance_id)) => {
                         open = Some(PendingEncounter {
                             name_id,
@@ -295,7 +295,7 @@ pub fn build_reports(data: &[u8], events: &EventStore, tables: &mut InternTables
             }
             LineKind::Standalone(StandaloneKind::EncounterEnd) => {
                 if let Some(pending) = open.take() {
-                    let success = parse_encounter_end_success(data, &events.raw_fields[row]);
+                    let success = parse_encounter_end_success(data, events.raw_fields(row));
                     reports
                         .encounters
                         .push(pending.close(events.timestamp_ms[row], row as u32, success));
@@ -318,7 +318,7 @@ pub fn build_reports(data: &[u8], events: &EventStore, tables: &mut InternTables
             LineKind::Standalone(StandaloneKind::CombatantInfo) => {
                 if let Some(snapshot) = parse_combatant_info(
                     data,
-                    &events.raw_fields[row],
+                    events.raw_fields(row),
                     events.source_unit[row],
                     events.timestamp_ms[row],
                     span_index,

@@ -722,7 +722,8 @@ fn raw_events(window: WebviewWindow, start: usize, count: usize) -> Option<Vec<R
             let (target_name, target_guid) = resolve_unit_row(tables, events.dest_unit[row]);
             let spell_name = (events.spell[row] != NO_SPELL)
                 .then(|| tables.strings.get(tables.spells.get(events.spell[row]).name_id).to_string());
-            let details = events.raw_fields[row]
+            let details = events
+                .raw_fields(row)
                 .iter()
                 .map(|f| f.resolve_str(mmap))
                 .collect::<Vec<_>>()
@@ -737,7 +738,7 @@ fn raw_events(window: WebviewWindow, start: usize, count: usize) -> Option<Vec<R
                 target_name,
                 target_guid,
                 spell_name,
-                position: extract_position(events.kind[row], events.has_advanced[row], &events.raw_fields[row], mmap),
+                position: extract_position(events.kind[row], events.has_advanced[row], events.raw_fields(row), mmap),
                 details,
             }
         })
@@ -974,7 +975,7 @@ mod tests {
             "Player-3678-0DCDE18E,0000000000000000,446020,446020,2625,436,852,453,0,0,3,51,100,0,",
             "3909.77,-8650.86,2427,4.3902,285,2099,2290,-1,1,0,0,0,nil,nil,nil\n"
         ));
-        let position = extract_position(store.kind[0], store.has_advanced[0], &store.raw_fields[0], &data);
+        let position = extract_position(store.kind[0], store.has_advanced[0], store.raw_fields(0), &data);
         assert_eq!(position, Some((3909.77, -8650.86)));
     }
 
@@ -985,7 +986,7 @@ mod tests {
             "Creature-0-1-1-1-1-1,\"A\",0x1,0x0,1,\"Spell\",0x1,BUFF\n"
         ));
         assert_eq!(
-            extract_position(store.kind[0], store.has_advanced[0], &store.raw_fields[0], &data),
+            extract_position(store.kind[0], store.has_advanced[0], store.raw_fields(0), &data),
             None
         );
     }
@@ -999,7 +1000,7 @@ mod tests {
             "Creature-0-1-1-1-1-1,\"A\",0x1,0x0,0\n"
         ));
         assert_eq!(
-            extract_position(store.kind[0], store.has_advanced[0], &store.raw_fields[0], &data),
+            extract_position(store.kind[0], store.has_advanced[0], store.raw_fields(0), &data),
             None
         );
     }
@@ -1047,7 +1048,7 @@ mod tests {
         for row in 0..events.len() {
             let _ = resolve_unit_row(tables, events.source_unit[row]);
             let _ = resolve_unit_row(tables, events.dest_unit[row]);
-            let _ = extract_position(events.kind[row], events.has_advanced[row], &events.raw_fields[row], mmap);
+            let _ = extract_position(events.kind[row], events.has_advanced[row], events.raw_fields(row), mmap);
         }
         println!("resolved all {} rows without panicking", events.len());
     }

@@ -201,9 +201,19 @@ impl LineKind {
 }
 
 /// The parsed event stream, struct-of-arrays per `docs/planning.md`. Every
-/// `Vec` here grows in lockstep, one entry per line -- `raw_fields` covers
-/// whatever the advanced-params block and suffix fields hold that hasn't
-/// been promoted to a typed column yet (see module docs).
+/// `Vec` here grows in lockstep, one entry per line -- `raw_fields` (see
+/// the accessor of the same name) covers whatever the advanced-params
+/// block and suffix fields hold that hasn't been promoted to a typed
+/// column yet (see module docs).
+///
+/// Raw fields live in one shared `raw_field_arena` rather than a
+/// `Box<[FieldSpan]>` per event: a per-event `Box` means one heap
+/// allocation per line (1.8M of them for the real fixture) -- allocator
+/// overhead during parsing, per-allocation bookkeeping/fragmentation, and
+/// scattered-pointer cache misses when resolving rows later. One arena +
+/// a `(start, len)` range per event is the standard fix, and it comes
+/// with a nice side effect: every `push` call site that used to build a
+/// `Vec`/`Box` just to hand it over now passes a plain borrowed slice.
 #[derive(Default)]
 pub struct EventStore {
     pub timestamp_ms: Vec<i64>,
@@ -213,7 +223,8 @@ pub struct EventStore {
     pub dest_unit: Vec<u32>,
     pub spell: Vec<u16>,
     pub has_advanced: Vec<bool>,
-    pub raw_fields: Vec<Box<[FieldSpan]>>,
+    raw_field_ranges: Vec<(u32, u32)>,
+    raw_field_arena: Vec<FieldSpan>,
 }
 
 impl EventStore {
@@ -223,6 +234,12 @@ impl EventStore {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The raw (not-yet-typed) fields captured for `row`.
+    pub fn raw_fields(&self, row: usize) -> &[FieldSpan] {
+        let (start, len) = self.raw_field_ranges[row];
+        &self.raw_field_arena[start as usize..(start + len) as usize]
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -235,7 +252,7 @@ impl EventStore {
         dest_unit: u32,
         spell: u16,
         has_advanced: bool,
-        raw_fields: Box<[FieldSpan]>,
+        raw_fields: &[FieldSpan],
     ) {
         self.timestamp_ms.push(timestamp_ms);
         self.byte_offset.push(byte_offset);
@@ -244,7 +261,9 @@ impl EventStore {
         self.dest_unit.push(dest_unit);
         self.spell.push(spell);
         self.has_advanced.push(has_advanced);
-        self.raw_fields.push(raw_fields);
+        let start = self.raw_field_arena.len() as u32;
+        self.raw_field_arena.extend_from_slice(raw_fields);
+        self.raw_field_ranges.push((start, raw_fields.len() as u32));
     }
 
     fn push_unrecognized(&mut self, line_start: usize) {
@@ -256,7 +275,7 @@ impl EventStore {
             intern::NO_UNIT,
             intern::NO_SPELL,
             false,
-            Box::new([]),
+            &[],
         );
     }
 
@@ -279,6 +298,16 @@ impl EventStore {
                 *id = remap.spells[*id as usize];
             }
         }
+
+        // other's ranges point into other's arena -- once that arena is
+        // appended after self's existing arena, every one of other's
+        // offsets needs shifting by how much of self's arena already
+        // existed.
+        let arena_offset = self.raw_field_arena.len() as u32;
+        for (start, _len) in other.raw_field_ranges.iter_mut() {
+            *start += arena_offset;
+        }
+
         self.timestamp_ms.extend(other.timestamp_ms);
         self.byte_offset.extend(other.byte_offset);
         self.kind.extend(other.kind);
@@ -286,7 +315,8 @@ impl EventStore {
         self.dest_unit.extend(other.dest_unit);
         self.spell.extend(other.spell);
         self.has_advanced.extend(other.has_advanced);
-        self.raw_fields.extend(other.raw_fields);
+        self.raw_field_arena.extend(other.raw_field_arena);
+        self.raw_field_ranges.extend(other.raw_field_ranges);
     }
 }
 
@@ -559,7 +589,6 @@ fn parse_composed(
     // column) -- Spell-family prefix fields are already captured via
     // `spell_id` and skipped here to avoid storing them twice.
     let raw_start = if prefix == Prefix::Environmental { 9 } else { after_prefix };
-    let raw: Box<[FieldSpan]> = fields[raw_start..].to_vec().into_boxed_slice();
 
     store.push(
         timestamp_ms,
@@ -569,7 +598,7 @@ fn parse_composed(
         dest_id,
         spell_id,
         has_advanced,
-        raw,
+        &fields[raw_start..],
     );
 }
 
@@ -588,7 +617,7 @@ fn push_raw_only(
         intern::NO_UNIT,
         intern::NO_SPELL,
         false,
-        fields.to_vec().into_boxed_slice(),
+        fields,
     );
 }
 
@@ -612,7 +641,6 @@ fn parse_standalone(
                 return;
             }
             let (source_id, dest_id) = intern_base9(data, fields, tables);
-            let raw: Box<[FieldSpan]> = fields[9..].to_vec().into_boxed_slice();
             store.push(
                 timestamp_ms,
                 line_start as u32,
@@ -621,7 +649,7 @@ fn parse_standalone(
                 dest_id,
                 intern::NO_SPELL,
                 false,
-                raw,
+                &fields[9..],
             );
         }
         // MAP_CHANGE's uiMapID is the id space advanced-params' own
@@ -648,7 +676,6 @@ fn parse_standalone(
             } else {
                 intern::NO_UNIT
             };
-            let raw: Box<[FieldSpan]> = fields.get(2..).unwrap_or(&[]).to_vec().into_boxed_slice();
             store.push(
                 timestamp_ms,
                 line_start as u32,
@@ -657,7 +684,7 @@ fn parse_standalone(
                 intern::NO_UNIT,
                 intern::NO_SPELL,
                 false,
-                raw,
+                fields.get(2..).unwrap_or(&[]),
             );
         }
         StandaloneKind::Emote => {
@@ -686,14 +713,14 @@ fn parse_emote(
     }
     let source_id = intern_unit(fields[1].resolve_str(data), fields[2].resolve_str(data), tables);
     let text_end = rest_offset + rest.len();
-    let raw: Box<[FieldSpan]> = if text_offset < text_end {
-        vec![FieldSpan {
-            start: text_offset as u32,
-            len: (text_end - text_offset) as u32,
-        }]
-        .into_boxed_slice()
+    let text_span = FieldSpan {
+        start: text_offset as u32,
+        len: (text_end.saturating_sub(text_offset)) as u32,
+    };
+    let raw: &[FieldSpan] = if text_offset < text_end {
+        std::slice::from_ref(&text_span)
     } else {
-        Box::new([])
+        &[]
     };
     store.push(
         timestamp_ms,
@@ -793,7 +820,7 @@ mod tests {
         assert!(store.has_advanced[0]);
         // 19 advanced fields + 10 _DAMAGE suffix fields, confirmed against
         // the real fixture (docs/combat-log-format.md §5/§7).
-        assert_eq!(store.raw_fields[0].len(), 29);
+        assert_eq!(store.raw_fields(0).len(), 29);
 
         let source_name = tables.strings.get(tables.guids.get(store.source_unit[0]).name_id);
         let dest_name = tables.strings.get(tables.guids.get(store.dest_unit[0]).name_id);
@@ -820,8 +847,8 @@ mod tests {
         assert_eq!(spell.school, 0x20);
         assert!(store.has_advanced[0]);
         // 19 advanced + 10 _DAMAGE suffix + the new undocumented hitType field.
-        assert_eq!(store.raw_fields[0].len(), 30);
-        let hit_type = store.raw_fields[0].last().unwrap();
+        assert_eq!(store.raw_fields(0).len(), 30);
+        let hit_type = store.raw_fields(0).last().unwrap();
         assert_eq!(hit_type.resolve_str(&data), "ST");
     }
 
@@ -843,7 +870,7 @@ mod tests {
         assert!(!store.has_advanced[0]);
         // Just auraType, per the confirmed conditional-amount gotcha
         // (docs/combat-log-format.md §7).
-        assert_eq!(store.raw_fields[0].len(), 1);
+        assert_eq!(store.raw_fields(0).len(), 1);
     }
 
     #[test]
@@ -863,7 +890,7 @@ mod tests {
             tables.strings.get(tables.guids.get(store.dest_unit[0]).name_id),
             "Bloodworm"
         );
-        assert_eq!(store.raw_fields[0].len(), 1);
+        assert_eq!(store.raw_fields(0).len(), 1);
     }
 
     #[test]
@@ -878,9 +905,9 @@ mod tests {
             LineKind::Standalone(StandaloneKind::Emote)
         ));
         assert_ne!(store.source_unit[0], intern::NO_UNIT);
-        assert_eq!(store.raw_fields[0].len(), 1);
+        assert_eq!(store.raw_fields(0).len(), 1);
         assert_eq!(
-            store.raw_fields[0][0].resolve_str(&data),
+            store.raw_fields(0)[0].resolve_str(&data),
             "gains |cFFFF0000|Hspell:347504|h[Windrunner]|h|r!"
         );
     }
