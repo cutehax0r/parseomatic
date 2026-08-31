@@ -40,10 +40,20 @@ A couple of seconds on open is fine — this is a "open once, dig through it for
 
 ## Data representation
 
+Speed is the only tiebreaker when a data-representation choice is ambiguous — when in doubt, pick whichever option is faster, even at the cost of more code or more up-front complexity.
+
 ### String interning
-- On first sight of a player or spell name: insert into a `HashMap<String, u32>`, push to a `Vec<String>`, store the returned index.
-- Every subsequent occurrence stores the small integer instead of copying the string.
-- The interned player index keys into a **separate player metadata table** (class, server, level, guild). Metadata lives once per player, not once per event — with ~20 players and thousands of events, that's a large saving.
+- Separate intern tables per concept, each `HashMap<&str or GUID, ID> -> Vec<T>`, built on first sight and referenced by ID everywhere after.
+- **Units get a two-level split**, same shape as the existing player-metadata idea: a **GUID table** (one entry per unique spawn instance — a GUID is unique even when two units share a name, e.g. two wolves both named "Timber Wolf") holding a name-table index plus metadata (type, class, owner GUID for pets), and a separate **name table** (deduplicated display strings) that many GUIDs point at. Spells follow the same idea: Blizzard's own numeric spellId is sparse (six digits, mostly unused), so it's a `HashMap` key into a **dense local index**, not used directly as an array index.
+- **ID width is sized per table by realistic cardinality, not a single global width:**
+  - **GUIDs → u32.** Unbounded-ish — totems, pets, and trash spawns each mint a new GUID, and a long session's file can plausibly exceed 65k of them. This is the one table where u16 risks silent overflow, which is a correctness bug worth 2 extra bytes to avoid.
+  - **Names, spells, zones, markers → u16.** Bounded by actual game content touched in one log — low thousands at most even for a trash-heavy dungeon crawl, nowhere near 65k. Using u32 here would double the size of the *majority* of ID fields in the event stream for headroom that will never be used.
+  - Guard the assumption, don't just hope: a table that grows past its width should panic loudly (checked cast) rather than silently wrap.
+
+### Storage layout: struct-of-arrays, not array-of-structs
+Events are stored **columnar** — one contiguous array per field, indices aligned across all of them — not as one big per-event struct. Two reasons this beats AoS here:
+- **No padding.** Mixing u16/u32/u64 fields in a single struct forces alignment padding no matter how carefully fields are ordered. Homogeneous per-field arrays have none.
+- **Queries only pay for the columns they touch.** A DPS pass over `spellId` + `amount` for 500k events stays inside two dense arrays and never pulls position/aura/flag data into cache at all. An AoS layout drags the whole struct through cache on every event regardless of which fields the query actually reads.
 
 ### Field sizing
 - Map to enums where it makes sense.

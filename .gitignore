@@ -15,6 +15,11 @@ build/
 logs
 *.log
 
+# Real combat log test fixtures (100s of MB, not meant for git) -- small
+# synthetic fixtures we build later are fine to commit under this same dir,
+# just don't share this filename pattern.
+src-tauri/tests/fixtures/WoWCombatLog-*.txt
+
 # Editor
 .vscode/*
 !.vscode/extensions.json
