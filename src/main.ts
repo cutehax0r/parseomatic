@@ -114,6 +114,13 @@ const lineFormatter = new Intl.NumberFormat();
 // needing a fresh backend round-trip on every tab click.
 let lastLineCount: number | null = null;
 let lastCounts: DebugCounts | null = null;
+// The lineCount lastCounts was actually built from. refreshStatus fires
+// on both log-changed and view-changed, but debug_lists rebuilds its
+// entire payload (every unit/spell/zone/encounter/death/gear row, all
+// cloned) from scratch server-side -- once a log is done, lineCount is
+// stable for it, so a mismatch is the only signal that actually means
+// "the log changed, go refetch," not "the user switched tabs."
+let lastListsLineCount: number | null = null;
 
 type ViewMode = "debug" | "raw";
 let currentViewMode: ViewMode = "debug";
@@ -404,6 +411,7 @@ async function refreshStatus() {
     rawView.hidden = true;
     lastLineCount = null;
     lastCounts = null;
+    lastListsLineCount = null;
     return;
   }
 
@@ -424,19 +432,27 @@ async function refreshStatus() {
 
   statusBar.hidden = true;
   statusBarFill.style.width = "0%";
-
-  const lists = await invoke<DebugListsPayload | null>("debug_lists");
   lastLineCount = info.lineCount;
-  if (!lists) {
-    lastCounts = null;
-    updateSummaryText();
-    content.classList.remove("has-data");
-    debugView.hidden = true;
-    rawView.hidden = true;
-    return;
-  }
 
-  lastCounts = renderDebugLists(lists);
+  // debug_lists rebuilds and clones its entire payload server-side --
+  // skip the round-trip (and the full-DOM rebuild in renderDebugLists)
+  // entirely when we already have it for this exact log. A view-only
+  // change (log-changed re-fires "done" state, or the user just flipped
+  // to Raw) never changes lineCount, so this is a safe, cheap guard.
+  if (lastListsLineCount !== info.lineCount) {
+    const lists = await invoke<DebugListsPayload | null>("debug_lists");
+    if (!lists) {
+      lastCounts = null;
+      lastListsLineCount = null;
+      updateSummaryText();
+      content.classList.remove("has-data");
+      debugView.hidden = true;
+      rawView.hidden = true;
+      return;
+    }
+    lastCounts = renderDebugLists(lists);
+    lastListsLineCount = info.lineCount;
+  }
   updateSummaryText();
 
   content.classList.add("has-data");
