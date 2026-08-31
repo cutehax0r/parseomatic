@@ -1,4 +1,4 @@
-.PHONY: help install run build test clean release
+.PHONY: help install run dev build test clean release
 
 # Default target
 .DEFAULT_GOAL := help
@@ -11,10 +11,14 @@ help:
 	@echo ""
 	@echo "App targets:"
 	@echo "  make install                  Install frontend dependencies (bun install)"
-	@echo "  make run                      Run the app locally with hot reload"
+	@echo "  make run [FILE]               Run the app locally with hot reload"
+	@echo "  make dev [FILE]               Alias for 'make run'"
 	@echo "  make build                    Produce a native app bundle for this platform"
 	@echo "  make test                     Run Rust tests (cargo test)"
 	@echo "  make clean                    Remove build artifacts (dist/, src-tauri/target)"
+	@echo ""
+	@echo "  FILE, if given, is opened directly on launch (skips the open"
+	@echo "  dialog) -- e.g. make run src-tauri/tests/fixtures/some-log.txt"
 	@echo ""
 	@echo "Release targets:"
 	@echo "  make release VERSION [COMMIT] [DRY]  Create GitHub PR-based release (full workflow)"
@@ -29,8 +33,16 @@ help:
 install:
 	bun install
 
+# Extra words after `run`/`dev` on the command line (e.g. the FILE in
+# `make run /path/to/log.txt`) show up in MAKECMDGOALS -- filtered against
+# known target names (not just $@) so this works the same whether invoked
+# as `run` or via the `dev` alias.
+RUN_ARGS := $(filter-out run dev build test clean install help release,$(MAKECMDGOALS))
+
 run: install
-	bun run tauri dev
+	bun run tauri dev -- -- $(RUN_ARGS)
+
+dev: run
 
 build: install
 	bun run tauri build

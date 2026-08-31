@@ -7,6 +7,7 @@
 
 pub mod event;
 pub mod intern;
+pub mod reports;
 pub mod tokenizer;
 
 use std::path::PathBuf;
@@ -19,13 +20,16 @@ use rayon::prelude::*;
 
 use event::EventStore;
 use intern::InternTables;
+use reports::Reports;
 
-/// A fully parsed combat log: interned lookup tables plus the columnar
-/// event stream. Immutable once built -- `ParsedLog::data()` only exposes
-/// it after parsing finishes.
+/// A fully parsed combat log: interned lookup tables, the columnar event
+/// stream, and the derived reports (encounters, deaths, gear) built from
+/// them. Immutable once built -- `ParsedLog::data()` only exposes it after
+/// parsing finishes.
 pub struct ParsedData {
     pub tables: InternTables,
     pub events: EventStore,
+    pub reports: Reports,
 }
 
 /// A combat log file: its mmap (retained for the log's full lifetime, not
@@ -126,6 +130,7 @@ fn parse_all<F: Fn() + Send + Sync>(log: &Arc<ParsedLog>, on_progress: &Arc<F>) 
         return ParsedData {
             tables: InternTables::default(),
             events: EventStore::default(),
+            reports: Reports::default(),
         };
     }
 
@@ -178,12 +183,18 @@ fn parse_all<F: Fn() + Send + Sync>(log: &Arc<ParsedLog>, on_progress: &Arc<F>) 
         events.append_remapped(chunk_events, &remap);
     }
 
+    let reports = reports::build_reports(data, &events, &mut tables);
+
     {
         let mut progress = log.progress.lock().unwrap();
         progress.lines = events.len() as u64;
     }
 
-    ParsedData { tables, events }
+    ParsedData {
+        tables,
+        events,
+        reports,
+    }
 }
 
 /// Splits `data` into chunks of roughly `filesize/numcpus` bytes (capped
@@ -249,11 +260,15 @@ mod tests {
 
         let data = log.data().expect("data must be set once progress.done is true");
         println!(
-            "parsed {} lines -> {} units, {} spells, {} zones in {:?}",
+            "parsed {} lines -> {} units, {} spells, {} zones, {} encounters ({} trash), {} deaths, {} combatant snapshots in {:?}",
             data.events.len(),
             data.tables.guids.len(),
             data.tables.spells.len(),
             data.tables.zones.len(),
+            data.reports.encounters.len(),
+            data.reports.encounters.iter().filter(|e| e.is_trash).count(),
+            data.reports.deaths.len(),
+            data.reports.combatants.len(),
             elapsed,
         );
 
@@ -265,6 +280,15 @@ mod tests {
         assert!(data.tables.guids.len() > 100, "expected hundreds+ of distinct units in a real raid log");
         assert!(data.tables.spells.len() > 100, "expected hundreds+ of distinct spells in a real raid log");
         assert!(data.tables.zones.len() >= 1);
+        // The fixture has 7 real ENCOUNTER_START/ENCOUNTER_END pairs
+        // (confirmed via grep), all cleanly paired -- no malformed overlap
+        // in this particular log -- plus trash spans around/between them.
+        let real_encounters = data.reports.encounters.iter().filter(|e| !e.is_trash).count();
+        assert_eq!(real_encounters, 7);
+        assert_eq!(data.reports.deaths.len(), 163);
+        // COMBATANT_INFO doesn't appear in this fixture at all -- confirmed
+        // separately, not a bug if this is 0.
+        assert_eq!(data.reports.combatants.len(), 0);
         assert!(
             elapsed.as_secs() < 5,
             "parsing 547MB took {elapsed:?} -- expected well under 5s from the parallel single-pass design"

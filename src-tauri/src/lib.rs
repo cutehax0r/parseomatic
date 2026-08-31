@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use tauri::menu::{Menu, MenuBuilder, MenuItem, SubmenuBuilder};
+use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
@@ -19,6 +19,11 @@ struct LogRegistry(Mutex<HashMap<PathBuf, Weak<ParsedLog>>>);
 // Which Arc<ParsedLog> each window (by label) is currently displaying.
 #[derive(Default)]
 struct WindowLogs(Mutex<HashMap<String, Arc<ParsedLog>>>);
+
+// Per-window "is the debug view showing" preference -- absent means the
+// default (true), matching CheckMenuItem's initial checked state.
+#[derive(Default)]
+struct WindowViewState(Mutex<HashMap<String, bool>>);
 
 #[derive(Default)]
 struct NextWindowId(AtomicU32);
@@ -89,6 +94,46 @@ fn attach_window_to_log(window: &WebviewWindow, log: Arc<ParsedLog>) {
     // Lets this window's frontend know it has (new) data to display -- it
     // re-fetches its own state via the `window_info` command in response.
     let _ = window.emit("log-changed", ());
+}
+
+fn debug_visible_for(app: &AppHandle, label: &str) -> bool {
+    let state = app.state::<WindowViewState>();
+    let map = state.0.lock().unwrap();
+    map.get(label).copied().unwrap_or(true)
+}
+
+/// Sets the shared View menu's Debug checkbox to `checked`. The menu is
+/// app-level (one menu bar), but debug-view visibility is a per-window
+/// preference, so this must be called both when the preference itself
+/// changes and whenever a different window becomes focused (see
+/// `register_focus_sync`) -- otherwise the checkbox would show whichever
+/// window last touched it rather than the frontmost one's actual state.
+fn sync_debug_menu_checked(window: &WebviewWindow, checked: bool) {
+    if let Some(menu) = window.menu() {
+        if let Some(item) = menu.get("view_debug") {
+            if let Some(check) = item.as_check_menuitem() {
+                let _ = check.set_checked(checked);
+            }
+        }
+    }
+}
+
+/// Flips `window`'s debug-view visibility, syncs the menu checkbox to
+/// match, and tells its frontend to re-render (`view-changed`, mirroring
+/// the `log-changed` -> refetch pattern used for file state). Shared by
+/// the `toggle_debug_view` command and the `view_debug` menu handler.
+fn apply_debug_view_toggle(window: &WebviewWindow) {
+    let app = window.app_handle();
+    let label = window.label().to_string();
+    let new_value = {
+        let state = app.state::<WindowViewState>();
+        let mut map = state.0.lock().unwrap();
+        let entry = map.entry(label).or_insert(true);
+        *entry = !*entry;
+        *entry
+    };
+    sync_debug_menu_checked(window, new_value);
+    let _ = window.emit("view-changed", ());
 }
 
 fn filename_of(log: &ParsedLog) -> String {
@@ -187,9 +232,9 @@ fn pick_and_open_log(window: WebviewWindow) {
     });
 }
 
-/// Removes a window's entry from WindowLogs when it closes, dropping the
-/// Arc<ParsedLog> -- the file's data is freed once the last window showing
-/// it is gone.
+/// Removes a window's entries from WindowLogs (dropping the Arc<ParsedLog>
+/// -- the file's data is freed once the last window showing it is gone)
+/// and WindowViewState when it closes.
 fn register_close_cleanup(window: &WebviewWindow) {
     let app = window.app_handle().clone();
     let label = window.label().to_string();
@@ -197,6 +242,22 @@ fn register_close_cleanup(window: &WebviewWindow) {
         if matches!(event, tauri::WindowEvent::Destroyed) {
             let window_logs = app.state::<WindowLogs>();
             window_logs.0.lock().unwrap().remove(&label);
+            let view_state = app.state::<WindowViewState>();
+            view_state.0.lock().unwrap().remove(&label);
+        }
+    });
+}
+
+/// Keeps the shared View menu's Debug checkbox honest across window
+/// switches -- re-syncs it to the newly-focused window's own preference
+/// every time focus changes, since there's one menu bar but each window
+/// has its own debug-visible state.
+fn register_focus_sync(window: &WebviewWindow) {
+    let handle = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(true) = event {
+            let visible = debug_visible_for(handle.app_handle(), handle.label());
+            sync_debug_menu_checked(&handle, visible);
         }
     });
 }
@@ -246,6 +307,7 @@ fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
 
     register_close_cleanup(&window);
     register_drag_drop(&window);
+    register_focus_sync(&window);
     Some(window)
 }
 
@@ -319,6 +381,16 @@ fn window_info(window: WebviewWindow) -> Option<WindowInfo> {
     })
 }
 
+#[tauri::command]
+fn debug_view_visible(window: WebviewWindow) -> bool {
+    debug_visible_for(window.app_handle(), window.label())
+}
+
+#[tauri::command]
+fn toggle_debug_view(window: WebviewWindow) {
+    apply_debug_view_toggle(&window);
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UnitRow {
@@ -345,24 +417,76 @@ struct ZoneRow {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct InternTablesPayload {
+struct EncounterRow {
+    name: String,
+    encounter_id: u32,
+    difficulty_id: u32,
+    group_size: u32,
+    start_ms: i64,
+    end_ms: i64,
+    duration_ms: i64,
+    success: Option<bool>,
+    is_trash: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeathRow {
+    player_name: String,
+    timestamp_ms: i64,
+    encounter_name: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GearItemRow {
+    item_id: u32,
+    item_level: u32,
+    enchant_id: u32,
+    gem_ids: Vec<u32>,
+}
+
+/// **Unverified against a real captured log** -- see
+/// `parser::reports::parse_equipped_items`'s doc comment. Built and tested
+/// against the wiki-sourced worked example in `docs/combat-log-format.md`
+/// §8, not our own fixture (which has zero `COMBATANT_INFO` lines).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CombatantRow {
+    player_name: String,
+    encounter_name: String,
+    spec_id: u32,
+    avg_item_level: Option<f64>,
+    item_count: usize,
+    gear: Vec<GearItemRow>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebugListsPayload {
     units: Vec<UnitRow>,
     spells: Vec<SpellRow>,
     zones: Vec<ZoneRow>,
+    encounters: Vec<EncounterRow>,
+    deaths: Vec<DeathRow>,
+    combatants: Vec<CombatantRow>,
 }
 
-/// The interned units/spells/zones tables for the window's current log,
-/// once parsing has finished (`None` while still in progress or if no log
-/// is open) -- backs the tabbed table view.
+/// The full set of "debug list" data for the window's current log, once
+/// parsing has finished (`None` while still in progress or if no log is
+/// open) -- backs the tabbed table view. `units`/`spells`/`zones` are the
+/// raw interned tables; `players`/`pets` are filtered from `units`
+/// client-side rather than duplicated here (kind == Player; owner != null).
 #[tauri::command]
-fn intern_tables(window: WebviewWindow) -> Option<InternTablesPayload> {
+fn debug_lists(window: WebviewWindow) -> Option<DebugListsPayload> {
     let window_logs = window.app_handle().state::<WindowLogs>();
     let map = window_logs.0.lock().unwrap();
     let log = map.get(window.label())?;
     let data = log.data()?;
     let tables = &data.tables;
+    let reports = &data.reports;
 
-    let units = tables
+    let units: Vec<UnitRow> = tables
         .guids
         .iter()
         .map(|u| UnitRow {
@@ -375,7 +499,7 @@ fn intern_tables(window: WebviewWindow) -> Option<InternTablesPayload> {
         })
         .collect();
 
-    let spells = tables
+    let spells: Vec<SpellRow> = tables
         .spells
         .iter()
         .map(|s| SpellRow {
@@ -385,7 +509,7 @@ fn intern_tables(window: WebviewWindow) -> Option<InternTablesPayload> {
         })
         .collect();
 
-    let zones = tables
+    let zones: Vec<ZoneRow> = tables
         .zones
         .iter()
         .map(|z| ZoneRow {
@@ -394,10 +518,77 @@ fn intern_tables(window: WebviewWindow) -> Option<InternTablesPayload> {
         })
         .collect();
 
-    Some(InternTablesPayload {
+    let encounters: Vec<EncounterRow> = reports
+        .encounters
+        .iter()
+        .map(|e| EncounterRow {
+            name: tables.strings.get(e.name_id).to_string(),
+            encounter_id: e.encounter_id,
+            difficulty_id: e.difficulty_id,
+            group_size: e.group_size,
+            start_ms: e.start_ms,
+            end_ms: e.end_ms,
+            duration_ms: e.end_ms - e.start_ms,
+            success: e.success,
+            is_trash: e.is_trash,
+        })
+        .collect();
+
+    let encounter_name = |index: usize| -> String {
+        reports
+            .encounters
+            .get(index)
+            .map(|e| tables.strings.get(e.name_id).to_string())
+            .unwrap_or_default()
+    };
+
+    let deaths: Vec<DeathRow> = reports
+        .deaths
+        .iter()
+        .map(|d| DeathRow {
+            player_name: tables.strings.get(tables.guids.get(d.unit_id).name_id).to_string(),
+            timestamp_ms: d.timestamp_ms,
+            encounter_name: encounter_name(d.encounter_index),
+        })
+        .collect();
+
+    let combatants: Vec<CombatantRow> = reports
+        .combatants
+        .iter()
+        .map(|c| {
+            let item_count = c.gear.len();
+            let avg_item_level = if item_count > 0 {
+                Some(c.gear.iter().map(|g| g.item_level as f64).sum::<f64>() / item_count as f64)
+            } else {
+                None
+            };
+            CombatantRow {
+                player_name: tables.strings.get(tables.guids.get(c.unit_id).name_id).to_string(),
+                encounter_name: encounter_name(c.encounter_index),
+                spec_id: c.spec_id,
+                avg_item_level,
+                item_count,
+                gear: c
+                    .gear
+                    .iter()
+                    .map(|g| GearItemRow {
+                        item_id: g.item_id,
+                        item_level: g.item_level,
+                        enchant_id: g.enchant_id,
+                        gem_ids: g.gem_ids.clone(),
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+
+    Some(DebugListsPayload {
         units,
         spells,
         zones,
+        encounters,
+        deaths,
+        combatants,
     })
 }
 
@@ -440,6 +631,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .select_all()
         .build()?;
 
+    // Checked by default (true) to match WindowViewState's default --
+    // debug is the only view that exists today; more will join this menu
+    // as their own checkbox items later.
+    let debug_view_item =
+        CheckMenuItem::with_id(app, "view_debug", "Debug", true, true, None::<&str>)?;
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&debug_view_item)
+        .build()?;
+
     let mut builder = MenuBuilder::new(app);
 
     #[cfg(target_os = "macos")]
@@ -458,7 +658,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         builder = builder.item(&app_menu);
     }
 
-    builder.item(&file_menu).item(&edit_menu).build()
+    builder
+        .item(&file_menu)
+        .item(&edit_menu)
+        .item(&view_menu)
+        .build()
 }
 
 fn focused_webview_window(app: &AppHandle) -> Option<WebviewWindow> {
@@ -474,6 +678,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(LogRegistry::default())
         .manage(WindowLogs::default())
+        .manage(WindowViewState::default())
         .manage(NextWindowId::default())
         .setup(|app| {
             let menu = build_menu(app.handle())?;
@@ -487,6 +692,7 @@ pub fn run() {
             if let Some(main_window) = app.get_webview_window("main") {
                 register_close_cleanup(&main_window);
                 register_drag_drop(&main_window);
+                register_focus_sync(&main_window);
 
                 if let Some(path) = std::env::args().nth(1) {
                     open_path_in_window(&main_window, Path::new(&path));
@@ -513,13 +719,22 @@ pub fn run() {
                 if let Some(window) = focused_webview_window(app) {
                     std::thread::spawn(move || spawn_sibling_window(&window));
                 }
+            } else if event.id() == "view_debug" {
+                // No window creation involved -- state mutation + an
+                // event emit, both cheap and non-blocking, so this runs
+                // directly rather than spawning a thread.
+                if let Some(window) = focused_webview_window(app) {
+                    apply_debug_view_toggle(&window);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
             open_log_file,
             new_window_from,
             window_info,
-            intern_tables
+            debug_lists,
+            debug_view_visible,
+            toggle_debug_view
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

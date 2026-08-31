@@ -10,50 +10,122 @@
 
   <body>
     <div class="toolbar">
-      <button id="open-file-btn" class="toolbar-btn" title="Open combat log...">
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+      <div class="toolbar-group">
+        <button id="open-file-btn" class="toolbar-btn" title="Open combat log...">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+            ></path>
+          </svg>
+        </button>
+        <button id="new-window-btn" class="toolbar-btn" title="New window for this file">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="2" y="2" width="14" height="11" rx="2"></rect>
+            <path d="M2 6h14"></path>
+            <rect x="8" y="11" width="14" height="11" rx="2"></rect>
+            <path d="M8 15h14"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="toolbar-divider"></div>
+      <div class="toolbar-group">
+        <button
+          id="debug-view-btn"
+          class="toolbar-btn"
+          title="Toggle debug view"
+          aria-pressed="true"
         >
-          <path
-            d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
-          ></path>
-        </svg>
-      </button>
-      <button id="new-window-btn" class="toolbar-btn" title="New window for this file">
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <rect x="3" y="4" width="18" height="14" rx="2"></rect>
-          <path d="M12 9v6M9 12h6"></path>
-        </svg>
-      </button>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M8 6 6.5 4.5M16 6l1.5-1.5"></path>
+            <rect x="7" y="8" width="10" height="11" rx="5"></rect>
+            <path d="M12 8V5M7 12H3M21 12h-4M7 16H4M20 16h-3M9 19l-2 2M15 19l2 2"></path>
+          </svg>
+        </button>
+      </div>
     </div>
     <main id="content" class="content">
       <p id="log-status" class="placeholder">No combat log open</p>
-      <div id="tables-view" class="tables-view" hidden>
+      <div id="debug-view" class="debug-view" hidden>
         <div class="tabs" role="tablist">
-          <button class="tab-btn active" data-tab="units" role="tab">Units</button>
+          <button class="tab-btn active" data-tab="players" role="tab">Players</button>
+          <button class="tab-btn" data-tab="pets" role="tab">Pets</button>
+          <button class="tab-btn" data-tab="creatures" role="tab">Creatures</button>
+          <button class="tab-btn" data-tab="units" role="tab">Units</button>
           <button class="tab-btn" data-tab="spells" role="tab">Spells</button>
           <button class="tab-btn" data-tab="zones" role="tab">Zones</button>
+          <button class="tab-btn" data-tab="encounters" role="tab">Encounters</button>
+          <button class="tab-btn" data-tab="deaths" role="tab">Deaths</button>
+          <button class="tab-btn" data-tab="gear" role="tab">Gear</button>
         </div>
         <div class="tab-panels">
-          <div class="tab-panel" data-panel="units">
+          <div class="tab-panel" data-panel="players">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>GUID</th>
+                </tr>
+              </thead>
+              <tbody id="players-body"></tbody>
+            </table>
+          </div>
+          <div class="tab-panel" data-panel="pets" hidden>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Kind</th>
+                  <th>Owner</th>
+                  <th>GUID</th>
+                </tr>
+              </thead>
+              <tbody id="pets-body"></tbody>
+            </table>
+          </div>
+          <div class="tab-panel" data-panel="creatures" hidden>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Kind</th>
+                  <th>Owner</th>
+                  <th>GUID</th>
+                </tr>
+              </thead>
+              <tbody id="creatures-body"></tbody>
+            </table>
+          </div>
+          <div class="tab-panel" data-panel="units" hidden>
             <table class="data-table">
               <thead>
                 <tr>
@@ -87,6 +159,45 @@
                 </tr>
               </thead>
               <tbody id="zones-body"></tbody>
+            </table>
+          </div>
+          <div class="tab-panel" data-panel="encounters" hidden>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Result</th>
+                  <th>Duration</th>
+                  <th>Group Size</th>
+                </tr>
+              </thead>
+              <tbody id="encounters-body"></tbody>
+            </table>
+          </div>
+          <div class="tab-panel" data-panel="deaths" hidden>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Player</th>
+                  <th>Encounter</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="deaths-body"></tbody>
+            </table>
+          </div>
+          <div class="tab-panel" data-panel="gear" hidden>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Player</th>
+                  <th>Encounter</th>
+                  <th>Spec ID</th>
+                  <th>Avg Item Level</th>
+                  <th>Items</th>
+                </tr>
+              </thead>
+              <tbody id="gear-body"></tbody>
             </table>
           </div>
         </div>

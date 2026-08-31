@@ -32,10 +32,29 @@ body {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   padding: 6px 8px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.1);
   background-color: #ececec;
+}
+
+/* Rounded-rect box around each group of related toolbar buttons, with a
+   plain vertical divider between groups. */
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background-color: rgba(0, 0, 0, 0.03);
+}
+
+.toolbar-divider {
+  align-self: stretch;
+  width: 1px;
+  margin: 2px 0;
+  background-color: rgba(0, 0, 0, 0.15);
 }
 
 .toolbar-btn {
@@ -60,6 +79,15 @@ body {
   background-color: rgba(0, 0, 0, 0.15);
 }
 
+.toolbar-btn[aria-pressed="true"] {
+  background-color: rgba(57, 108, 216, 0.15);
+  color: #396cd8;
+}
+
+.toolbar-btn[aria-pressed="true"]:hover {
+  background-color: rgba(57, 108, 216, 0.22);
+}
+
 .content {
   flex: 1;
   display: flex;
@@ -68,9 +96,12 @@ body {
   min-height: 0;
 }
 
-/* Once a tabbed table view is showing, the content area fills top-to-
-   bottom rather than centering a single line of placeholder text. */
+/* Once a tabbed table view is showing, the content area stacks the status
+   line above it and fills top-to-bottom, rather than centering a single
+   line of placeholder text (the default row direction otherwise puts the
+   status line and the table side by side instead of stacked). */
 .content.has-data {
+  flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
 }
@@ -84,14 +115,14 @@ body {
   border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 }
 
-.tables-view {
+.debug-view {
   display: flex;
   flex-direction: column;
   width: 100%;
   min-height: 0;
 }
 
-.tables-view[hidden] {
+.debug-view[hidden] {
   display: none;
 }
 
@@ -154,6 +185,18 @@ body {
 
 .data-table tbody tr:hover {
   background-color: rgba(0, 0, 0, 0.04);
+}
+
+.empty-message {
+  padding: 16px 10px;
+  color: rgba(0, 0, 0, 0.4);
+  font-style: italic;
+  white-space: normal;
+  text-align: center;
+}
+
+.data-table tbody tr:has(.empty-message):hover {
+  background-color: transparent;
 }
 
 .statusbar {
@@ -232,9 +275,22 @@ body {
     background-color: rgba(255, 255, 255, 0.06);
   }
 
+  .empty-message {
+    color: rgba(255, 255, 255, 0.4);
+  }
+
   .toolbar {
     background-color: #262626;
     border-bottom-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .toolbar-group {
+    border-color: rgba(255, 255, 255, 0.15);
+    background-color: rgba(255, 255, 255, 0.04);
+  }
+
+  .toolbar-divider {
+    background-color: rgba(255, 255, 255, 0.15);
   }
 
   .toolbar-btn {
@@ -247,6 +303,15 @@ body {
 
   .toolbar-btn:active {
     background-color: rgba(255, 255, 255, 0.18);
+  }
+
+  .toolbar-btn[aria-pressed="true"] {
+    background-color: rgba(57, 108, 216, 0.3);
+    color: #7aa2f7;
+  }
+
+  .toolbar-btn[aria-pressed="true"]:hover {
+    background-color: rgba(57, 108, 216, 0.4);
   }
 
   .statusbar {
