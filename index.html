@@ -44,8 +44,53 @@
         </svg>
       </button>
     </div>
-    <main class="content">
+    <main id="content" class="content">
       <p id="log-status" class="placeholder">No combat log open</p>
+      <div id="tables-view" class="tables-view" hidden>
+        <div class="tabs" role="tablist">
+          <button class="tab-btn active" data-tab="units" role="tab">Units</button>
+          <button class="tab-btn" data-tab="spells" role="tab">Spells</button>
+          <button class="tab-btn" data-tab="zones" role="tab">Zones</button>
+        </div>
+        <div class="tab-panels">
+          <div class="tab-panel" data-panel="units">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Kind</th>
+                  <th>Owner</th>
+                  <th>GUID</th>
+                </tr>
+              </thead>
+              <tbody id="units-body"></tbody>
+            </table>
+          </div>
+          <div class="tab-panel" data-panel="spells" hidden>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Spell ID</th>
+                  <th>School</th>
+                </tr>
+              </thead>
+              <tbody id="spells-body"></tbody>
+            </table>
+          </div>
+          <div class="tab-panel" data-panel="zones" hidden>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Map ID</th>
+                </tr>
+              </thead>
+              <tbody id="zones-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </main>
     <div id="status-bar" class="statusbar" hidden>
       <div class="statusbar-track">

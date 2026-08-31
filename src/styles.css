@@ -65,10 +65,95 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  min-height: 0;
+}
+
+/* Once a tabbed table view is showing, the content area fills top-to-
+   bottom rather than centering a single line of placeholder text. */
+.content.has-data {
+  align-items: stretch;
+  justify-content: flex-start;
 }
 
 .placeholder {
   color: rgba(0, 0, 0, 0.4);
+}
+
+.content.has-data .placeholder {
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.tables-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+}
+
+.tables-view[hidden] {
+  display: none;
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.tab-btn {
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.tab-btn:hover {
+  color: #0f0f0f;
+}
+
+.tab-btn.active {
+  color: #0f0f0f;
+  border-bottom-color: #396cd8;
+  font-weight: 600;
+}
+
+.tab-panels {
+  flex: 1;
+  overflow: auto;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.data-table th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  padding: 6px 10px;
+  background-color: #ececec;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.data-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  white-space: nowrap;
+}
+
+.data-table tbody tr:hover {
+  background-color: rgba(0, 0, 0, 0.04);
 }
 
 .statusbar {
@@ -115,6 +200,36 @@ body {
 
   .placeholder {
     color: rgba(255, 255, 255, 0.4);
+  }
+
+  .content.has-data .placeholder {
+    border-bottom-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .tabs {
+    border-bottom-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .tab-btn {
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .tab-btn:hover,
+  .tab-btn.active {
+    color: #f6f6f6;
+  }
+
+  .data-table th {
+    background-color: #262626;
+    border-bottom-color: rgba(255, 255, 255, 0.15);
+  }
+
+  .data-table td {
+    border-bottom-color: rgba(255, 255, 255, 0.06);
+  }
+
+  .data-table tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.06);
   }
 
   .toolbar {

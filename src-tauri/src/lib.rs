@@ -74,7 +74,7 @@ fn get_or_parse(app: &AppHandle, path: &Path) -> std::io::Result<Arc<ParsedLog>>
     let path_for_progress = canonical.clone();
     let log = parser::spawn(canonical.clone(), move || {
         notify_log_progress(&app_for_progress, &path_for_progress);
-    });
+    })?;
     map.insert(canonical, Arc::downgrade(&log));
     Ok(log)
 }
@@ -319,6 +319,88 @@ fn window_info(window: WebviewWindow) -> Option<WindowInfo> {
     })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnitRow {
+    guid: String,
+    name: String,
+    kind: String,
+    owner: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpellRow {
+    spell_id: u32,
+    name: String,
+    school: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ZoneRow {
+    map_id: u32,
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternTablesPayload {
+    units: Vec<UnitRow>,
+    spells: Vec<SpellRow>,
+    zones: Vec<ZoneRow>,
+}
+
+/// The interned units/spells/zones tables for the window's current log,
+/// once parsing has finished (`None` while still in progress or if no log
+/// is open) -- backs the tabbed table view.
+#[tauri::command]
+fn intern_tables(window: WebviewWindow) -> Option<InternTablesPayload> {
+    let window_logs = window.app_handle().state::<WindowLogs>();
+    let map = window_logs.0.lock().unwrap();
+    let log = map.get(window.label())?;
+    let data = log.data()?;
+    let tables = &data.tables;
+
+    let units = tables
+        .guids
+        .iter()
+        .map(|u| UnitRow {
+            guid: u.guid.to_string(),
+            name: tables.strings.get(u.name_id).to_string(),
+            kind: format!("{:?}", u.kind),
+            owner: u
+                .owner_id
+                .map(|owner_id| tables.guids.get(owner_id).guid.to_string()),
+        })
+        .collect();
+
+    let spells = tables
+        .spells
+        .iter()
+        .map(|s| SpellRow {
+            spell_id: s.spell_id,
+            name: tables.strings.get(s.name_id).to_string(),
+            school: s.school,
+        })
+        .collect();
+
+    let zones = tables
+        .zones
+        .iter()
+        .map(|z| ZoneRow {
+            map_id: z.map_id,
+            name: tables.strings.get(z.name_id).to_string(),
+        })
+        .collect();
+
+    Some(InternTablesPayload {
+        units,
+        spells,
+        zones,
+    })
+}
+
 #[tauri::command]
 fn open_log_file(window: WebviewWindow) {
     pick_and_open_log(window);
@@ -436,7 +518,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_log_file,
             new_window_from,
-            window_info
+            window_info,
+            intern_tables
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

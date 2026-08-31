@@ -2508,6 +2508,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "rayon",
+ "rustc-hash",
  "serde",
  "serde_json",
  "tauri",
