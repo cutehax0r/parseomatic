@@ -1,4 +1,4 @@
-.PHONY: help install run dev build test clean release
+.PHONY: help install run dev build test clean uninstall release
 
 # Default target
 .DEFAULT_GOAL := help
@@ -16,6 +16,7 @@ help:
 	@echo "  make build                    Produce a native app bundle for this platform"
 	@echo "  make test                     Run Rust tests (cargo test)"
 	@echo "  make clean                    Remove build artifacts (dist/, src-tauri/target)"
+	@echo "  make uninstall                Unregister the built .app from macOS Launch Services"
 	@echo ""
 	@echo "  FILE, if given, is opened directly on launch (skips the open"
 	@echo "  dialog) -- e.g. make run src-tauri/tests/fixtures/some-log.txt"
@@ -37,7 +38,7 @@ install:
 # `make run /path/to/log.txt`) show up in MAKECMDGOALS -- filtered against
 # known target names (not just $@) so this works the same whether invoked
 # as `run` or via the `dev` alias.
-RUN_ARGS := $(filter-out run dev build test clean install help release,$(MAKECMDGOALS))
+RUN_ARGS := $(filter-out run dev build test clean install uninstall help release,$(MAKECMDGOALS))
 
 run: install
 	bun run tauri dev -- -- $(RUN_ARGS)
@@ -53,6 +54,25 @@ test:
 clean:
 	rm -rf dist
 	cd src-tauri && cargo clean
+
+LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+APP_BUNDLE := src-tauri/target/release/bundle/macos/parseomatic.app
+
+# The bundled release app registers itself as a .txt file handler with
+# macOS Launch Services (see CFBundleDocumentTypes in tauri.conf.json).
+# Once registered, launchd can relaunch it on its own (e.g. after a
+# `kill`, or when Finder/Spotlight/QuickLook touches an associated .txt
+# file) -- with no file argument on that relaunch, it falls straight to
+# the open-file dialog and just sits there looking like a hang. This
+# undoes the registration (and stops any instance already running).
+uninstall:
+	@pkill -f "$(APP_BUNDLE)/Contents/MacOS/parseomatic" 2>/dev/null || true
+	@if [ "$$(uname)" = "Darwin" ] && [ -x "$(LSREGISTER)" ] && [ -d "$(APP_BUNDLE)" ]; then \
+		"$(LSREGISTER)" -u "$(APP_BUNDLE)"; \
+		echo "Unregistered $(APP_BUNDLE) from Launch Services."; \
+	else \
+		echo "Nothing to unregister ($(APP_BUNDLE) not found, or not on macOS)."; \
+	fi
 
 # Unified GitHub PR-based release target
 release:
