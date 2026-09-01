@@ -71,6 +71,13 @@ html,
 body {
   margin: 0;
   height: 100%;
+  /* Without this, any sub-pixel layout overflow (near-universal with flex
+     columns adding up to "the full viewport") makes the whole page
+     elastically scrollable on macOS -- visible as the toolbar wobbling
+     up and down and rubber-banding back on a wheel tick, even over a
+     tab with only a couple of rows. Only the inner virtualized
+     containers (.data-scroll/.raw-scroll) should ever actually scroll. */
+  overflow: hidden;
 }
 
 body {
@@ -251,6 +258,10 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  /* Belt-and-suspenders alongside html/body's overflow: hidden -- don't
+     let scrolling past this container's own top/bottom edge chain to
+     any ancestor. */
+  overscroll-behavior: contain;
 }
 
 .data-scroll[hidden] {
@@ -379,6 +390,7 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 /* Zero-width -- exists purely so its height (set from JS to
