@@ -169,8 +169,11 @@ function getOrCreateDebugTable(tabKey: string, gridColumns: string): { list: Vir
       div.className = "data-row";
       return div;
     },
-    renderRow: (cells, el, index) => {
-      el.style.top = `${index * DATA_ROW_HEIGHT}px`;
+    renderRow: (cells, el) => {
+      // VirtualList already positioned `el` (anchored to the live scroll
+      // position, possibly scale-compressed for a huge total) -- setting
+      // `top` again here from the raw logical `index` would silently
+      // clobber that with the wrong, uncompressed value.
       if (el.children.length !== cells.length) {
         el.replaceChildren(
           ...cells.map(() => {
@@ -366,9 +369,13 @@ function setRawCell(el: HTMLElement, text: string, clickable: boolean, tooltip?:
 }
 
 // Row content is updated in place on an already-appended, recycled
-// element (see VirtualList) rather than rebuilt from scratch every time.
-function renderRawRow(r: RawEventRow, el: HTMLElement, index: number) {
-  el.style.top = `${index * RAW_ROW_HEIGHT}px`;
+// element (see VirtualList) rather than rebuilt from scratch every
+// time. VirtualList already positioned `el` before calling this --
+// don't touch `top` here (see the debug-table renderRow for why that
+// used to silently break the raw view specifically: VirtualList
+// anchors to the live, possibly scale-compressed scroll position for a
+// huge total, which a naive `index * rowHeight` here would clobber).
+function renderRawRow(r: RawEventRow, el: HTMLElement) {
   const [time, kind, source, target, spell, details] = Array.from(el.children) as HTMLElement[];
   const sourceUnit = r.sourceUnitId !== null ? unitsById[r.sourceUnitId] : undefined;
   const targetUnit = r.targetUnitId !== null ? unitsById[r.targetUnitId] : undefined;
