@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem, SubmenuBuilder};
+use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem, Submenu, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
@@ -753,7 +753,7 @@ fn new_window_from(window: WebviewWindow) {
     spawn_sibling_window(&window);
 }
 
-fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri::Wry>)> {
     let open_item = MenuItem::with_id(app, "open_file", "Open...", true, Some("CmdOrCtrl+O"))?;
     let new_window_item = MenuItem::with_id(
         app,
@@ -793,6 +793,23 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .item(&raw_view_item)
         .build()?;
 
+    // Standard-issue macOS Window menu: Minimize/Zoom/Fullscreen and
+    // Bring All to Front are explicit items (muda's predefined set),
+    // Close is already in File so isn't duplicated here. The window
+    // list itself, and the "Move & Resize" tiling submenu, aren't
+    // things this app builds -- the caller registers this submenu as
+    // the app's official windows menu (macOS-only) once it's actually
+    // installed (muda resolves the submenu through the *installed* main
+    // menu's delegate, so calling this before `app.set_menu` is a
+    // silent no-op), which hands both to AppKit from then on.
+    let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize()
+        .fullscreen()
+        .separator()
+        .bring_all_to_front()
+        .build()?;
+
     let mut builder = MenuBuilder::new(app);
 
     #[cfg(target_os = "macos")]
@@ -811,11 +828,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         builder = builder.item(&app_menu);
     }
 
-    builder
+    let menu = builder
         .item(&file_menu)
         .item(&edit_menu)
         .item(&view_menu)
-        .build()
+        .item(&window_menu)
+        .build()?;
+    Ok((menu, window_menu))
 }
 
 fn focused_webview_window(app: &AppHandle) -> Option<WebviewWindow> {
@@ -834,8 +853,13 @@ pub fn run() {
         .manage(WindowViewState::default())
         .manage(NextWindowId::default())
         .setup(|app| {
-            let menu = build_menu(app.handle())?;
+            let (menu, window_menu) = build_menu(app.handle())?;
             app.set_menu(menu)?;
+            // Must run after set_menu -- muda resolves the submenu through
+            // the *installed* main menu's delegate, so calling this any
+            // earlier is a silent no-op (see build_menu).
+            #[cfg(target_os = "macos")]
+            window_menu.set_as_windows_menu_for_nsapp()?;
 
             // This is a file viewer -- a window with nothing open is only
             // useful for picking a file, so go straight to that. A path
