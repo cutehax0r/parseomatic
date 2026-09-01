@@ -72,10 +72,6 @@ export class VirtualList<T> {
   // since the last render -- guarantees the range still settles onto its
   // final position even if scroll events stop arriving mid-window.
   private trailingTimer: ReturnType<typeof setTimeout> | null = null;
-  // Bumped on every fetch so a slow, superseded fetchRange response can't
-  // clobber a newer one that already landed (scroll fast enough with an
-  // async source and two requests can resolve out of order).
-  private fetchToken = 0;
   // True while a fetchRange call is awaited. Only one fetch is ever
   // in flight at a time -- letting them pile up during a fast scroll
   // (an async fetchRange, i.e. the raw view's IPC round trip, can take
@@ -170,11 +166,11 @@ export class VirtualList<T> {
       return;
     }
 
-    // A fetch is already out for some range -- its own completion will
-    // re-check the live scroll position (see below), so there's nothing
-    // for this call to do; letting it start a second, overlapping fetch
-    // would only add backend work without changing which one ends up
-    // rendered.
+    // A fetch is already out for some range -- once it lands it repaints
+    // against whatever the live position is *then* (see below) and, if
+    // that's moved on, immediately chases it again -- so there's nothing
+    // for this call to do; starting a second, overlapping fetch would
+    // only add backend work without changing what ends up on screen.
     if (this.fetchInFlight) return;
 
     const range = this.computeVisibleRange();
@@ -183,7 +179,6 @@ export class VirtualList<T> {
     this.renderedStart = range.start;
     this.renderedEnd = range.end;
     this.fetchInFlight = true;
-    const token = ++this.fetchToken;
     let items: T[];
     try {
       items = await fetchRange(range.start, range.end - range.start);
@@ -193,28 +188,6 @@ export class VirtualList<T> {
       // silently no-ops at the guard above.
       this.fetchInFlight = false;
     }
-    if (token !== this.fetchToken) return; // superseded while we were waiting
-
-    // The scroll position at the moment this resolves may not be the
-    // one it was fetched for -- an async fetchRange (the raw view's IPC
-    // round trip) can take long enough for the user to have kept
-    // scrolling in the meantime, unlike the debug tables' effectively
-    // instant in-memory slice. Positioning rows against the *original*
-    // scrollTop in that case draws them outside the now-current
-    // viewport -- exactly the "content goes blank" symptom, since
-    // nothing else repaints until the next scroll event. Re-checking
-    // against the live position here and re-anchoring to it fixes that;
-    // if scrolling moved far enough that this batch no longer even
-    // covers what's visible, don't paint stale rows in the wrong place
-    // at all -- leave the previous (still-valid, just old) frame up and
-    // go again for the live position instead.
-    const live = this.computeVisibleRange();
-    if (live.start < range.start || live.end > range.end) {
-      this.renderedStart = -1;
-      this.renderedEnd = -1;
-      void this.renderVisible();
-      return;
-    }
 
     while (this.pool.length < items.length) {
       const el = createRow();
@@ -222,12 +195,27 @@ export class VirtualList<T> {
       this.pool.push(el);
     }
 
-    // Rows are anchored near the real (live) scrollTop -- not at their
-    // absolute logical offset (range.start*rowHeight could itself be
-    // tens of millions of pixels once scale < 1) -- and spaced by the
-    // true, unscaled rowHeight from there. That keeps every DOM `top`
-    // value bounded near the viewport, and rows exactly rowHeight apart
-    // with no overlap, regardless of how large `total` is.
+    // Always paint against the *live* scroll position, not the one this
+    // batch was fetched for -- an async fetchRange (the raw view's IPC
+    // round trip) can take long enough for the user to have kept
+    // scrolling in the meantime, unlike the debug tables' effectively
+    // instant in-memory slice. Positioning against a stale snapshot
+    // draws rows outside the now-current viewport, which is invisible --
+    // exactly the "content goes blank" symptom.
+    //
+    // This can mean the row *content* briefly lags the live position by
+    // a batch or two during sustained fast scrolling (this batch's data
+    // is for `range`, painted at wherever `live` currently is) -- that's
+    // an inherent tradeoff for a paged async source and self-corrects via
+    // the immediate re-fetch below. The alternative -- refusing to paint
+    // anything until a fetch lands *exactly* on the live position -- is
+    // strictly worse: it can never resolve at all if scrolling doesn't
+    // let up faster than one round trip, which is exactly what "totally
+    // busted" turned out to mean in practice (an earlier version of this
+    // code did that, gated on a fixed row-count overscan buffer that
+    // real scrolling blows through almost immediately once `scale < 1`
+    // compresses real pixels into many more logical rows per pixel).
+    const live = this.computeVisibleRange();
     const fractionalOffset = live.logicalScrollTop - live.firstVisible * rowHeight;
     const realTopOfFirstVisible = container.scrollTop - fractionalOffset * this.scale;
     const realTopOfStart = realTopOfFirstVisible - (live.firstVisible - range.start) * rowHeight;
@@ -243,6 +231,16 @@ export class VirtualList<T> {
     // grows back, never destroyed.
     for (let i = items.length; i < this.pool.length; i++) {
       this.pool[i].style.display = "none";
+    }
+
+    // The live position moved on while we were fetching -- go again
+    // immediately (not gated by onScroll's throttle) rather than waiting
+    // for another scroll event that might not come if the user has
+    // already stopped moving by now.
+    if (live.start !== range.start || live.end !== range.end) {
+      this.renderedStart = -1;
+      this.renderedEnd = -1;
+      void this.renderVisible();
     }
   }
 }
