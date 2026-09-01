@@ -73,11 +73,9 @@ interface RawEventRow {
   row: number;
   timestampMs: number;
   kind: string;
-  sourceName: string | null;
-  sourceGuid: string | null;
-  targetName: string | null;
-  targetGuid: string | null;
-  spellName: string | null;
+  sourceUnitId: number | null;
+  targetUnitId: number | null;
+  spellId: number | null;
   position: [number, number] | null;
   details: string;
 }
@@ -122,6 +120,15 @@ let lastCounts: DebugCounts | null = null;
 // stable for it, so a mismatch is the only signal that actually means
 // "the log changed, go refetch," not "the user switched tabs."
 let lastListsLineCount: number | null = null;
+
+// Backend intern ids (`GuidTable`/`SpellTable`) are dense and 0-indexed,
+// so `units[id]`/`spells[id]` is an O(1) lookup -- the raw view sends ids
+// (see RawEventRow) instead of resolved strings and resolves them
+// against these, set alongside lastCounts whenever debug_lists is
+// fetched. Avoids re-cloning the same handful of player/pet names on
+// every scroll tick, including rows already scrolled past.
+let unitsById: UnitRow[] = [];
+let spellsById: SpellRow[] = [];
 
 type ViewMode = "debug" | "raw";
 let currentViewMode: ViewMode = "debug";
@@ -215,6 +222,9 @@ function formatEncounterResult(e: EncounterRow): string {
 }
 
 function renderDebugLists(lists: DebugListsPayload): DebugCounts {
+  unitsById = lists.units;
+  spellsById = lists.spells;
+
   renderTable(
     "units",
     "1fr 100px 220px 220px",
@@ -360,11 +370,14 @@ function setRawCell(el: HTMLElement, text: string, clickable: boolean, tooltip?:
 function renderRawRow(r: RawEventRow, el: HTMLElement, index: number) {
   el.style.top = `${index * RAW_ROW_HEIGHT}px`;
   const [time, kind, source, target, spell, details] = Array.from(el.children) as HTMLElement[];
+  const sourceUnit = r.sourceUnitId !== null ? unitsById[r.sourceUnitId] : undefined;
+  const targetUnit = r.targetUnitId !== null ? unitsById[r.targetUnitId] : undefined;
+  const spellRow = r.spellId !== null ? spellsById[r.spellId] : undefined;
   setRawCell(time, formatRawTimestamp(r.timestampMs), false);
   setRawCell(kind, r.kind, false);
-  setRawCell(source, r.sourceName ?? "", r.sourceName !== null, r.sourceGuid ?? undefined);
-  setRawCell(target, r.targetName ?? "", r.targetName !== null, r.targetGuid ?? undefined);
-  setRawCell(spell, r.spellName ?? "", r.spellName !== null);
+  setRawCell(source, sourceUnit?.name ?? "", sourceUnit !== undefined, sourceUnit?.guid);
+  setRawCell(target, targetUnit?.name ?? "", targetUnit !== undefined, targetUnit?.guid);
+  setRawCell(spell, spellRow?.name ?? "", spellRow !== undefined);
   const position = r.position ? `[${r.position[0].toFixed(1)}, ${r.position[1].toFixed(1)}] ` : "";
   setRawCell(details, position + r.details, false, position + r.details);
 }

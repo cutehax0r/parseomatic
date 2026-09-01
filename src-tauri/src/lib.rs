@@ -641,17 +641,22 @@ fn debug_lists(window: WebviewWindow) -> Option<DebugListsPayload> {
     })
 }
 
+/// Carries raw intern ids rather than resolved name/GUID strings -- the
+/// frontend already holds the full unit/spell tables from `debug_lists`
+/// (fetched once per log, kept in memory), and those ids are dense and
+/// 0-indexed, i.e. exactly the array index into that payload's
+/// `units`/`spells` lists. Resolving here would mean re-cloning the same
+/// handful of player/pet names on every scroll tick, including ones
+/// already scrolled past (see docs/performance-concerns.md #4).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RawEventRow {
     row: usize,
     timestamp_ms: i64,
     kind: String,
-    source_name: Option<String>,
-    source_guid: Option<String>,
-    target_name: Option<String>,
-    target_guid: Option<String>,
-    spell_name: Option<String>,
+    source_unit_id: Option<u32>,
+    target_unit_id: Option<u32>,
+    spell_id: Option<u16>,
     position: Option<(f32, f32)>,
     details: String,
 }
@@ -663,17 +668,6 @@ struct RawEventRow {
 fn raw_event_count(window: WebviewWindow) -> Option<usize> {
     let log = current_log(&window)?;
     Some(log.data()?.events.len())
-}
-
-fn resolve_unit_row(tables: &parser::intern::InternTables, id: u32) -> (Option<String>, Option<String>) {
-    if id == NO_UNIT {
-        return (None, None);
-    }
-    let record = tables.guids.get(id);
-    (
-        Some(tables.strings.get(record.name_id).to_string()),
-        Some(record.guid.to_string()),
-    )
 }
 
 /// The 19-field advanced-params block's `positionX`/`positionY` sit at
@@ -704,19 +698,16 @@ fn extract_position(kind: LineKind, has_advanced: bool, raw: &[parser::tokenizer
 /// A page of raw events (`start..start+count`, clamped to the event
 /// count), in file order, for the raw view's virtual scroller -- never
 /// the whole event store at once, which for a multi-million-line log
-/// would be an enormous IPC payload. Resolving a row is O(1) array
-/// indexing into the already-parsed `GuidTable`/`StringTable`/`SpellTable`
-/// (per `docs/planning.md`'s design) plus a handful of string clones, so
-/// this comfortably stays fast even for a few hundred rows per call --
-/// no server-side caching needed, the frontend just calls again whenever
-/// the visible range changes.
+/// would be an enormous IPC payload. Unlike `debug_lists`, this returns
+/// raw intern ids rather than resolved strings (see `RawEventRow`), so
+/// there's no per-row table lookup or string cloning here at all -- just
+/// array indexing into the columnar `EventStore`.
 #[tauri::command]
 fn raw_events(window: WebviewWindow, start: usize, count: usize) -> Option<Vec<RawEventRow>> {
     let log = current_log(&window)?;
     let data = log.data()?;
     let mmap = log.mmap_bytes();
     let events = &data.events;
-    let tables = &data.tables;
 
     let end = (start + count).min(events.len());
     if start >= end {
@@ -725,10 +716,9 @@ fn raw_events(window: WebviewWindow, start: usize, count: usize) -> Option<Vec<R
 
     let rows = (start..end)
         .map(|row| {
-            let (source_name, source_guid) = resolve_unit_row(tables, events.source_unit[row]);
-            let (target_name, target_guid) = resolve_unit_row(tables, events.dest_unit[row]);
-            let spell_name = (events.spell[row] != NO_SPELL)
-                .then(|| tables.strings.get(tables.spells.get(events.spell[row]).name_id).to_string());
+            let source_unit_id = (events.source_unit[row] != NO_UNIT).then_some(events.source_unit[row]);
+            let target_unit_id = (events.dest_unit[row] != NO_UNIT).then_some(events.dest_unit[row]);
+            let spell_id = (events.spell[row] != NO_SPELL).then_some(events.spell[row]);
             let details = events
                 .raw_fields(row)
                 .iter()
@@ -740,11 +730,9 @@ fn raw_events(window: WebviewWindow, start: usize, count: usize) -> Option<Vec<R
                 row,
                 timestamp_ms: events.timestamp_ms[row],
                 kind: events.kind[row].label(),
-                source_name,
-                source_guid,
-                target_name,
-                target_guid,
-                spell_name,
+                source_unit_id,
+                target_unit_id,
+                spell_id,
                 position: extract_position(events.kind[row], events.has_advanced[row], events.raw_fields(row), mmap),
                 details,
             }
@@ -1013,26 +1001,30 @@ mod tests {
     }
 
     #[test]
-    fn resolve_unit_row_handles_present_and_absent_units() {
+    fn source_and_dest_unit_ids_reflect_the_no_unit_sentinel() {
         let (_, tables, store) = parse_lines(concat!(
             "7/25/2026 20:52:35.870-6  UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,",
             "Creature-0-1-1-1-1-1,\"Bloodworm\",0x2114,0x0,0\n"
         ));
 
-        // source is the zero-GUID sentinel on UNIT_DIED -> NO_UNIT -> (None, None).
-        let (source_name, source_guid) = resolve_unit_row(&tables, store.source_unit[0]);
-        assert_eq!(source_name, None);
-        assert_eq!(source_guid, None);
+        // source is the zero-GUID sentinel on UNIT_DIED -> NO_UNIT. raw_events
+        // passes this straight through as `None`; the frontend never sees a
+        // resolved id for it.
+        assert_eq!(store.source_unit[0], NO_UNIT);
 
-        let (target_name, target_guid) = resolve_unit_row(&tables, store.dest_unit[0]);
-        assert_eq!(target_name.as_deref(), Some("Bloodworm"));
-        assert!(target_guid.unwrap().starts_with("Creature-0-1-1-1-1-1"));
+        let dest_id = store.dest_unit[0];
+        assert_ne!(dest_id, NO_UNIT);
+        let record = tables.guids.get(dest_id);
+        assert_eq!(tables.strings.get(record.name_id), "Bloodworm");
+        assert!(record.guid.starts_with("Creature-0-1-1-1-1-1"));
     }
 
-    /// Sweeps `extract_position`/`resolve_unit_row` -- the same logic
-    /// `raw_events` uses per row -- across every row of the real 547MB
-    /// fixture, same style as `parser::mod::tests`'s ignored full-file
-    /// test. Confirms no panics (the real risk here: `raw_fields` shorter
+    /// Sweeps every row of the real 547MB fixture, indexing `GuidTable`/
+    /// `SpellTable` by whatever id `raw_events` would hand the frontend
+    /// (skipping the `NO_UNIT`/`NO_SPELL` sentinels, same as `raw_events`
+    /// does) and calling `extract_position` -- same style as
+    /// `parser::mod::tests`'s ignored full-file test. Confirms no panics
+    /// (the real risk: an id somehow out of range, or `raw_fields` shorter
     /// than expected for some prefix/suffix combination the smaller unit
     /// tests didn't happen to cover) and spot-checks the one row whose
     /// content is already known (the file's own first line).
@@ -1053,8 +1045,15 @@ mod tests {
         assert_eq!(events.kind[0].label(), "COMBAT_LOG_VERSION");
 
         for row in 0..events.len() {
-            let _ = resolve_unit_row(tables, events.source_unit[row]);
-            let _ = resolve_unit_row(tables, events.dest_unit[row]);
+            if events.source_unit[row] != NO_UNIT {
+                tables.guids.get(events.source_unit[row]);
+            }
+            if events.dest_unit[row] != NO_UNIT {
+                tables.guids.get(events.dest_unit[row]);
+            }
+            if events.spell[row] != NO_SPELL {
+                tables.spells.get(events.spell[row]);
+            }
             let _ = extract_position(events.kind[row], events.has_advanced[row], events.raw_fields(row), mmap);
         }
         println!("resolved all {} rows without panicking", events.len());
