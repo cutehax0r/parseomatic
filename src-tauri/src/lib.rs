@@ -375,6 +375,29 @@ fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
     Some(window)
 }
 
+/// Opens the singleton Settings window, focusing it if one's already open
+/// rather than creating a second -- standard Preferences-window behavior.
+/// Must not be called synchronously on the main thread, same caveat as
+/// create_empty_window (WebviewWindowBuilder::build() deadlocks there on
+/// Windows). Unlike create_empty_window, this window isn't attached to any
+/// log -- no WindowLogs entry, no drag-drop/close-cleanup registration --
+/// since it never shows one.
+fn open_settings_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.set_focus();
+        return;
+    }
+
+    let _ = tauri::WebviewWindowBuilder::new(
+        app,
+        "settings",
+        tauri::WebviewUrl::App("settings.html".into()),
+    )
+    .title("Settings")
+    .inner_size(420.0, 320.0)
+    .build();
+}
+
 /// Opens a new window sharing the same Arc<ParsedLog> as `window` -- zero
 /// re-parsing, just a refcount bump. Must not be called synchronously on
 /// the main thread, same caveat as create_empty_window.
@@ -821,8 +844,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri
 
     #[cfg(target_os = "macos")]
     {
+        let settings_item =
+            MenuItem::with_id(app, "open_settings", "Settings...", true, Some("CmdOrCtrl+,"))?;
         let app_menu = SubmenuBuilder::new(app, "parseomatic")
             .about(None)
+            .separator()
+            .item(&settings_item)
             .separator()
             .services()
             .separator()
@@ -904,6 +931,9 @@ pub fn run() {
                 if let Some(window) = focused_webview_window(app) {
                     std::thread::spawn(move || spawn_sibling_window(&window));
                 }
+            } else if event.id() == "open_settings" {
+                let app = app.clone();
+                std::thread::spawn(move || open_settings_window(&app));
             } else if event.id() == "view_debug" || event.id() == "view_raw" {
                 // No window creation involved -- state mutation + an
                 // event emit, both cheap and non-blocking, so this runs

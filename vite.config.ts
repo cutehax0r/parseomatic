@@ -27,4 +27,17 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+
+  // Multi-page build: the Settings window is a second, separate HTML entry
+  // point (settings.html), not a route within the main index.html -- kept
+  // as its own minimal page rather than teaching the log-viewer's chrome
+  // to also render a settings UI. Input paths resolve relative to root.
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        settings: "settings.html",
+      },
+    },
+  },
 }));
