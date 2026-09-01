@@ -207,7 +207,14 @@ fn apply_window_chrome(window: WebviewWindow, log: Arc<ParsedLog>) {
     });
 }
 
-fn show_parse_error(window: &WebviewWindow, path: &Path) {
+/// `get_or_parse`'s `Err` path only ever comes from `canonicalize`/
+/// `metadata`/`File::open`/`Mmap::map` -- i.e. the file couldn't be
+/// *opened* (missing, bad path, permissions). Actual combat-log content
+/// is parsed leniently in the background and never fails synchronously,
+/// so this is never a real "parse" error -- the dialog says "opened" and
+/// surfaces the OS's reason (e.g. "No such file or directory") so a bad
+/// relative path is obviously a bad path, not a mysterious parse failure.
+fn show_open_error(window: &WebviewWindow, path: &Path, err: &std::io::Error) {
     let filename = path
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
@@ -215,8 +222,8 @@ fn show_parse_error(window: &WebviewWindow, path: &Path) {
     window
         .app_handle()
         .dialog()
-        .message(format!("\"{filename}\" could not be parsed."))
-        .title("Cannot Parse File")
+        .message(format!("\"{filename}\" could not be opened: {err}"))
+        .title("Cannot Open File")
         .kind(MessageDialogKind::Error)
         .parent(window)
         .show(|_| {});
@@ -237,7 +244,7 @@ fn open_path_in_window(window: &WebviewWindow, path: &Path) {
             attach_window_to_log(window, log.clone());
             apply_window_chrome(window.clone(), log);
         }
-        Err(_) => show_parse_error(window, path),
+        Err(err) => show_open_error(window, path, &err),
     }
 }
 
