@@ -40,12 +40,28 @@ export interface VirtualListOptions<T> {
 const DEFAULT_OVERSCAN = 10;
 const DEFAULT_MIN_RENDER_INTERVAL_MS = 80;
 
+// Browsers cap how tall a single element's layout box can be -- WebKit's
+// practical limit is well under what a many-million-row fixture needs
+// at rowHeight px/row (1.8M rows * 24px is ~43M px). Past that limit,
+// `scrollTop` stops tracking drag/wheel input reliably: the scrollbar
+// thumb still moves, but the value the browser reports gets clamped or
+// stuck, which is exactly the "drag jumps once, then further scrolling
+// gets stuck" bug this constant exists to avoid. The spacer's real DOM
+// height is capped here, comfortably under that ceiling, and scrollTop
+// is treated as a *proportional* position within the logical range
+// rather than a literal pixel offset into it (see `renderVisible`).
+const MAX_SPACER_HEIGHT = 8_000_000;
+
 export class VirtualList<T> {
   private readonly opts: Required<VirtualListOptions<T>>;
   private pool: HTMLElement[] = [];
   private renderedStart = -1;
   private renderedEnd = -1;
   private total = 0;
+  // spacerHeight / logicalHeight. 1 when the list is small enough that
+  // the spacer didn't need capping -- scrollTop then equals the logical
+  // position exactly, same as before this existed.
+  private scale = 1;
   private scrollScheduled = false;
   // performance.now() of the last renderVisible() call triggered by
   // scrolling -- the debounce clock for onScroll (see below). Explicit
@@ -69,7 +85,10 @@ export class VirtualList<T> {
   /** Resizes the spacer for a new total row count and forces a fresh render. */
   setTotal(total: number): void {
     this.total = total;
-    this.opts.spacer.style.height = `${total * this.opts.rowHeight}px`;
+    const logicalHeight = total * this.opts.rowHeight;
+    const spacerHeight = Math.min(logicalHeight, MAX_SPACER_HEIGHT);
+    this.scale = logicalHeight > 0 ? spacerHeight / logicalHeight : 1;
+    this.opts.spacer.style.height = `${spacerHeight}px`;
     this.forceRerender();
   }
 
@@ -128,8 +147,12 @@ export class VirtualList<T> {
       return;
     }
 
-    const firstVisible = Math.floor(container.scrollTop / rowHeight);
-    const lastVisible = Math.ceil((container.scrollTop + container.clientHeight) / rowHeight);
+    // scrollTop is real DOM pixels within the (possibly capped) spacer;
+    // dividing by `scale` maps it back to the logical row-space position
+    // it represents proportionally.
+    const logicalScrollTop = container.scrollTop / this.scale;
+    const firstVisible = Math.floor(logicalScrollTop / rowHeight);
+    const lastVisible = Math.ceil((logicalScrollTop + container.clientHeight) / rowHeight);
     const start = Math.max(0, firstVisible - overscan);
     const end = Math.min(this.total, lastVisible + overscan);
 
@@ -148,10 +171,19 @@ export class VirtualList<T> {
       this.pool.push(el);
     }
 
+    // Rows are anchored near the real scrollTop -- not at their absolute
+    // logical offset (start*rowHeight could itself be tens of millions
+    // of pixels once scale < 1) -- and spaced by the true, unscaled
+    // rowHeight from there. That keeps every DOM `top` value bounded
+    // near the viewport, and rows exactly rowHeight apart with no
+    // overlap, regardless of how large `total` is.
+    const fractionalOffset = logicalScrollTop - firstVisible * rowHeight;
+    const realTopOfFirstVisible = container.scrollTop - fractionalOffset * this.scale;
+    const realTopOfStart = realTopOfFirstVisible - (firstVisible - start) * rowHeight;
     items.forEach((item, i) => {
       const el = this.pool[i];
       el.style.display = "";
-      el.style.top = `${(start + i) * rowHeight}px`;
+      el.style.top = `${realTopOfStart + i * rowHeight}px`;
       renderRow(item, el, start + i);
     });
 
