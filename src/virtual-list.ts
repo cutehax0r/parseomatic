@@ -27,6 +27,8 @@ export interface VirtualListOptions<T> {
   rowHeight: number;
   /** Extra rows rendered above/below the visible range so small scrolls don't need a refetch. */
   overscan?: number;
+  /** Minimum time between fetches while actively scrolling (ms). A fast drag or a "jump to row" moves the visible range on nearly every frame; without this, each of those frames fires its own `fetchRange` (an IPC round trip for an async source) that's immediately superseded by the next. Doesn't add latency once the range settles -- the final position always renders, at worst this many ms after the last scroll event. */
+  minRenderIntervalMs?: number;
   /** Builds one row element. Called only when the recycle pool needs to grow. */
   createRow: () => HTMLElement;
   /** Updates an existing (possibly reused) row element's content for `item`. */
@@ -36,6 +38,7 @@ export interface VirtualListOptions<T> {
 }
 
 const DEFAULT_OVERSCAN = 10;
+const DEFAULT_MIN_RENDER_INTERVAL_MS = 80;
 
 export class VirtualList<T> {
   private readonly opts: Required<VirtualListOptions<T>>;
@@ -44,13 +47,22 @@ export class VirtualList<T> {
   private renderedEnd = -1;
   private total = 0;
   private scrollScheduled = false;
+  // performance.now() of the last renderVisible() call triggered by
+  // scrolling -- the debounce clock for onScroll (see below). Explicit
+  // refreshes (setTotal/refresh) bypass this entirely; only scroll-driven
+  // renders should ever be throttled.
+  private lastScrollRenderAt = 0;
+  // Set when a scroll arrives before minRenderIntervalMs has elapsed
+  // since the last render -- guarantees the range still settles onto its
+  // final position even if scroll events stop arriving mid-window.
+  private trailingTimer: ReturnType<typeof setTimeout> | null = null;
   // Bumped on every fetch so a slow, superseded fetchRange response can't
   // clobber a newer one that already landed (scroll fast enough with an
   // async source and two requests can resolve out of order).
   private fetchToken = 0;
 
   constructor(opts: VirtualListOptions<T>) {
-    this.opts = { overscan: DEFAULT_OVERSCAN, ...opts };
+    this.opts = { overscan: DEFAULT_OVERSCAN, minRenderIntervalMs: DEFAULT_MIN_RENDER_INTERVAL_MS, ...opts };
     this.opts.container.addEventListener("scroll", () => this.onScroll());
   }
 
@@ -67,16 +79,43 @@ export class VirtualList<T> {
   }
 
   private forceRerender(): void {
+    if (this.trailingTimer !== null) {
+      clearTimeout(this.trailingTimer);
+      this.trailingTimer = null;
+    }
     this.renderedStart = -1;
     this.renderedEnd = -1;
     void this.renderVisible();
   }
 
+  // Throttles renderVisible() (and the fetch it may do) to at most once
+  // per minRenderIntervalMs while the user is actively scrolling, with a
+  // trailing call so the final scroll position always renders. This is
+  // on top of, not instead of, the rAF scheduling below -- rAF alone
+  // still lets a fast drag fire a fetch on nearly every frame, since the
+  // visible range keeps moving; this caps how often that fetch actually
+  // happens, independent of frame rate.
   private onScroll(): void {
+    const now = performance.now();
+    const elapsed = now - this.lastScrollRenderAt;
+    if (elapsed >= this.opts.minRenderIntervalMs) {
+      this.scheduleRender();
+      return;
+    }
+    if (this.trailingTimer === null) {
+      this.trailingTimer = setTimeout(() => {
+        this.trailingTimer = null;
+        this.scheduleRender();
+      }, this.opts.minRenderIntervalMs - elapsed);
+    }
+  }
+
+  private scheduleRender(): void {
     if (this.scrollScheduled) return;
     this.scrollScheduled = true;
     requestAnimationFrame(() => {
       this.scrollScheduled = false;
+      this.lastScrollRenderAt = performance.now();
       void this.renderVisible();
     });
   }
