@@ -128,30 +128,76 @@ let currentViewMode: ViewMode = "debug";
 
 const RAW_ROW_HEIGHT = 24;
 
-function makeRow(cells: string[]): HTMLTableRowElement {
-  const tr = document.createElement("tr");
-  for (const text of cells) {
-    const td = document.createElement("td");
-    td.textContent = text;
-    tr.appendChild(td);
-  }
-  return tr;
+const DATA_ROW_HEIGHT = 24;
+
+// One VirtualList<string[]> per debug tab, keyed by tab id (e.g.
+// "players"). Every tab's data is small enough to hold entirely in
+// memory (unlike the raw view's 1.8M rows), so `fetchRange` just slices
+// `rows` -- the same recycling-row machinery still avoids the ~6k real
+// DOM rows that made these tables the raw view's next-worst offender
+// (see docs/performance-concerns.md #1).
+const debugTables = new Map<string, { list: VirtualList<string[]>; rows: string[][] }>();
+
+function getOrCreateDebugTable(tabKey: string, gridColumns: string): { list: VirtualList<string[]>; rows: string[][] } {
+  const existing = debugTables.get(tabKey);
+  if (existing) return existing;
+
+  const container = document.querySelector<HTMLElement>(`#${tabKey}-scroll`);
+  const spacer = document.querySelector<HTMLElement>(`#${tabKey}-spacer`);
+  const rowsContainer = document.querySelector<HTMLElement>(`#${tabKey}-rows`);
+  const header = document.querySelector<HTMLElement>(`#${tabKey}-header`);
+  if (!container || !spacer || !rowsContainer) throw new Error(`debug table DOM missing for "${tabKey}"`);
+
+  container.style.setProperty("--cols", gridColumns);
+  header?.style.setProperty("--cols", gridColumns);
+
+  const state = { rows: [] as string[][], list: null as unknown as VirtualList<string[]> };
+  state.list = new VirtualList<string[]>({
+    container,
+    spacer,
+    rowsContainer,
+    rowHeight: DATA_ROW_HEIGHT,
+    createRow: () => {
+      const div = document.createElement("div");
+      div.className = "data-row";
+      return div;
+    },
+    renderRow: (cells, el, index) => {
+      el.style.top = `${index * DATA_ROW_HEIGHT}px`;
+      if (el.children.length !== cells.length) {
+        el.replaceChildren(
+          ...cells.map(() => {
+            const span = document.createElement("span");
+            span.className = "data-col";
+            return span;
+          }),
+        );
+      }
+      cells.forEach((text, i) => {
+        (el.children[i] as HTMLElement).textContent = text;
+      });
+    },
+    fetchRange: (start, count) => state.rows.slice(start, start + count),
+  });
+
+  debugTables.set(tabKey, state);
+  return state;
 }
 
-function renderTable(bodyId: string, rows: string[][], columnCount: number, emptyMessage: string) {
-  const body = document.querySelector(`#${bodyId}`);
-  if (!body) return;
-  if (rows.length === 0) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = columnCount;
-    td.className = "empty-message";
-    td.textContent = emptyMessage;
-    tr.appendChild(td);
-    body.replaceChildren(tr);
-    return;
+function renderTable(tabKey: string, gridColumns: string, rows: string[][], emptyMessage: string) {
+  const table = getOrCreateDebugTable(tabKey, gridColumns);
+  table.rows = rows;
+
+  const emptyEl = document.querySelector<HTMLElement>(`#${tabKey}-empty`);
+  const scrollEl = document.querySelector<HTMLElement>(`#${tabKey}-scroll`);
+  const isEmpty = rows.length === 0;
+  if (emptyEl) {
+    emptyEl.hidden = !isEmpty;
+    emptyEl.textContent = emptyMessage;
   }
-  body.replaceChildren(...rows.map(makeRow));
+  if (scrollEl) scrollEl.hidden = isEmpty;
+
+  table.list.setTotal(rows.length);
 }
 
 function formatDuration(ms: number): string {
@@ -170,21 +216,21 @@ function formatEncounterResult(e: EncounterRow): string {
 
 function renderDebugLists(lists: DebugListsPayload): DebugCounts {
   renderTable(
-    "units-body",
+    "units",
+    "1fr 100px 220px 220px",
     lists.units.map((u) => [u.name, u.kind, u.owner ?? "", u.guid]),
-    4,
     "No units found in this log.",
   );
   renderTable(
-    "spells-body",
+    "spells",
+    "1fr 120px 100px",
     lists.spells.map((s) => [s.name, String(s.spellId), "0x" + s.school.toString(16)]),
-    3,
     "No spells found in this log.",
   );
   renderTable(
-    "zones-body",
+    "zones",
+    "1fr 120px",
     lists.zones.map((z) => [z.name, String(z.mapId)]),
-    2,
     "No zones found in this log.",
   );
 
@@ -201,43 +247,44 @@ function renderDebugLists(lists: DebugListsPayload): DebugCounts {
   const creatures = lists.units.filter((u) => u.kind === "Creature" && !isPlayerOwned(u));
 
   renderTable(
-    "players-body",
+    "players",
+    "1fr 320px",
     players.map((u) => [u.name, u.guid]),
-    2,
     "No players found in this log.",
   );
   renderTable(
-    "pets-body",
+    "pets",
+    "1fr 100px 220px 220px",
     pets.map((u) => [u.name, u.kind, u.owner ?? "", u.guid]),
-    4,
     "No player-owned pets found in this log.",
   );
   renderTable(
-    "creatures-body",
+    "creatures",
+    "1fr 100px 220px 220px",
     creatures.map((u) => [u.name, u.kind, u.owner ?? "", u.guid]),
-    4,
     "No creatures found in this log.",
   );
 
   renderTable(
-    "encounters-body",
+    "encounters",
+    "1fr 100px 120px 120px",
     lists.encounters.map((e) => [
       e.isTrash ? "Trash" : e.name,
       formatEncounterResult(e),
       formatDuration(e.durationMs),
       e.isTrash ? "" : String(e.groupSize),
     ]),
-    4,
     "No encounters found in this log.",
   );
   renderTable(
-    "deaths-body",
+    "deaths",
+    "1fr 1fr 140px",
     lists.deaths.map((d) => [d.playerName, d.encounterName, new Date(d.timestampMs).toLocaleTimeString()]),
-    3,
     "No player deaths found in this log.",
   );
   renderTable(
-    "gear-body",
+    "gear",
+    "1fr 1fr 100px 140px 100px",
     lists.combatants.map((c) => [
       c.playerName,
       c.encounterName,
@@ -245,7 +292,6 @@ function renderDebugLists(lists: DebugListsPayload): DebugCounts {
       c.avgItemLevel !== null ? c.avgItemLevel.toFixed(1) : "",
       String(c.itemCount),
     ]),
-    5,
     "No COMBATANT_INFO lines found in this log -- spec/gear snapshots aren't available for this capture.",
   );
 
@@ -443,6 +489,11 @@ async function refreshStatus() {
   rawView.hidden = currentViewMode !== "raw";
   if (currentViewMode === "raw") {
     await loadRawView();
+  } else {
+    // The active tab's scroll container had clientHeight 0 while the
+    // whole debug view was hidden (e.g. we were showing Raw) -- force a
+    // re-measure now that it's visible again.
+    debugTables.get(activeTabKey())?.list.refresh();
   }
 }
 
@@ -455,6 +506,10 @@ function setupTabs() {
       document.querySelectorAll<HTMLElement>(".tab-panel").forEach((panel) => {
         panel.hidden = panel.dataset.panel !== btn.dataset.tab;
       });
+      // The now-visible panel's scroll container had clientHeight 0 while
+      // hidden, so whatever VirtualList last computed from that is stale --
+      // force it to re-measure against its real height now.
+      if (btn.dataset.tab) debugTables.get(btn.dataset.tab)?.list.refresh();
       updateSummaryText();
     });
   });

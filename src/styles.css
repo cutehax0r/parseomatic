@@ -206,36 +206,88 @@ body {
 
 .tab-panels {
   flex: 1;
-  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .tab-panel[hidden] {
   display: none;
 }
 
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
+/* Virtualized debug-tab tables -- same row-recycling VirtualList and the
+   same absolute-positioned-rows-in-a-tall-spacer approach as the raw
+   view (src/virtual-list.ts), just with a per-tab column layout instead
+   of a fixed one. Each tab-panel's `.data-scroll` sets `--cols` inline
+   (see main.ts) so `.data-header`/`.data-row` share one grid template. */
+.data-header,
+.data-row {
+  display: grid;
+  grid-template-columns: var(--cols);
+  gap: 10px;
+  padding: 0 10px;
+  align-items: center;
 }
 
-.data-table th {
-  position: sticky;
-  top: 0;
-  text-align: left;
-  padding: 6px 10px;
+.data-header {
+  flex-shrink: 0;
+  height: 28px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
   background-color: var(--bg-elevated);
   border-bottom: 1px solid var(--border-strong);
 }
 
-.data-table td {
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
+.data-scroll {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
-.data-table tbody tr:hover {
+.data-scroll[hidden] {
+  display: none;
+}
+
+.data-spacer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+}
+
+.data-rows {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.data-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 24px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-row:hover {
   background-color: var(--bg-hover);
+}
+
+.data-col {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .empty-message {
@@ -246,8 +298,8 @@ body {
   text-align: center;
 }
 
-.data-table tbody tr:has(.empty-message):hover {
-  background-color: transparent;
+.empty-message[hidden] {
+  display: none;
 }
 
 .statusbar {

@@ -111,116 +111,116 @@
         </div>
         <div class="tab-panels">
           <div class="tab-panel" data-panel="players">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>GUID</th>
-                </tr>
-              </thead>
-              <tbody id="players-body"></tbody>
-            </table>
+            <div id="players-header" class="data-header">
+              <span class="data-col">Name</span>
+              <span class="data-col">GUID</span>
+            </div>
+            <p id="players-empty" class="empty-message" hidden></p>
+            <div id="players-scroll" class="data-scroll">
+              <div id="players-spacer" class="data-spacer"></div>
+              <div id="players-rows" class="data-rows"></div>
+            </div>
           </div>
           <div class="tab-panel" data-panel="pets" hidden>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Kind</th>
-                  <th>Owner</th>
-                  <th>GUID</th>
-                </tr>
-              </thead>
-              <tbody id="pets-body"></tbody>
-            </table>
+            <div id="pets-header" class="data-header">
+              <span class="data-col">Name</span>
+              <span class="data-col">Kind</span>
+              <span class="data-col">Owner</span>
+              <span class="data-col">GUID</span>
+            </div>
+            <p id="pets-empty" class="empty-message" hidden></p>
+            <div id="pets-scroll" class="data-scroll">
+              <div id="pets-spacer" class="data-spacer"></div>
+              <div id="pets-rows" class="data-rows"></div>
+            </div>
           </div>
           <div class="tab-panel" data-panel="creatures" hidden>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Kind</th>
-                  <th>Owner</th>
-                  <th>GUID</th>
-                </tr>
-              </thead>
-              <tbody id="creatures-body"></tbody>
-            </table>
+            <div id="creatures-header" class="data-header">
+              <span class="data-col">Name</span>
+              <span class="data-col">Kind</span>
+              <span class="data-col">Owner</span>
+              <span class="data-col">GUID</span>
+            </div>
+            <p id="creatures-empty" class="empty-message" hidden></p>
+            <div id="creatures-scroll" class="data-scroll">
+              <div id="creatures-spacer" class="data-spacer"></div>
+              <div id="creatures-rows" class="data-rows"></div>
+            </div>
           </div>
           <div class="tab-panel" data-panel="units" hidden>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Kind</th>
-                  <th>Owner</th>
-                  <th>GUID</th>
-                </tr>
-              </thead>
-              <tbody id="units-body"></tbody>
-            </table>
+            <div id="units-header" class="data-header">
+              <span class="data-col">Name</span>
+              <span class="data-col">Kind</span>
+              <span class="data-col">Owner</span>
+              <span class="data-col">GUID</span>
+            </div>
+            <p id="units-empty" class="empty-message" hidden></p>
+            <div id="units-scroll" class="data-scroll">
+              <div id="units-spacer" class="data-spacer"></div>
+              <div id="units-rows" class="data-rows"></div>
+            </div>
           </div>
           <div class="tab-panel" data-panel="spells" hidden>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Spell ID</th>
-                  <th>School</th>
-                </tr>
-              </thead>
-              <tbody id="spells-body"></tbody>
-            </table>
+            <div id="spells-header" class="data-header">
+              <span class="data-col">Name</span>
+              <span class="data-col">Spell ID</span>
+              <span class="data-col">School</span>
+            </div>
+            <p id="spells-empty" class="empty-message" hidden></p>
+            <div id="spells-scroll" class="data-scroll">
+              <div id="spells-spacer" class="data-spacer"></div>
+              <div id="spells-rows" class="data-rows"></div>
+            </div>
           </div>
           <div class="tab-panel" data-panel="zones" hidden>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Map ID</th>
-                </tr>
-              </thead>
-              <tbody id="zones-body"></tbody>
-            </table>
+            <div id="zones-header" class="data-header">
+              <span class="data-col">Name</span>
+              <span class="data-col">Map ID</span>
+            </div>
+            <p id="zones-empty" class="empty-message" hidden></p>
+            <div id="zones-scroll" class="data-scroll">
+              <div id="zones-spacer" class="data-spacer"></div>
+              <div id="zones-rows" class="data-rows"></div>
+            </div>
           </div>
           <div class="tab-panel" data-panel="encounters" hidden>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Result</th>
-                  <th>Duration</th>
-                  <th>Group Size</th>
-                </tr>
-              </thead>
-              <tbody id="encounters-body"></tbody>
-            </table>
+            <div id="encounters-header" class="data-header">
+              <span class="data-col">Name</span>
+              <span class="data-col">Result</span>
+              <span class="data-col">Duration</span>
+              <span class="data-col">Group Size</span>
+            </div>
+            <p id="encounters-empty" class="empty-message" hidden></p>
+            <div id="encounters-scroll" class="data-scroll">
+              <div id="encounters-spacer" class="data-spacer"></div>
+              <div id="encounters-rows" class="data-rows"></div>
+            </div>
           </div>
           <div class="tab-panel" data-panel="deaths" hidden>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Player</th>
-                  <th>Encounter</th>
-                  <th>Time</th>
-                </tr>
-              </thead>
-              <tbody id="deaths-body"></tbody>
-            </table>
+            <div id="deaths-header" class="data-header">
+              <span class="data-col">Player</span>
+              <span class="data-col">Encounter</span>
+              <span class="data-col">Time</span>
+            </div>
+            <p id="deaths-empty" class="empty-message" hidden></p>
+            <div id="deaths-scroll" class="data-scroll">
+              <div id="deaths-spacer" class="data-spacer"></div>
+              <div id="deaths-rows" class="data-rows"></div>
+            </div>
           </div>
           <div class="tab-panel" data-panel="gear" hidden>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Player</th>
-                  <th>Encounter</th>
-                  <th>Spec ID</th>
-                  <th>Avg Item Level</th>
-                  <th>Items</th>
-                </tr>
-              </thead>
-              <tbody id="gear-body"></tbody>
-            </table>
+            <div id="gear-header" class="data-header">
+              <span class="data-col">Player</span>
+              <span class="data-col">Encounter</span>
+              <span class="data-col">Spec ID</span>
+              <span class="data-col">Avg Item Level</span>
+              <span class="data-col">Items</span>
+            </div>
+            <p id="gear-empty" class="empty-message" hidden></p>
+            <div id="gear-scroll" class="data-scroll">
+              <div id="gear-spacer" class="data-spacer"></div>
+              <div id="gear-rows" class="data-rows"></div>
+            </div>
           </div>
         </div>
       </div>
