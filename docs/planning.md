@@ -102,6 +102,8 @@ To avoid replaying from zero on every jump, keep **periodic full-state snapshots
 
 ## Views
 
+> **Status** (see `docs/status.md` for the full picture): view 1 is built, as two separate views rather than one — a tabbed summary table ("Debug": players/units/spells/zones/encounters/deaths/gear) and the raw event stream in file order ("Raw"), both virtualized (`src/virtual-list.ts`). Views 2-4 below are still just this plan; nothing built yet. The encounter dropdown/scrubber and the "auto-scrolling right-hand panel" reframing described in view 1 haven't been built either — worth revisiting when UI work resumes, since the raw view already has the virtualized-table piece that'd need.
+
 ### 1. Log table
 Scrollable, virtualized table of parsed log lines. Dropdown to select an encounter; scrubber to jump to a time within it. Since the encounter's parsed vector is already in memory, scrubbing is just re-slicing a vector by index.
 

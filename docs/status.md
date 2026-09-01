@@ -1,37 +1,54 @@
 # Status
 
-Where the project stands, for picking this back up in a fresh conversation. For *how* things work, see `planning.md` (overall architecture/design decisions) and `windows-and-files.md` (multi-window/file-open implementation detail) — this doc is just "what's done, what's not."
+Where the project stands, for picking this back up in a fresh conversation. For *how* things work, see `planning.md` (overall architecture/design decisions), `windows-and-files.md` (multi-window/file-open implementation detail), and `performance-concerns.md` (a tracked list of scaling concerns and their fixes) — this doc is just "what's done, what's not."
 
 ## Stack
 
-Tauri (Rust) + vanilla TypeScript + Vite + Bun. No UI framework. Native installs via Homebrew (`rustup`, `bun`, Xcode CLT) — no Docker/Podman, that was tried and dropped. `make` is the front end to everything (`make help` for the list); `make run` for dev, `make build` for a release bundle.
+Tauri (Rust) + vanilla TypeScript + Vite + Bun. No UI framework. Native installs via Homebrew (`rustup`, `bun`, Xcode CLT) — no Docker/Podman, that was tried and dropped. `make` is the front end to everything (`make help` for the list); `make run [FILE]` for dev (optionally skipping the open dialog), `make build` for a release bundle, `make uninstall` to unregister a built `.app` from macOS Launch Services (see Known constraints).
 
-## What's built (commit history so far)
+## What's built
 
-1. **Basic planning and infrastructure** — `docs/planning.md` (architecture decisions), release automation (`make release`, GitHub Actions), README.
-2. **Scaffold app** — Tauri + Bun + Vite skeleton via `create-tauri-app`.
-3. **Opening files and attaching windows** — the multi-window architecture. Full detail in `docs/windows-and-files.md`; short version:
-   - File > Open / toolbar / drag-and-drop (onto a window, and onto the Dock icon) all open files.
-   - Multiple windows can share one file's data via `Arc<ParsedLog>` — opening the same file twice never re-reads it, and "New Window" spawns a sibling view of the *current* file with zero re-parsing (verified with real instrumentation, not just code review).
-   - A file's data is freed automatically once the last window showing it closes (plain Rust `Arc`/`Weak` ownership, no manual refcounting).
-   - App stays running with zero windows open on macOS (Dock reopens it); launches straight into the open dialog.
-   - `parseomatic <path>` opens a file directly from the command line, skipping the dialog (also how this project's automated testing works, since the native file picker can't be driven reliably by an agent).
-   - Failed opens show an error dialog and leave the target window's state untouched.
-4. **Basic parsing is in** — `src-tauri/src/parser.rs`. Still just a placeholder for real parsing (`ParsedLog` = path + line count, nothing structural yet), but the counting itself is real and fast: mmap the file, split into newline-aligned chunks (~filesize/numcpus, capped at 1MB), count each chunk in parallel with `rayon` + `memchr`. **12ms for a 547MB/1.8M-line file** — faster than `rg -c '$'` itself. Counting runs in the background so the window appears instantly regardless of file size; a status bar shows live progress and hides when done (only visible in practice for files slow enough to need it, which the test file no longer is).
+### Parsing (`src-tauri/src/parser/`)
+The real thing, not a placeholder — matches `planning.md`'s design:
+- **`tokenizer.rs`** — bytewise field splitting (no regex), quote/bracket-nesting aware, hand-rolled timestamp parsing.
+- **`intern.rs`** — `StringTable`/`GuidTable`/`SpellTable`/`ZoneTable`, per-table ID widths (u32 GUIDs, u16 names/spells/zones), two-level unit interning (GUID → name) so same-named units keep distinct IDs.
+- **`event.rs`** — the prefix/suffix/standalone classification and line parser; `EventStore` is columnar (struct-of-arrays) with a shared arena for raw field spans (no per-event heap allocation).
+- **`reports.rs`** — encounter pairing (with synthesized "Trash" spans for gaps and malformed-log handling per `planning.md`), player death tracking, `COMBATANT_INFO` spec/gear parsing.
+- **`mod.rs`** — mmap + parallel chunked parse (rayon) + sequential merge; a 547MB/1.8M-line real fixture parses in the background without blocking window creation.
+
+### Frontend — two views, both fully virtualized
+Sharing one generic recycling `VirtualList<T>` (`src/virtual-list.ts`) — row pooling instead of destroy/recreate, throttled scroll-driven fetches, and (for very large logs) a spacer-height cap with scroll position treated as proportional rather than literal, since real element heights hit a browser ceiling well under what a multi-million-row log needs.
+
+- **Debug view** — 9 tabs: Players, Pets (player-owned only), Creatures, Units, Spells, Zones, Encounters, Deaths, Gear. Backed by `debug_lists`, which is fetched once per log and cached client-side (skipped on view-only changes).
+- **Raw view** — the event stream in file order (time/kind/source/target/spell/details), paged from `raw_events`. Sends numeric unit/spell IDs rather than resolved strings; the frontend resolves them against the already-cached `debug_lists` arrays (dense, index-aligned IDs) instead of re-fetching/re-cloning the same handful of names on every scroll.
+
+### Window chrome
+- **Toolbar** — grouped rounded-rect buttons (open / new window | Debug / Raw), `aria-pressed` for the active view.
+- **View menu** — Debug/Raw as a proper radio group, kept in sync with the toolbar and with per-window state (each window remembers its own view; switching focus re-syncs the menu).
+- **Window menu** — standard-issue macOS: Minimize/Zoom/Toggle Full Screen/Bring All to Front explicit, plus the full native treatment (window list with checkmark, Move & Resize submenu, Fill/Center, Full Screen Tile) via registering the submenu as the app's official windows menu.
+- **Multi-window / file handling** — unchanged from `windows-and-files.md`'s design, now operating on the real `ParsedLog` (parsed data + retained mmap) instead of the placeholder it originally described.
+- Catppuccin Macchiato theme throughout.
+
+### Performance
+Every high/medium-impact item tracked in `performance-concerns.md` is resolved (virtualized rows, shared arena, id-based lookups, throttled fetches, reduced lock hold time, skipped redundant refetches). Only "premature to fix" low-impact items remain open there, by design.
 
 ## What's not built yet
 
-Everything past line-counting. Per `docs/planning.md`'s design (not yet implemented):
-- The real tokenizer: bytewise (no regex), build tokens before casting to typed values, byte-offset-tagged structs for debugging. Reference for the log format: [warcraft.wiki.gg/wiki/Combat_Log](https://warcraft.wiki.gg/wiki/Combat_Log).
-- String interning for player/spell names.
-- Encounter detection (`ENCOUNTER_START`/`ENCOUNTER_END` pairing, malformed-log handling).
-- Entity state replay + checkpointing (for scrubbing).
-- All 4 views: log table, character status panel, 3D spatial replay (Three.js), statistics view. The frontend today is just a toolbar + a line-count placeholder, nothing view-like exists.
-- Directory monitoring / live log tailing (`notify` crate).
-- Frontend framework choice for the panel/table UI is still an open question (noted in `planning.md`'s Open Questions).
+Per `planning.md`'s Views section:
+- **Character status panel** — health/energy, cooldowns, buffs/debuffs at a scrub position.
+- **3D spatial replay** — Three.js, entity positions over time.
+- **Statistics view** — per-encounter/per-character damage/healing, drill-down, time windowing, character comparison.
+- **Entity state replay + checkpointing** — needed for the above two; not started.
+- **Directory monitoring / live log tailing** (`notify` crate).
+
+See `docs/stats-features.md` for the user's own working notes toward the statistics view.
 
 ## Known constraints worth remembering
 
-- Testing this app interactively requires either the CLI-arg launch (reliable) or manual clicking by the user — the native file-open dialog cannot be automated reliably.
+- Testing this app interactively requires either the CLI-arg launch (`make run <path>`, reliable) or manual clicking by the user — the native file-open dialog cannot be automated reliably, and neither can gestures like a scrollbar drag or a fast scroll; GUI-automation verification this session was frequently unreliable (misidentified windows, stray processes, low-contrast screenshots read as bugs that weren't) and is best used sparingly, with the user doing hands-on verification for anything involving real interaction.
 - Dock-icon file drop only works in a bundled `.app` (`make build`), not the raw dev binary.
 - Drag-and-drop onto a window must be handled as `WindowEvent::DragDrop`, not `WebviewEvent::DragDrop` — an easy, silent mistake (see `windows-and-files.md`).
+- A `.app` built via `make build` registers itself with macOS Launch Services (it declares `.txt` file association); if run directly and then killed (rather than quit normally), macOS can relaunch it on its own with no file argument, which looks like a hung open-dialog. `make uninstall` unregisters it.
+- `tauri::menu::Menu::get(id)` only searches the menu bar's own top-level items — it does not recurse into a submenu's children. Looking up an item nested in a submenu needs a handle to that submenu specifically (see how the View and Window menus are wired in `lib.rs`'s `build_menu`).
+- `Submenu::set_as_windows_menu_for_nsapp()` (and similarly `set_as_help_menu_for_nsapp`) must be called *after* the menu is installed via `app.set_menu(...)` — muda resolves the submenu through the already-installed main menu's delegate, so calling it earlier is a silent no-op.
+- Real element/scroll heights are capped well under what a multi-million-row log's naive `rowCount * rowHeight` would need (WebKit's practical limit is around 33.5M px); `VirtualList` caps the spacer and treats scroll position as proportional above that threshold — see `src/virtual-list.ts`.

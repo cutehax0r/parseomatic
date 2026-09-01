@@ -2,12 +2,12 @@
 
 How opening a file, multiple windows, and drag-and-drop fit together. This
 describes what's actually implemented in `src-tauri/src/lib.rs`, not a
-future plan — the data model it operates on (`ParsedLog`) is currently a
-placeholder (just a path + raw bytes) standing in for the real parsed
-representation described in `planning.md`. Everything below (sharing,
-lifecycle, multi-window) is written to be agnostic to what's actually
-inside `ParsedLog`, so swapping in the real parser later shouldn't require
-touching this architecture.
+future plan. `ParsedLog` now holds the real parsed representation described
+in `planning.md` (interned tables, columnar event store, reports) plus the
+retained `Mmap` its raw field spans resolve against — this doc's design
+(sharing, lifecycle, multi-window) was written to be agnostic to what's
+actually inside `ParsedLog`, and swapping in the real parser didn't end up
+requiring any changes to it.
 
 ## Core idea: windows share data by reference
 
@@ -56,12 +56,13 @@ calls `get_or_parse`, and on success:
    <filename>` and, on macOS, the title-bar proxy icon
    (`NSWindow.setRepresentedFilename`).
 
-On failure (currently only I/O errors, since there's no real parser to
-reject a file yet), it shows a native "could not be parsed" dialog and
-touches nothing else — the window is left exactly as it was. An
+On failure (only ever an I/O error — canonicalize/open/mmap; combat-log
+content itself is parsed leniently in the background and never fails
+synchronously), it shows a native "could not be opened: `<reason>`" dialog
+and touches nothing else — the window is left exactly as it was. An
 already-open file keeps showing (a bad drag-drop shouldn't break a
 working window); an empty window just stays empty (a failed open-dialog
-pick never spawns a new window with data). See `show_parse_error`.
+pick never spawns a new window with data). See `show_open_error`.
 
 ## Multiple windows
 
