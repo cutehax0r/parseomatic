@@ -1,25 +1,21 @@
 # Parseomatic
 
-A combat log parser for World of Warcraft. Opens a retail Advanced Combat Log (patch 12+) and parses it in the background, keyed off a hand-rolled tokenizer and aggressive string/GUID/spell/zone interning so multi-hundred-megabyte, multi-million-line logs stay fast and memory-light rather than materializing raw strings everywhere.
+A combat log parser for World of Warcraft. Opens a retail Advanced Combat Log
+(patch 12+) and parses it. Slowly adding features from sites like world of logs
+but hopefully a lot faster because all the data is local. Having access to
+regular OS windows also means we can do certain kinds of analysis with greater
+ease: comparing two characters or two pulls for example.
 
 ## Features
-
-- **Fast, background parsing** — mmap'd, chunked in parallel across cores, then merged; a 547MB / 1.8M-line log parses in the background while the window stays responsive, with a progress bar until it's done.
-- **Debug view** — nine tabbed tables built from the parsed log: Players, Pets (player-owned only), Creatures, Units, Spells, Zones, Encounters (including synthesized "Trash" spans between real pulls), Deaths, and Gear (spec + equipped items from `COMBATANT_INFO`, when present).
-- **Raw view** — the combat log itself, one row per event in file order (time, kind, source, target, spell, details), virtualized so scrolling a multi-million-row log never renders more than what's on screen.
-- Both views are virtualized end-to-end (`src/virtual-list.ts`) with recycled DOM rows and throttled scroll-driven fetches, so scrolling stays smooth regardless of log size.
-- **Multiple windows** — open a log, open another in a new window, drag-and-drop a `.txt` log onto any window to load it there. Each window remembers its own view (Debug/Raw) independently.
-- Catppuccin Macchiato color scheme.
-
-See `docs/` for the combat log format reference, architecture/interning design notes, and a running log of performance characteristics and how they were addressed.
 
 # Development
 
 Have a look at the makefile for the usual stuff like building, releasing, etc.
+There are some notes in the docs folder of questionable values.
 
 ## Getting Started
 
-Development happens natively on macOS for now (Linux packaging can wait until there's a working app). Install:
+Development happens natively on macOS for now. Install:
 
 - Xcode Command Line Tools: `xcode-select --install`
 - Rust, via rustup: `brew install rustup && rustup default stable`
@@ -42,3 +38,9 @@ make uninstall              # unregister the built .app from macOS Launch Servic
 ```
 
 `make help` lists everything, including the release workflow.
+
+`make build` places the final artifacts under `src-tauri/target/release/bundle/`:
+- `macos/parseomatic.app` — the app bundle itself
+- `dmg/parseomatic_<version>_<arch>.dmg` — a disk image wrapping it, for distribution
+
+Both are gitignored (`target/` isn't tracked). If a `.app` there was ever run directly (as opposed to via `make run`, which uses `target/debug/...`), macOS registers it with Launch Services — see `make uninstall` above.
