@@ -76,6 +76,13 @@ export class VirtualList<T> {
   // clobber a newer one that already landed (scroll fast enough with an
   // async source and two requests can resolve out of order).
   private fetchToken = 0;
+  // True while a fetchRange call is awaited. Only one fetch is ever
+  // in flight at a time -- letting them pile up during a fast scroll
+  // (an async fetchRange, i.e. the raw view's IPC round trip, can take
+  // longer than scroll events keep arriving) doesn't help, since only
+  // the last-started one could ever matter, and it wastes backend work
+  // queuing requests that are already obsolete by the time they'd run.
+  private fetchInFlight = false;
 
   constructor(opts: VirtualListOptions<T>) {
     this.opts = { overscan: DEFAULT_OVERSCAN, minRenderIntervalMs: DEFAULT_MIN_RENDER_INTERVAL_MS, ...opts };
@@ -139,31 +146,75 @@ export class VirtualList<T> {
     });
   }
 
+  // scrollTop is real DOM pixels within the (possibly capped) spacer;
+  // dividing by `scale` maps it back to the logical row-space position
+  // it represents proportionally.
+  private computeVisibleRange(): { start: number; end: number; logicalScrollTop: number; firstVisible: number } {
+    const { container, rowHeight, overscan } = this.opts;
+    const logicalScrollTop = container.scrollTop / this.scale;
+    const firstVisible = Math.floor(logicalScrollTop / rowHeight);
+    const lastVisible = Math.ceil((logicalScrollTop + container.clientHeight) / rowHeight);
+    return {
+      start: Math.max(0, firstVisible - overscan),
+      end: Math.min(this.total, lastVisible + overscan),
+      logicalScrollTop,
+      firstVisible,
+    };
+  }
+
   private async renderVisible(): Promise<void> {
-    const { container, rowHeight, overscan, fetchRange, renderRow, createRow, rowsContainer } = this.opts;
+    const { container, rowHeight, fetchRange, renderRow, createRow, rowsContainer } = this.opts;
 
     if (this.total === 0) {
       for (const el of this.pool) el.style.display = "none";
       return;
     }
 
-    // scrollTop is real DOM pixels within the (possibly capped) spacer;
-    // dividing by `scale` maps it back to the logical row-space position
-    // it represents proportionally.
-    const logicalScrollTop = container.scrollTop / this.scale;
-    const firstVisible = Math.floor(logicalScrollTop / rowHeight);
-    const lastVisible = Math.ceil((logicalScrollTop + container.clientHeight) / rowHeight);
-    const start = Math.max(0, firstVisible - overscan);
-    const end = Math.min(this.total, lastVisible + overscan);
+    // A fetch is already out for some range -- its own completion will
+    // re-check the live scroll position (see below), so there's nothing
+    // for this call to do; letting it start a second, overlapping fetch
+    // would only add backend work without changing which one ends up
+    // rendered.
+    if (this.fetchInFlight) return;
 
-    if (start === this.renderedStart && end === this.renderedEnd) return;
-    this.renderedStart = start;
-    this.renderedEnd = end;
+    const range = this.computeVisibleRange();
+    if (range.start === this.renderedStart && range.end === this.renderedEnd) return;
 
+    this.renderedStart = range.start;
+    this.renderedEnd = range.end;
+    this.fetchInFlight = true;
     const token = ++this.fetchToken;
-    const result = fetchRange(start, end - start);
-    const items = result instanceof Promise ? await result : result;
-    if (token !== this.fetchToken) return; // superseded by a later scroll/refresh
+    let items: T[];
+    try {
+      items = await fetchRange(range.start, range.end - range.start);
+    } finally {
+      // Must run even if fetchRange rejects -- otherwise fetchInFlight
+      // stays stuck true forever and every future scroll-driven render
+      // silently no-ops at the guard above.
+      this.fetchInFlight = false;
+    }
+    if (token !== this.fetchToken) return; // superseded while we were waiting
+
+    // The scroll position at the moment this resolves may not be the
+    // one it was fetched for -- an async fetchRange (the raw view's IPC
+    // round trip) can take long enough for the user to have kept
+    // scrolling in the meantime, unlike the debug tables' effectively
+    // instant in-memory slice. Positioning rows against the *original*
+    // scrollTop in that case draws them outside the now-current
+    // viewport -- exactly the "content goes blank" symptom, since
+    // nothing else repaints until the next scroll event. Re-checking
+    // against the live position here and re-anchoring to it fixes that;
+    // if scrolling moved far enough that this batch no longer even
+    // covers what's visible, don't paint stale rows in the wrong place
+    // at all -- leave the previous (still-valid, just old) frame up and
+    // go again for the live position instead.
+    const live = this.computeVisibleRange();
+    if (live.start < range.start || live.end > range.end) {
+      this.renderedStart = -1;
+      this.renderedEnd = -1;
+      void this.renderVisible();
+      return;
+    }
 
     while (this.pool.length < items.length) {
       const el = createRow();
@@ -171,20 +222,20 @@ export class VirtualList<T> {
       this.pool.push(el);
     }
 
-    // Rows are anchored near the real scrollTop -- not at their absolute
-    // logical offset (start*rowHeight could itself be tens of millions
-    // of pixels once scale < 1) -- and spaced by the true, unscaled
-    // rowHeight from there. That keeps every DOM `top` value bounded
-    // near the viewport, and rows exactly rowHeight apart with no
-    // overlap, regardless of how large `total` is.
-    const fractionalOffset = logicalScrollTop - firstVisible * rowHeight;
+    // Rows are anchored near the real (live) scrollTop -- not at their
+    // absolute logical offset (range.start*rowHeight could itself be
+    // tens of millions of pixels once scale < 1) -- and spaced by the
+    // true, unscaled rowHeight from there. That keeps every DOM `top`
+    // value bounded near the viewport, and rows exactly rowHeight apart
+    // with no overlap, regardless of how large `total` is.
+    const fractionalOffset = live.logicalScrollTop - live.firstVisible * rowHeight;
     const realTopOfFirstVisible = container.scrollTop - fractionalOffset * this.scale;
-    const realTopOfStart = realTopOfFirstVisible - (firstVisible - start) * rowHeight;
+    const realTopOfStart = realTopOfFirstVisible - (live.firstVisible - range.start) * rowHeight;
     items.forEach((item, i) => {
       const el = this.pool[i];
       el.style.display = "";
       el.style.top = `${realTopOfStart + i * rowHeight}px`;
-      renderRow(item, el, start + i);
+      renderRow(item, el, range.start + i);
     });
 
     // Pool elements beyond what this render needed just hide in place --
