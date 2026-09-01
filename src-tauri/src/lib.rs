@@ -61,6 +61,13 @@ impl ViewKind {
 #[derive(Default)]
 struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 
+// The View submenu, held onto so its Debug/Raw CheckMenuItems can be
+// looked up directly (see sync_view_menu) -- `Menu::get` only searches
+// the menu bar's own top-level items (File, Edit, View, ...), never
+// recursing into a submenu's children, so looking up "view_debug"/
+// "view_raw" through the top-level Menu silently finds nothing.
+struct ViewMenu(Submenu<tauri::Wry>);
+
 #[derive(Default)]
 struct NextWindowId(AtomicU32);
 
@@ -162,9 +169,9 @@ fn current_view_for(app: &AppHandle, label: &str) -> ViewKind {
 /// reflect whichever window last touched them rather than the frontmost
 /// one's actual state.
 fn sync_view_menu(window: &WebviewWindow, current: ViewKind) {
-    let Some(menu) = window.menu() else { return };
+    let view_menu = window.app_handle().state::<ViewMenu>();
     for view in [ViewKind::Debug, ViewKind::Raw] {
-        if let Some(check) = menu.get(view.menu_id()).and_then(|i| i.as_check_menuitem().cloned()) {
+        if let Some(check) = view_menu.0.get(view.menu_id()).and_then(|i| i.as_check_menuitem().cloned()) {
             let _ = check.set_checked(view == current);
         }
     }
@@ -753,7 +760,7 @@ fn new_window_from(window: WebviewWindow) {
     spawn_sibling_window(&window);
 }
 
-fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri::Wry>)> {
+fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri::Wry>, Submenu<tauri::Wry>)> {
     let open_item = MenuItem::with_id(app, "open_file", "Open...", true, Some("CmdOrCtrl+O"))?;
     let new_window_item = MenuItem::with_id(
         app,
@@ -834,7 +841,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri
         .item(&view_menu)
         .item(&window_menu)
         .build()?;
-    Ok((menu, window_menu))
+    Ok((menu, window_menu, view_menu))
 }
 
 fn focused_webview_window(app: &AppHandle) -> Option<WebviewWindow> {
@@ -853,13 +860,14 @@ pub fn run() {
         .manage(WindowViewState::default())
         .manage(NextWindowId::default())
         .setup(|app| {
-            let (menu, window_menu) = build_menu(app.handle())?;
+            let (menu, window_menu, view_menu) = build_menu(app.handle())?;
             app.set_menu(menu)?;
             // Must run after set_menu -- muda resolves the submenu through
             // the *installed* main menu's delegate, so calling this any
             // earlier is a silent no-op (see build_menu).
             #[cfg(target_os = "macos")]
             window_menu.set_as_windows_menu_for_nsapp()?;
+            app.manage(ViewMenu(view_menu));
 
             // This is a file viewer -- a window with nothing open is only
             // useful for picking a file, so go straight to that. A path
