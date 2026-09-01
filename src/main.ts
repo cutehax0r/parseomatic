@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { VirtualList } from "./virtual-list";
 
 interface WindowInfo {
   lineCount: number;
@@ -125,18 +126,7 @@ let lastListsLineCount: number | null = null;
 type ViewMode = "debug" | "raw";
 let currentViewMode: ViewMode = "debug";
 
-// Raw view virtualization state. Fixed row height means the visible range
-// is a pure function of scrollTop -- no measuring, no dynamic layout.
 const RAW_ROW_HEIGHT = 24;
-const RAW_OVERSCAN = 15;
-let rawTotalRows = 0;
-let rawRenderedStart = -1;
-let rawRenderedEnd = -1;
-// Bumped on every fetch so a slow, superseded raw_events response can't
-// clobber a newer one that already landed (scroll fast enough and two
-// requests can resolve out of order).
-let rawFetchToken = 0;
-let rawScrollScheduled = false;
 
 function makeRow(cells: string[]): HTMLTableRowElement {
   const tr = document.createElement("tr");
@@ -297,65 +287,62 @@ function formatRawTimestamp(ms: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
-function rawCell(className: string, text: string, clickable: boolean, tooltip?: string): HTMLSpanElement {
-  const span = document.createElement("span");
-  span.className = clickable ? `raw-col ${className} raw-clickable` : `raw-col ${className}`;
-  span.textContent = text;
-  if (tooltip) span.title = tooltip;
-  return span;
-}
-
-function makeRawRow(r: RawEventRow): HTMLDivElement {
+function createRawRowElement(): HTMLDivElement {
   const div = document.createElement("div");
   div.className = "raw-row";
-  div.style.top = `${r.row * RAW_ROW_HEIGHT}px`;
-
-  const position = r.position ? `[${r.position[0].toFixed(1)}, ${r.position[1].toFixed(1)}] ` : "";
-  const details = position + r.details;
-
-  div.append(
-    rawCell("raw-col-time", formatRawTimestamp(r.timestampMs), false),
-    rawCell("raw-col-kind", r.kind, false),
-    rawCell("raw-col-source", r.sourceName ?? "", r.sourceName !== null, r.sourceGuid ?? undefined),
-    rawCell("raw-col-target", r.targetName ?? "", r.targetName !== null, r.targetGuid ?? undefined),
-    rawCell("raw-col-spell", r.spellName ?? "", r.spellName !== null),
-    rawCell("raw-col-details", details, false, details),
-  );
+  const columns = ["raw-col-time", "raw-col-kind", "raw-col-source", "raw-col-target", "raw-col-spell", "raw-col-details"];
+  for (const cls of columns) {
+    const span = document.createElement("span");
+    span.className = `raw-col ${cls}`;
+    div.appendChild(span);
+  }
   return div;
 }
 
-// Computes the currently-visible row range (plus overscan) from scroll
-// position and fetches+renders exactly that page -- never the whole
-// event stream. Skips the fetch entirely if the range hasn't moved
-// enough to matter (small scroll jitter shouldn't spam raw_events).
-async function renderVisibleRawRows() {
-  const scroll = document.querySelector<HTMLElement>("#raw-scroll");
-  const rowsContainer = document.querySelector<HTMLElement>("#raw-rows");
-  if (!scroll || !rowsContainer || rawTotalRows === 0) return;
-
-  const firstVisible = Math.floor(scroll.scrollTop / RAW_ROW_HEIGHT);
-  const lastVisible = Math.ceil((scroll.scrollTop + scroll.clientHeight) / RAW_ROW_HEIGHT);
-  const start = Math.max(0, firstVisible - RAW_OVERSCAN);
-  const end = Math.min(rawTotalRows, lastVisible + RAW_OVERSCAN);
-
-  if (start === rawRenderedStart && end === rawRenderedEnd) return;
-  rawRenderedStart = start;
-  rawRenderedEnd = end;
-
-  const token = ++rawFetchToken;
-  const rows = await invoke<RawEventRow[] | null>("raw_events", { start, count: end - start });
-  if (token !== rawFetchToken || !rows) return; // superseded by a later scroll, or no log open anymore
-
-  rowsContainer.replaceChildren(...rows.map(makeRawRow));
+function setRawCell(el: HTMLElement, text: string, clickable: boolean, tooltip?: string) {
+  el.textContent = text;
+  el.classList.toggle("raw-clickable", clickable);
+  if (tooltip) {
+    el.title = tooltip;
+  } else {
+    el.removeAttribute("title");
+  }
 }
 
-function onRawScroll() {
-  if (rawScrollScheduled) return;
-  rawScrollScheduled = true;
-  requestAnimationFrame(() => {
-    rawScrollScheduled = false;
-    void renderVisibleRawRows();
+// Row content is updated in place on an already-appended, recycled
+// element (see VirtualList) rather than rebuilt from scratch every time.
+function renderRawRow(r: RawEventRow, el: HTMLElement, index: number) {
+  el.style.top = `${index * RAW_ROW_HEIGHT}px`;
+  const [time, kind, source, target, spell, details] = Array.from(el.children) as HTMLElement[];
+  setRawCell(time, formatRawTimestamp(r.timestampMs), false);
+  setRawCell(kind, r.kind, false);
+  setRawCell(source, r.sourceName ?? "", r.sourceName !== null, r.sourceGuid ?? undefined);
+  setRawCell(target, r.targetName ?? "", r.targetName !== null, r.targetGuid ?? undefined);
+  setRawCell(spell, r.spellName ?? "", r.spellName !== null);
+  const position = r.position ? `[${r.position[0].toFixed(1)}, ${r.position[1].toFixed(1)}] ` : "";
+  setRawCell(details, position + r.details, false, position + r.details);
+}
+
+let rawList: VirtualList<RawEventRow> | null = null;
+
+function getRawList(): VirtualList<RawEventRow> | null {
+  if (rawList) return rawList;
+  const container = document.querySelector<HTMLElement>("#raw-scroll");
+  const spacer = document.querySelector<HTMLElement>("#raw-spacer");
+  const rowsContainer = document.querySelector<HTMLElement>("#raw-rows");
+  if (!container || !spacer || !rowsContainer) return null;
+  rawList = new VirtualList<RawEventRow>({
+    container,
+    spacer,
+    rowsContainer,
+    rowHeight: RAW_ROW_HEIGHT,
+    overscan: 15,
+    createRow: createRawRowElement,
+    renderRow: renderRawRow,
+    fetchRange: (start, count) =>
+      invoke<RawEventRow[] | null>("raw_events", { start, count }).then((rows) => rows ?? []),
   });
+  return rawList;
 }
 
 // Called whenever the raw view becomes the active one (or the log
@@ -363,12 +350,8 @@ function onRawScroll() {
 // forces a fresh render regardless of scroll position, since the
 // previous render (if any) was for a different log.
 async function loadRawView() {
-  rawTotalRows = (await invoke<number | null>("raw_event_count")) ?? 0;
-  const spacer = document.querySelector<HTMLElement>("#raw-spacer");
-  if (spacer) spacer.style.height = `${rawTotalRows * RAW_ROW_HEIGHT}px`;
-  rawRenderedStart = -1;
-  rawRenderedEnd = -1;
-  await renderVisibleRawRows();
+  const total = (await invoke<number | null>("raw_event_count")) ?? 0;
+  getRawList()?.setTotal(total);
 }
 
 async function refreshStatus() {
@@ -496,8 +479,6 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#view-raw-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "raw" });
   });
-
-  document.querySelector("#raw-scroll")?.addEventListener("scroll", onRawScroll);
 
   listen("log-changed", () => refreshStatus());
   listen("view-changed", () => refreshStatus());
