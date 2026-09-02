@@ -2,20 +2,29 @@
 // encounter selector. Assumes a single selected encounter; anything else
 // (custom range, "Full log") shows an empty state.
 //
-// Real data: title, kill/wipe, duration, death count. Everything that
-// needs event aggregation (damage/healing totals, DPS/HPS, the player
-// table, the chart series) is MOCK for now -- see mockEncounterStats.
-// Wiring the real `query_events` + aggregate DSL is the next task.
+// Real via query_events: damage/healing totals, DPS/HPS, the player table
+// (grouped by sourceOwner, so pet damage folds into the owning player).
+// Still MOCK: the chart's time series -- it needs time-bucketed sums, a
+// `bucket` extension to QuerySpec that isn't built yet.
 
 import "../ui/widgets"; // registers built-in widgets
 
 import { buildView, type BuiltView } from "../ui/panel";
 import { createViewContext, type ViewContext } from "../ui/context";
 import type { NodeSpec } from "../ui/spec";
-import type { EncounterRow, DeathRow, UnitRow } from "../types";
+import type { EncounterRow } from "../types";
 import { formatCompact, formatDuration, formatEncounterResult } from "../format";
 import type { ChartBucket, ChartDeath } from "../ui/widgets/line-chart";
 import type { PlayerRow } from "../ui/widgets/player-table";
+
+const DAMAGE_KINDS = [
+  "SPELL_DAMAGE",
+  "SPELL_PERIODIC_DAMAGE",
+  "RANGE_DAMAGE",
+  "SWING_DAMAGE",
+  "SPELL_BUILDING_DAMAGE",
+];
+const HEAL_KINDS = ["SPELL_HEAL", "SPELL_PERIODIC_HEAL"];
 
 const overviewSpec: NodeSpec = {
   kind: "panel",
@@ -53,24 +62,28 @@ const overviewSpec: NodeSpec = {
 
 let ctx: ViewContext | null = null;
 let built: BuiltView | null = null;
+// Bumped on every paint; an in-flight paint whose seq is stale (a newer
+// encounter selection started painting) bails before touching the DOM.
+let paintSeq = 0;
 
 export function renderOverview(): void {
-  const view = document.querySelector<HTMLElement>("#overview-view");
   const mount = document.querySelector<HTMLElement>("#overview-mount");
-  if (!view || !mount) return;
+  if (!mount) return;
 
   if (!ctx) {
     ctx = createViewContext();
-    ctx.subscribe(() => paint());
+    ctx.subscribe(() => void paint());
   }
   if (!built) {
     built = buildView(overviewSpec, mount, ctx);
   }
-  paint();
+  void paint();
 }
 
-function paint(): void {
+async function paint(): Promise<void> {
   if (!ctx || !built) return;
+  const seq = ++paintSeq;
+
   const emptyEl = document.querySelector<HTMLElement>("#overview-empty");
   const mount = document.querySelector<HTMLElement>("#overview-mount");
 
@@ -84,42 +97,68 @@ function paint(): void {
 
   const result = formatEncounterResult(e); // Kill / Wipe / ?
   const durText = formatDuration(e.durationMs);
+  const seconds = Math.max(1, e.durationMs / 1000);
   const tone = e.success === true ? "kill" : e.success === false ? "wipe" : undefined;
   const deathCount = ctx.deaths.filter(
     (d) => d.timestampMs >= e.startMs && d.timestampMs <= e.endMs,
   ).length;
 
-  const mock = mockEncounterStats(e, ctx.players, ctx.deaths);
+  const bounds = { startMs: e.startMs, endMs: e.endMs };
+  const [damage, healing, playerRows] = await Promise.all([
+    sumAmount(bounds, DAMAGE_KINDS),
+    sumAmount(bounds, HEAL_KINDS),
+    playerDamageRows(bounds, seconds),
+  ]);
+  if (seq !== paintSeq) return; // a newer selection is painting
+
+  const chart = mockChartSeries(e);
 
   built.get("title")?.update({ name: e.name, meta: `${result || "In progress"} · ${durText}`, tone });
-  built.get("dmg")?.update({ label: "Damage done", value: formatCompact(mock.damage) });
-  built.get("dps")?.update({ label: "DPS", value: formatCompact(mock.dps) });
-  built.get("heal")?.update({ label: "Healing done", value: formatCompact(mock.healing) });
-  built.get("hps")?.update({ label: "HPS", value: formatCompact(mock.hps) });
+  built.get("dmg")?.update({ label: "Damage done", value: formatCompact(damage) });
+  built.get("dps")?.update({ label: "DPS", value: formatCompact(damage / seconds) });
+  built.get("heal")?.update({ label: "Healing done", value: formatCompact(healing) });
+  built.get("hps")?.update({ label: "HPS", value: formatCompact(healing / seconds) });
   built.get("deaths")?.update({ label: "Deaths", value: String(deathCount) });
   built.get("result")?.update({ label: result || "Result", value: durText, tone });
-  built.get("chart")?.update({
-    buckets: mock.buckets,
-    deaths: mock.deaths,
-    startMs: e.startMs,
-    endMs: e.endMs,
+  built.get("chart")?.update({ ...chart, startMs: e.startMs, endMs: e.endMs });
+  built.get("players")?.update({ rows: playerRows });
+}
+
+async function sumAmount(
+  bounds: { startMs: number; endMs: number },
+  kinds: string[],
+): Promise<number> {
+  const rows = await ctx!.query<{ total: number }>({
+    ...bounds,
+    where: [{ field: "kind", op: "in", value: kinds }],
+    aggregate: [{ op: "sum", field: "amount", as: "total" }],
   });
-  built.get("players")?.update({ rows: mock.players });
+  return rows[0]?.total ?? 0;
 }
 
-// ---- MOCK -- real numbers need query_events aggregation ----------------
-
-interface MockStats {
-  damage: number;
-  dps: number;
-  healing: number;
-  hps: number;
-  players: PlayerRow[];
-  buckets: ChartBucket[];
-  deaths: ChartDeath[];
+async function playerDamageRows(
+  bounds: { startMs: number; endMs: number },
+  seconds: number,
+): Promise<PlayerRow[]> {
+  const rows = await ctx!.query<{ sourceOwner: number; dmg: number }>({
+    ...bounds,
+    where: [{ field: "kind", op: "in", value: DAMAGE_KINDS }],
+    groupBy: ["sourceOwner"],
+    aggregate: [{ op: "sum", field: "amount", as: "dmg" }],
+  });
+  const units = ctx!.units;
+  return rows
+    .map((r) => ({ unit: units[r.sourceOwner], dmg: r.dmg }))
+    .filter((r) => r.unit?.kind === "Player")
+    .map((r) => ({ name: r.unit!.name, damage: r.dmg, dps: r.dmg / seconds }))
+    .sort((a, b) => b.damage - a.damage);
 }
 
-// mulberry32 -- deterministic so a given encounter always mocks the same.
+// ---- MOCK -- the chart series still needs time-bucketed sums ----------
+// TODO: a `bucket: { field: "time", width: N }` extension to QuerySpec so
+// the backend returns per-interval sums; then this goes away. Death marks
+// below are real.
+
 function seededRng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -131,48 +170,21 @@ function seededRng(seed: number): () => number {
   };
 }
 
-function mockEncounterStats(e: EncounterRow, players: UnitRow[], deaths: DeathRow[]): MockStats {
+function mockChartSeries(e: EncounterRow): { buckets: ChartBucket[]; deaths: ChartDeath[] } {
   const rng = seededRng(e.startMs ^ (e.encounterId << 8));
   const seconds = Math.max(1, e.durationMs / 1000);
-
-  // MOCK roster: a stable per-encounter subset of the log-wide player
-  // pool. Stands in for "who was actually present" -- players come and go
-  // across a raid night, so this must never be the whole-log list.
-  // TODO: real roster from query_events -- distinct player units with
-  // damage/healing/cast activity inside [encounter.start_row, end_row].
-  // Pet contributions (UnitRow.owner) roll up into the owning player's
-  // row; pets are not their own rows. See docs/ui-widgets.md.
-  const pool = players.length > 0 ? players.map((p) => p.name) : ["Player 1", "Player 2", "Player 3"];
-  const raidSize = Math.min(pool.length, 16 + Math.floor(rng() * 7));
-  const roster = pool
-    .map((name) => ({ name, k: rng() }))
-    .sort((a, b) => a.k - b.k)
-    .slice(0, raidSize)
-    .map((x) => x.name);
-
-  const perPlayerDps = roster.map((name) => ({ name, w: 0.4 + rng() }));
-  const totalW = perPlayerDps.reduce((s, p) => s + p.w, 0);
   const raidDps = 800_000 + rng() * 1_400_000;
-  const damage = raidDps * seconds;
-  const healing = damage * (0.45 + rng() * 0.25);
+  const hps0 = raidDps * (0.45 + rng() * 0.25);
 
-  const playerRows: PlayerRow[] = perPlayerDps
-    .map((p) => {
-      const dps = (raidDps * p.w) / totalW;
-      return { name: p.name, dps, damage: dps * seconds };
-    })
-    .sort((a, b) => b.damage - a.damage);
-
-  // ~1s buckets, capped to roughly the chart's pixel width.
   const n = Math.min(900, Math.max(40, Math.round(seconds)));
   const buckets: ChartBucket[] = [];
   let dmgLevel = raidDps;
-  let healLevel = healing / seconds;
+  let healLevel = hps0;
   for (let i = 0; i < n; i++) {
     const frac = (i + 0.5) / n;
     dmgLevel += (rng() - 0.5) * raidDps * 0.25;
-    healLevel += (rng() - 0.5) * (healing / seconds) * 0.3;
-    const ramp = 0.7 + 0.5 * frac; // slow build over the fight
+    healLevel += (rng() - 0.5) * hps0 * 0.3;
+    const ramp = 0.7 + 0.5 * frac;
     buckets.push({
       tMid: e.startMs + frac * e.durationMs,
       damage: Math.max(0, dmgLevel * ramp),
@@ -180,17 +192,9 @@ function mockEncounterStats(e: EncounterRow, players: UnitRow[], deaths: DeathRo
     });
   }
 
-  const deathMarks: ChartDeath[] = deaths
+  const deaths: ChartDeath[] = (ctx?.deaths ?? [])
     .filter((d) => d.timestampMs >= e.startMs && d.timestampMs <= e.endMs)
     .map((d) => ({ t: d.timestampMs, label: d.playerName }));
 
-  return {
-    damage,
-    dps: raidDps,
-    healing,
-    hps: healing / seconds,
-    players: playerRows,
-    buckets,
-    deaths: deathMarks,
-  };
+  return { buckets, deaths };
 }

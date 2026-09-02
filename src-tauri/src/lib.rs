@@ -1,4 +1,5 @@
 mod parser;
+mod query;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -739,6 +740,25 @@ fn extract_position(kind: LineKind, has_advanced: bool, raw: &[parser::tokenizer
 /// raw intern ids rather than resolved strings (see `RawEventRow`), so
 /// there's no per-row table lookup or string cloning here at all -- just
 /// array indexing into the columnar `EventStore`.
+fn raw_event_row(events: &parser::event::EventStore, mmap: &[u8], row: usize) -> RawEventRow {
+    let details = events
+        .raw_fields(row)
+        .iter()
+        .map(|f| f.resolve_str(mmap))
+        .collect::<Vec<_>>()
+        .join(", ");
+    RawEventRow {
+        row,
+        timestamp_ms: events.timestamp_ms[row],
+        kind: events.kind[row].label(),
+        source_unit_id: (events.source_unit[row] != NO_UNIT).then_some(events.source_unit[row]),
+        target_unit_id: (events.dest_unit[row] != NO_UNIT).then_some(events.dest_unit[row]),
+        spell_id: (events.spell[row] != NO_SPELL).then_some(events.spell[row]),
+        position: extract_position(events.kind[row], events.has_advanced[row], events.raw_fields(row), mmap),
+        details,
+    }
+}
+
 #[tauri::command]
 fn raw_events(window: WebviewWindow, start: usize, count: usize) -> Option<Vec<RawEventRow>> {
     let log = current_log(&window)?;
@@ -750,32 +770,35 @@ fn raw_events(window: WebviewWindow, start: usize, count: usize) -> Option<Vec<R
     if start >= end {
         return Some(Vec::new());
     }
+    Some((start..end).map(|row| raw_event_row(events, mmap, row)).collect())
+}
 
-    let rows = (start..end)
-        .map(|row| {
-            let source_unit_id = (events.source_unit[row] != NO_UNIT).then_some(events.source_unit[row]);
-            let target_unit_id = (events.dest_unit[row] != NO_UNIT).then_some(events.dest_unit[row]);
-            let spell_id = (events.spell[row] != NO_SPELL).then_some(events.spell[row]);
-            let details = events
-                .raw_fields(row)
-                .iter()
-                .map(|f| f.resolve_str(mmap))
-                .collect::<Vec<_>>()
-                .join(", ");
+/// Generic query over the parsed event stream -- see `query.rs` and
+/// `docs/ui-widgets.md` ("Data access"). Aggregated mode returns one JSON
+/// object per `groupBy` tuple; raw mode returns `RawEventRow`s for the
+/// window (honoring `where` + `limit`/`offset`).
+#[tauri::command]
+fn query_events(window: WebviewWindow, spec: query::QuerySpec) -> Option<serde_json::Value> {
+    let log = current_log(&window)?;
+    let data = log.data()?;
+    let events = &data.events;
+    let tables = &data.tables;
 
-            RawEventRow {
-                row,
-                timestamp_ms: events.timestamp_ms[row],
-                kind: events.kind[row].label(),
-                source_unit_id,
-                target_unit_id,
-                spell_id,
-                position: extract_position(events.kind[row], events.has_advanced[row], events.raw_fields(row), mmap),
-                details,
-            }
-        })
+    if spec.is_aggregated() {
+        return Some(serde_json::Value::Array(query::run_aggregate(&spec, events, tables)));
+    }
+
+    let mmap = log.mmap_bytes();
+    let (lo, hi, keep) = query::raw_window(&spec, events, tables);
+    let offset = spec.offset.unwrap_or(0);
+    let limit = spec.limit.unwrap_or(usize::MAX);
+    let rows: Vec<RawEventRow> = (lo..hi)
+        .filter(|&row| keep(row))
+        .skip(offset)
+        .take(limit)
+        .map(|row| raw_event_row(events, mmap, row))
         .collect();
-    Some(rows)
+    serde_json::to_value(rows).ok()
 }
 
 #[tauri::command]
@@ -966,7 +989,8 @@ pub fn run() {
             current_view,
             set_current_view,
             raw_event_count,
-            raw_events
+            raw_events,
+            query_events
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

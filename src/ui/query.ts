@@ -1,26 +1,52 @@
 // The one path from a widget to parsed log data -- see docs/ui-widgets.md
-// "Data access". Backed by a generic `query_events` Tauri command that
-// returns raw rows, or grouped rows when `aggregate` is set.
-//
-// NOT IMPLEMENTED YET. The Overview view's numbers are mocked in
-// src/views/overview.ts for now; wiring `query_events` + the
-// sum/count/min/max group-by DSL is the immediate next task.
+// ("Data access"). Backed by the `query_events` Tauri command
+// (src-tauri/src/query.rs): reduces over the columnar EventStore in Rust
+// so the payload is proportional to the answer, not the input.
+
+import { invoke } from "@tauri-apps/api/core";
+
+// The queryable columns. Mirrors `query::Field` (Rust). `sourceOwner`
+// resolves a player's pet to its owner so pet damage folds into the
+// owning player. `spellId` is the intern-table index, not the WoW id
+// (resolve via the index-aligned debug_lists arrays).
+export type QueryField =
+  | "time"
+  | "kind"
+  | "sourceUnit"
+  | "sourceOwner"
+  | "targetUnit"
+  | "spellId"
+  | "hitType"
+  | "amount"
+  | "crit";
+
+export type FilterOp = "eq" | "ne" | "in" | "lt" | "lte" | "gt" | "gte";
+
+export interface FilterClause {
+  field: QueryField;
+  op: FilterOp;
+  value: unknown; // scalar, or an array for `in`
+}
+
+export type AggOp = "sum" | "count" | "avg" | "min" | "max" | "stddev";
 
 export interface AggregateClause {
-  op: "sum" | "count" | "min" | "max";
-  field?: string; // required for sum/min/max; omitted for count
-  as: string;
+  op: AggOp;
+  field?: QueryField; // required except for `count`
+  as: string; // output column name
 }
 
 export interface QuerySpec {
-  // typically ctx.range's bounds + the widget's own fixed clauses
   startMs: number;
   endMs: number;
-  select?: string[]; // raw-row mode: which fields to return
-  groupBy?: string[];
-  aggregate?: AggregateClause[]; // present -> one row per groupBy tuple
+  where?: FilterClause[]; // AND clauses
+  groupBy?: QueryField[];
+  aggregate?: AggregateClause[]; // present -> one row per groupBy tuple; absent -> raw rows
+  limit?: number; // raw-row mode only
+  offset?: number;
 }
 
-export async function query<T>(_spec: QuerySpec): Promise<T[]> {
-  throw new Error("query_events not implemented yet -- see docs/ui-widgets.md (Data access)");
+export async function query<T>(spec: QuerySpec): Promise<T[]> {
+  const rows = await invoke<T[] | null>("query_events", { spec });
+  return rows ?? [];
 }

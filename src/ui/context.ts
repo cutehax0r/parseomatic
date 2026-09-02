@@ -60,6 +60,7 @@ export interface ViewContext {
   readonly range: RangeSelection;
   readonly encounters: EncounterRow[];
   readonly deaths: DeathRow[];
+  readonly units: UnitRow[]; // index-aligned with backend intern ids
   readonly players: UnitRow[]; // units where kind === "Player"
 
   query<T>(spec: QuerySpec): Promise<T[]>;
@@ -83,6 +84,9 @@ export function createViewContext(): ViewContext {
     },
     get deaths() {
       return currentLogData.deaths;
+    },
+    get units() {
+      return currentLogData.units;
     },
     get players() {
       return currentLogData.units.filter((u) => u.kind === "Player");

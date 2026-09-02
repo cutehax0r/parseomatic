@@ -323,23 +323,38 @@ data, backed by a generic Tauri command (`query_events`, say):
 
 ```ts
 interface QuerySpec {
-  filter: FilterClause[]; // typically ctx.filterChain + the widget's own fixed clauses
-  select?: string[]; // raw-row mode: which fields to return; omit for all
-  groupBy?: string[]; // e.g. ["sourceGuid"] or ["sourceGuid", "spellId"]
-  aggregate?: AggregateClause[]; // present -> one row per groupBy tuple instead of raw events
+  startMs: number; endMs: number;   // time window (the picker's RangeSelection)
+  where?: FilterClause[];            // AND clauses -- { field, op, value }
+  groupBy?: Field[];                 // e.g. ["sourceOwner"] or ["sourceOwner", "spellId"]
+  aggregate?: AggregateClause[];     // present -> one row per groupBy tuple; absent -> raw rows
+  limit?: number; offset?: number;   // raw-row mode only
 }
 
 interface AggregateClause {
-  op: "sum" | "count" | "min" | "max";
-  field?: string; // required for sum/min/max; omitted for count
-  as: string; // output column name
+  op: "sum" | "count" | "avg" | "min" | "max" | "stddev";
+  field?: Field; // required except for `count`
+  as: string;    // output column name
 }
+
+// Queryable columns (query::Field, Rust). `sourceOwner` resolves a
+// player's pet/guardian to its owner so pet damage folds into the owning
+// player; `spellId` is the intern-table index, not the WoW id.
+type Field =
+  | "time" | "kind" | "sourceUnit" | "sourceOwner"
+  | "targetUnit" | "spellId" | "hitType" | "amount" | "crit";
 ```
 
-**Two modes, one command.** With no `aggregate`, it returns raw rows as
-before (`select` picks columns). With `aggregate`, the backend does the
-group-by/reduce over the columnar `EventStore` and returns one row per
-distinct `groupBy` tuple — the group-key fields plus each `as` column.
+**Built (2026-09-02, `query.rs` + the `query_events` command).** With no
+`aggregate`, returns raw `RawEventRow`s for the window (honoring `where` +
+`limit`/`offset`) — a drill-down path. With `aggregate`, one pass over the
+window (binary-searched from the timestamps), one accumulator per clause
+per distinct `groupBy` tuple; returns one JSON object per group — the
+group-key fields plus each `as` column. `stddev` is sample (n−1). The
+parser now promotes `amount` and a `flags` byte (crit / aoe / off-hand)
+to typed `EventStore` columns for this.
+
+**Still pending:** time-bucketed aggregation (`bucket: { field, width }`)
+for the Overview chart — its series is mocked until that lands.
 
 Aggregation is in from the start, not deferred, because the common
 Overview/Statistics widgets — per-player Damage Done / Healing Done / Damage
@@ -352,33 +367,39 @@ says to avoid. Reducing in Rust against data that's already
 struct-of-arrays is cheap and keeps the IPC payload proportional to the
 answer, not the input.
 
-**Scope stays deliberately small: `sum`/`count`/`min`/`max` with group-by,
-nothing more.** A general aggregate DSL would have to anticipate every
-possible computation (crit rate, uptime %, "which two players were closest
-when a debuff was removed" — see `docs/widget-distribution.md`'s worked
-example), and most of those don't fit one shape. Anything past
-sum/count/min/max stays in widget code, operating on rows `ctx.query`
-returned in raw mode (including position fields, already tracked per event
-for the planned 3D replay) — not a backend feature. Conditional aggregates
-(crit rate = crits ÷ hits) are two queries, or a client-side pass over raw
-rows — not a new clause type.
+**Scope stays deliberately small: `sum`/`count`/`avg`/`min`/`max`/`stddev`
+with group-by, nothing more.** A general aggregate DSL would have to
+anticipate every possible computation (crit rate, uptime %, "which two
+players were closest when a debuff was removed" — see
+`docs/widget-distribution.md`'s worked example), and most of those don't fit
+one shape. Anything past those six ops stays in widget code, operating on
+rows `ctx.query` returned in raw mode (including position fields, already
+tracked per event for the planned 3D replay) — not a backend feature.
+Conditional aggregates (crit rate = crits ÷ hits) are two queries, or a
+client-side pass over raw rows — not a new clause type.
 
-**Per-encounter player rows (what the Overview "Players" table needs, once
-real):**
-- **Roster is per-encounter, never log-wide.** Players come and go across a
-  raid night. The roster for an encounter is the set of player units with
-  damage / healing / cast activity inside its `[start_row, end_row]` range —
-  derived from the events, not from a static player list.
-- **Pet contributions roll up into the owning player.** A pet/guardian/totem
-  owned by a player (`UnitRow.owner`) has its damage and healing added to
-  that player's row; pets are not their own rows. (How to surface the
-  pet-vs-player split visually is a later question — for now it's just
-  summed in.) The group-by key for a "damage by player" query is therefore
-  *effective owner* (`owner ?? self` when the source is a player-owned
-  unit), not the raw `sourceGuid`.
+**Per-encounter player rows (the Overview "Players" table).** Now real:
+`query_events` grouped by `sourceOwner` (which resolves a player's pet to
+its owner, so pet damage folds into the owning player's row — pets are not
+their own rows) with `where kind in [<damage kinds>]`, scoped to the
+encounter's `[startMs, endMs]`. The frontend drops groups whose owner
+isn't a `Player`. The roster is thus whoever actually dealt damage in the
+window — inherently per-encounter, since players come and go across a
+night. Surfacing a pet-vs-player split visually is a later question; for
+now it's summed in.
 
-Until `query_events` exists, Overview mocks both: a stable per-encounter
-subset of the log's players, with synthesized numbers.
+**Multi-target cast grouping — not built.** The log flags AoE hits (a
+spell-prefixed `_DAMAGE` line's trailing `hitType`, `ST`/`AOE` —
+`docs/combat-log-format.md` §7; parser now exposes it as `flags` bit
+`FLAG_AOE`). A **cast group** = a maximal run of consecutive rows with
+equal `(timestamp_ms, source_unit, spell)` and a damage kind (covers
+Arcane Missiles — several `ST` hits one target — and Arcane Explosion —
+several `AOE` hits many). Intended: a `groupBy: ["cast"]` mode in
+`query.rs` emitting one row per group (`firstRow`, `lastRow`,
+`targetCount`, `hits`, `crits`, `totalAmount`, `aoe`), consumed by a new
+`event-table` widget on the Log page — collapsed rows (`time | source |
+"4 targets" | spell | 5000 (2 hits, 2 crits)`) expanding on click into the
+per-target rows via `raw_events`. **Not** the Raw view (stays 1:1).
 
 ## Starter widget set
 

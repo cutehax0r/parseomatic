@@ -184,6 +184,12 @@ pub enum LineKind {
     Standalone(StandaloneKind),
 }
 
+// Bit flags packed into `EventStore::flags`. Set only for damage/heal
+// composed events; 0 everywhere else.
+pub const FLAG_CRIT: u8 = 1 << 0;
+pub const FLAG_AOE: u8 = 1 << 1; // spell-prefixed _DAMAGE with hitType == "AOE"
+pub const FLAG_OFFHAND: u8 = 1 << 2;
+
 impl LineKind {
     /// Human-readable subevent-shaped label for display (the raw view) --
     /// e.g. `"SPELL_DAMAGE"`, `"ENCOUNTER_START"`. Reconstructed from the
@@ -223,6 +229,13 @@ pub struct EventStore {
     pub dest_unit: Vec<u32>,
     pub spell: Vec<u16>,
     pub has_advanced: Vec<bool>,
+    /// Damage/heal amount for damage/heal composed events, 0 otherwise.
+    /// Promoted from `raw_fields` because the query DSL (`query.rs`) needs
+    /// it on every matching row -- see the module docs' "promote when a
+    /// view needs it" note.
+    pub amount: Vec<i64>,
+    /// `FLAG_CRIT | FLAG_AOE | FLAG_OFFHAND`, 0 for non-damage/heal rows.
+    pub flags: Vec<u8>,
     raw_field_ranges: Vec<(u32, u32)>,
     raw_field_arena: Vec<FieldSpan>,
 }
@@ -252,6 +265,8 @@ impl EventStore {
         dest_unit: u32,
         spell: u16,
         has_advanced: bool,
+        amount: i64,
+        flags: u8,
         raw_fields: &[FieldSpan],
     ) {
         self.timestamp_ms.push(timestamp_ms);
@@ -261,6 +276,8 @@ impl EventStore {
         self.dest_unit.push(dest_unit);
         self.spell.push(spell);
         self.has_advanced.push(has_advanced);
+        self.amount.push(amount);
+        self.flags.push(flags);
         let start = self.raw_field_arena.len() as u32;
         self.raw_field_arena.extend_from_slice(raw_fields);
         self.raw_field_ranges.push((start, raw_fields.len() as u32));
@@ -275,6 +292,8 @@ impl EventStore {
             intern::NO_UNIT,
             intern::NO_SPELL,
             false,
+            0,
+            0,
             &[],
         );
     }
@@ -315,6 +334,8 @@ impl EventStore {
         self.dest_unit.extend(other.dest_unit);
         self.spell.extend(other.spell);
         self.has_advanced.extend(other.has_advanced);
+        self.amount.extend(other.amount);
+        self.flags.extend(other.flags);
         self.raw_field_arena.extend(other.raw_field_arena);
         self.raw_field_ranges.extend(other.raw_field_ranges);
     }
@@ -541,6 +562,54 @@ fn link_owner(data: &[u8], advanced_fields: &[FieldSpan], tables: &mut InternTab
     tables.guids.intern(info_guid, empty_name, owner_id);
 }
 
+/// `(amount, flags)` for a damage/heal composed event, promoted from the
+/// row's raw fields. `raw` is the slice `parse_composed` is about to push
+/// (advanced block if present, then suffix fields, then a trailing
+/// `hitType` for spell-prefixed `_DAMAGE`/`_MISSED`). Suffix fields start
+/// at offset 19 when the advanced block is present, else 0
+/// (`docs/combat-log-format.md` §5/§7). Non-damage/heal suffixes, and
+/// `ENVIRONMENTAL_*` (its raw slice keeps an extra leading prefix field),
+/// yield `(0, 0)`.
+fn extract_damage_heal(
+    prefix: Prefix,
+    suffix: Suffix,
+    has_advanced: bool,
+    raw: &[FieldSpan],
+    data: &[u8],
+) -> (i64, u8) {
+    if prefix == Prefix::Environmental {
+        return (0, 0);
+    }
+    let off = if has_advanced { 19 } else { 0 };
+    let field = |i: usize| raw.get(off + i).map(|f| f.resolve_str(data));
+    // Boolean suffix fields render as the bare token "1" / "0" / "nil"
+    // in the file, never true/false (§3).
+    let is_set = |s: Option<&str>| s == Some("1");
+
+    match suffix {
+        Suffix::Damage => {
+            let amount = field(0).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let mut flags = 0u8;
+            if is_set(field(6)) {
+                flags |= FLAG_CRIT;
+            }
+            if is_set(field(9)) {
+                flags |= FLAG_OFFHAND;
+            }
+            if is_spell_family(prefix) && raw.last().map(|f| f.resolve_str(data)) == Some("AOE") {
+                flags |= FLAG_AOE;
+            }
+            (amount, flags)
+        }
+        Suffix::Heal => {
+            let amount = field(0).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let flags = if is_set(field(3)) { FLAG_CRIT } else { 0 };
+            (amount, flags)
+        }
+        _ => (0, 0),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn parse_composed(
     data: &[u8],
@@ -589,6 +658,9 @@ fn parse_composed(
     // column) -- Spell-family prefix fields are already captured via
     // `spell_id` and skipped here to avoid storing them twice.
     let raw_start = if prefix == Prefix::Environmental { 9 } else { after_prefix };
+    let raw = &fields[raw_start..];
+
+    let (amount, flags) = extract_damage_heal(prefix, suffix, has_advanced, raw, data);
 
     store.push(
         timestamp_ms,
@@ -598,7 +670,9 @@ fn parse_composed(
         dest_id,
         spell_id,
         has_advanced,
-        &fields[raw_start..],
+        amount,
+        flags,
+        raw,
     );
 }
 
@@ -617,6 +691,8 @@ fn push_raw_only(
         intern::NO_UNIT,
         intern::NO_SPELL,
         false,
+        0,
+        0,
         fields,
     );
 }
@@ -649,6 +725,8 @@ fn parse_standalone(
                 dest_id,
                 intern::NO_SPELL,
                 false,
+                0,
+                0,
                 &fields[9..],
             );
         }
@@ -684,6 +762,8 @@ fn parse_standalone(
                 intern::NO_UNIT,
                 intern::NO_SPELL,
                 false,
+                0,
+                0,
                 fields.get(2..).unwrap_or(&[]),
             );
         }
@@ -730,6 +810,8 @@ fn parse_emote(
         intern::NO_UNIT,
         intern::NO_SPELL,
         false,
+        0,
+        0,
         raw,
     );
 }
@@ -821,6 +903,10 @@ mod tests {
         // 19 advanced fields + 10 _DAMAGE suffix fields, confirmed against
         // the real fixture (docs/combat-log-format.md §5/§7).
         assert_eq!(store.raw_fields(0).len(), 29);
+        // Promoted amount (suffix field 0) + flags (critical=0 here, no
+        // hitType on SWING_*).
+        assert_eq!(store.amount[0], 2099);
+        assert_eq!(store.flags[0], 0);
 
         let source_name = tables.strings.get(tables.guids.get(store.source_unit[0]).name_id);
         let dest_name = tables.strings.get(tables.guids.get(store.dest_unit[0]).name_id);
@@ -850,6 +936,44 @@ mod tests {
         assert_eq!(store.raw_fields(0).len(), 30);
         let hit_type = store.raw_fields(0).last().unwrap();
         assert_eq!(hit_type.resolve_str(&data), "ST");
+        // Promoted amount + flags: suffix field 0 is 8042, critical (field
+        // 6) is 0, hitType ST -> no flags.
+        assert_eq!(store.amount[0], 8042);
+        assert_eq!(store.flags[0], 0);
+    }
+
+    #[test]
+    fn spell_damage_promotes_crit_and_aoe_flags() {
+        let (_, _, store) = parse(concat!(
+            "SPELL_DAMAGE,Player-1-00000001,\"Mage-Realm-US\",0x511,0x0,",
+            "Creature-0-0-0-0-1-0,\"Add\",0xa48,0x0,",
+            "1449,\"Arcane Explosion\",0x40,",
+            "Player-1-00000001,0000000000000000,100,100,0,0,0,0,0,0,0,0,100,0,0,0,0,0,0,",
+            "5000,0,64,0,0,0,1,nil,nil,nil,AOE"
+        ));
+        assert_eq!(store.len(), 1);
+        assert!(store.has_advanced[0]);
+        assert_eq!(store.amount[0], 5000);
+        assert_eq!(store.flags[0], FLAG_CRIT | FLAG_AOE);
+    }
+
+    #[test]
+    fn spell_heal_promotes_amount_and_crit_from_its_shorter_suffix() {
+        // _HEAL suffix is amount, overhealing, absorbed, critical (4 fields).
+        let (_, _, store) = parse(concat!(
+            "SPELL_HEAL,Player-1-00000002,\"Priest-Realm-US\",0x511,0x0,",
+            "Player-1-00000003,\"Tank-Realm-US\",0x511,0x0,",
+            "2061,\"Flash Heal\",0x2,",
+            "Player-1-00000003,0000000000000000,5000,5000,0,0,0,0,0,0,0,0,100,0,0,0,0,0,0,",
+            "12000,3000,0,1"
+        ));
+        assert_eq!(store.len(), 1);
+        assert!(matches!(
+            store.kind[0],
+            LineKind::Composed { prefix: Prefix::Spell, suffix: Suffix::Heal }
+        ));
+        assert_eq!(store.amount[0], 12000);
+        assert_eq!(store.flags[0], FLAG_CRIT);
     }
 
     #[test]
@@ -871,6 +995,9 @@ mod tests {
         // Just auraType, per the confirmed conditional-amount gotcha
         // (docs/combat-log-format.md §7).
         assert_eq!(store.raw_fields(0).len(), 1);
+        // Non-damage/heal suffix -> no promoted amount or flags.
+        assert_eq!(store.amount[0], 0);
+        assert_eq!(store.flags[0], 0);
     }
 
     #[test]
