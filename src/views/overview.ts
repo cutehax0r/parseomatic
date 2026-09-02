@@ -36,19 +36,17 @@ const overviewSpec: NodeSpec = {
     { kind: "widget", type: "section-heading", id: "h-stats", props: { text: "Stats" } },
     {
       kind: "panel",
-      columns: 6,
+      columns: 4,
       children: [
-        { kind: "widget", type: "stat-tile", id: "dmg", props: { label: "Damage done", value: "—" } },
-        { kind: "widget", type: "stat-tile", id: "dps", props: { label: "DPS", value: "—" } },
-        { kind: "widget", type: "stat-tile", id: "heal", props: { label: "Healing done", value: "—" } },
-        { kind: "widget", type: "stat-tile", id: "hps", props: { label: "HPS", value: "—" } },
+        { kind: "widget", type: "stat-tile", id: "dmg", props: { label: "Damage", value: "—" } },
+        { kind: "widget", type: "stat-tile", id: "heal", props: { label: "Healing", value: "—" } },
         { kind: "widget", type: "stat-tile", id: "deaths", props: { label: "Deaths", value: "—" } },
-        { kind: "widget", type: "stat-tile", id: "result", props: { label: "Result", value: "—" } },
+        { kind: "widget", type: "stat-tile", id: "progress", props: { label: "Progress", value: "—" } },
         {
           kind: "widget",
           type: "line-chart",
           id: "chart",
-          span: 6,
+          span: 4,
           props: { buckets: [], deaths: [], startMs: 0, endMs: 0 },
         },
       ],
@@ -126,12 +124,22 @@ async function paint(): Promise<void> {
   const deaths = deathMarkers(e);
 
   built.get("title")?.update({ name: e.name, badge: durText, tone, detail: formatDifficulty(e) });
-  built.get("dmg")?.update({ label: "Damage done", value: formatCompact(playerDmg) });
-  built.get("dps")?.update({ label: "DPS", value: formatCompact(playerDmg / seconds) });
-  built.get("heal")?.update({ label: "Healing done", value: formatCompact(healing) });
-  built.get("hps")?.update({ label: "HPS", value: formatCompact(healing / seconds) });
+  built.get("dmg")?.update({
+    label: "Damage",
+    value: formatCompact(playerDmg),
+    sub: `${formatCompact(playerDmg / seconds)} DPS`,
+  });
+  built.get("heal")?.update({
+    label: "Healing",
+    value: formatCompact(healing),
+    sub: `${formatCompact(healing / seconds)} HPS`,
+  });
   built.get("deaths")?.update({ label: "Deaths", value: String(deathCount) });
-  built.get("result")?.update({ label: result || "Result", value: durText, tone });
+  // "Progress": on a kill, the word "Kill"; on a wipe, the boss's health %
+  // when the pull ended -- but that needs boss-HP + phase logic
+  // (docs/boss-parsers.md), so for now a wipe just shows "Wipe". Duration
+  // rides along in the sub slot, like DPS under Damage.
+  built.get("progress")?.update({ label: "Progress", value: result || "?", sub: durText, tone });
   built.get("chart")?.update({ buckets, deaths, startMs: e.startMs, endMs: e.endMs, displaySeconds: 8 });
   built.get("players")?.update({ rows: playerRows });
 }

@@ -19,21 +19,33 @@
 // side each line is on). Boss numbers dwarf raid numbers, and the point
 // isn't to compare them -- what reads is each side's change from its own
 // baseline, so a boss-damage / boss-healing spike marks a mechanic
-// regardless of absolute size. Each axis max is a "nice" 1/2/5 value;
-// per-slice totals are also in the hover tooltip. "DPS / HPS" is the chart
-// title, in the HTML header row.
+// regardless of absolute size. Per-slice totals are also in the hover
+// tooltip. "DPS / HPS" is the chart title, in the HTML header row.
+//
+// The chart HEIGHT is fixed (VB_H); WIDTH is fluid and the viewBox width
+// tracks the rendered pixel width, so a resize re-renders and the time
+// axis simply gains/loses minor gridlines -- nothing scales.
+//
+// Gridlines: the *player* axis drives the full-width horizontal rules
+// (nice 1/2/2.5/5 major step, ~3 bands at this height, one minor level
+// below); the enemy axis rides along as right-edge ticks only, so both
+// scales can stay "nice" without fighting over shared line positions. The
+// time axis picks the coarsest nice step (1/10s .. hours, bent onto the
+// 60/3600 grid) that stays under a spacing cap, plus a minor level.
+// Minors are labelled only when they're far enough apart to read.
 //
 // The line is rolled up from the fine query buckets to ~displaySeconds-wide
 // draw buckets so it reads smooth; hover still resolves the fine buckets.
 // Enemy series are drawn first and lighter so the player curves read on
-// top. Deaths are neutral --text-faint rules so they don't blur with the
-// reds. The legend row carries series identity. dataviz validator (dark,
+// top. Deaths are bright pink (--chart-death) rules -- a colour no series
+// uses, so they stand out without being mistaken for a line. The legend
+// row carries series identity. dataviz validator (dark,
 // surface #1e2030, --pairs all): CVD separation ΔE 9.9, normal-vision
 // floor 18.3, deep-red contrast 3:1 -- all pass; the lightness-band FAIL
 // is the known, accepted cost of matching the app's Catppuccin tokens.
 
 import { registerWidget } from "../registry";
-import { formatCompact, formatDuration } from "../../format";
+import { formatAxisTime, formatCompact } from "../../format";
 
 export interface ChartBucket {
   tMid: number;
@@ -62,14 +74,75 @@ export interface LineChartProps {
   displaySeconds?: number;
 }
 
-const VB_W = 900;
-const VB_H = 264;
+// Height is FIXED (~3x a stat tile) -- the chart must not grow vertically
+// as the window widens. Keep in sync with `.chart-plot svg { height }` in
+// styles.css. Width is fluid: the viewBox width is set per-render to the
+// measured pixel width, so 1 unit == 1px (no scaling) and the tick engine
+// gets real spacing -- a wider chart just earns more minor gridlines.
+const VB_H = 210;
 // left / right padding hold the player and enemy y-axis numbers; top
 // clears the "Players" / "Enemies" scale captions.
 const PAD = { top: 20, right: 40, bottom: 22, left: 40 };
-const PLOT_W = VB_W - PAD.left - PAD.right;
 const PLOT_H = VB_H - PAD.top - PAD.bottom;
 const SVG_NS = "http://www.w3.org/2000/svg";
+
+// Gridline density knobs, in pixels (the viewBox is kept 1:1 with the
+// rendered size). Majors are labelled; minors only when far enough apart.
+const Y_MAJOR_TARGET = 66; // aim ~4 major bands over the plot height
+const Y_MINOR_MIN = 24;
+const Y_MINOR_LABEL = 40;
+const X_MAJOR_MAX = 280; // coarsest major that stays under this wins
+const X_MINOR_MIN = 30;
+const X_MINOR_LABEL = 72; // only label minor time ticks when really roomy
+
+// "Nice" y-axis step mantissas (x 10^n), ascending.
+const VALUE_MANTISSAS = [1, 2, 2.5, 5] as const;
+
+// "Nice" time steps in seconds, ascending: 1/10s up through the usual
+// 1/2/5 pattern bent onto the 60 / 3600 grid.
+const TIME_STEPS = [
+  0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600,
+] as const;
+
+// Smallest m*10^n (m from `mantissas`) that is >= v.
+function niceStep(v: number, mantissas: readonly number[]): number {
+  if (!(v > 0)) return mantissas[0];
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of mantissas) if (m * mag >= v * (1 - 1e-9)) return m * mag;
+  return mantissas[0] * mag * 10;
+}
+
+// 0 -> axisMax nice step + max: a nice step near peak/targetBands, then the
+// axis rounded up to a whole number of those steps.
+function niceAxis(peak: number, plotPx: number): { step: number; max: number } {
+  const bands = Math.max(2, Math.round(plotPx / Y_MAJOR_TARGET));
+  const step = niceStep((peak * 1.05) / bands, VALUE_MANTISSAS);
+  const max = Math.max(step, Math.ceil((peak * 1.05) / step) * step);
+  return { step, max };
+}
+
+// Coarsest TIME_STEP whose on-screen spacing stays <= X_MAJOR_MAX and that
+// still splits the span at least twice; else the finest (caller falls back).
+function pickTimeMajor(spanSec: number, plotPx: number): number {
+  let best = 0;
+  for (const s of TIME_STEPS) {
+    if ((s / spanSec) * plotPx > X_MAJOR_MAX) break;
+    if (spanSec / s >= 2) best = s;
+  }
+  return best || TIME_STEPS[0];
+}
+
+// Finest TIME_STEP that divides `major` into 2..6 and still renders at
+// >= X_MINOR_MIN spacing. null if none fit.
+function pickTimeMinor(major: number, spanSec: number, plotPx: number): number | null {
+  for (const s of TIME_STEPS) {
+    if (s >= major) break;
+    const k = Math.round(major / s);
+    if (k < 2 || k > 6 || Math.abs(major / s - k) > 1e-6) continue;
+    if ((s / spanSec) * plotPx >= X_MINOR_MIN) return s;
+  }
+  return null;
+}
 
 function el<K extends keyof SVGElementTagNameMap>(
   name: K,
@@ -78,15 +151,6 @@ function el<K extends keyof SVGElementTagNameMap>(
   const node = document.createElementNS(SVG_NS, name);
   for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
   return node;
-}
-
-// Round an axis max up to the next 1 / 2 / 5 x 10^n, so tick labels land
-// on readable numbers.
-function niceCeil(v: number): number {
-  if (!(v > 0)) return 1;
-  const mag = Math.pow(10, Math.floor(Math.log10(v)));
-  const n = v / mag;
-  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag;
 }
 
 // Catmull-Rom -> cubic bezier, with control-point y clamped to [0, plotH]
@@ -132,7 +196,11 @@ registerWidget<LineChartProps>("line-chart", (props) => {
 
   const plot = document.createElement("div");
   plot.className = "chart-plot";
-  const svg = el("svg", { viewBox: `0 0 ${VB_W} ${VB_H}` });
+  // vbW is the viewBox width; render() syncs it to the SVG's real pixel
+  // width so 1 unit == 1px. plotW is the drawable width inside the gutters.
+  let vbW = 900;
+  let plotW = vbW - PAD.left - PAD.right;
+  const svg = el("svg", { viewBox: `0 0 ${vbW} ${VB_H}` });
   const tooltip = document.createElement("div");
   tooltip.className = "chart-tooltip";
   tooltip.hidden = true;
@@ -152,17 +220,28 @@ registerWidget<LineChartProps>("line-chart", (props) => {
   // bucket (and the same death, if any) skips the DOM write entirely.
   let svgRect: DOMRect | null = null;
   let hoverRaf = 0;
+  let resizeRaf = 0;
   let pendingClientX = 0;
   let lastBucketIdx = -1;
   let lastDeathT: number | null = null;
+  // Width drives how many minor gridlines fit, so a resize is a re-render
+  // (rAF-coalesced), not just a cache refresh.
   const resizeObserver = new ResizeObserver(() => {
     svgRect = svg.getBoundingClientRect();
+    // Only a real width change earns a re-render; 8px of hysteresis so a
+    // scrollbar toggle or sub-pixel reflow during page load doesn't churn.
+    if (svgRect.width > 0 && Math.abs(Math.round(svgRect.width) - vbW) >= 8 && !resizeRaf) {
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0;
+        render();
+      });
+    }
   });
   resizeObserver.observe(svg);
 
   const xOf = (t: number) => {
     const span = current.endMs - current.startMs || 1;
-    return PAD.left + ((t - current.startMs) / span) * PLOT_W;
+    return PAD.left + ((t - current.startMs) / span) * plotW;
   };
 
   // Nearest bucket to time `t` -- buckets are sorted by tMid.
@@ -181,6 +260,16 @@ registerWidget<LineChartProps>("line-chart", (props) => {
   }
 
   function render() {
+    // Sync the viewBox to the SVG's real pixel width (fixed height), so the
+    // drawing isn't scaled and the tick engine reasons in true pixels.
+    const rect = svg.getBoundingClientRect();
+    if (rect.width > 0) {
+      svgRect = rect;
+      vbW = Math.round(rect.width);
+      plotW = vbW - PAD.left - PAD.right;
+    }
+    svg.setAttribute("viewBox", `0 0 ${vbW} ${VB_H}`);
+
     const { buckets, deaths, startMs } = current;
     const span = current.endMs - startMs || 1;
     const fineSec = Math.max(0.001, span / (buckets.length || 1) / 1000);
@@ -220,32 +309,62 @@ registerWidget<LineChartProps>("line-chart", (props) => {
     // Two activity meters, not a shared scale: the player lines scale to
     // the player axis (left), the enemy lines to the enemy axis (right) --
     // boss numbers otherwise dwarf raid numbers. What reads is each side's
-    // change from its own baseline. Each axis max is rounded to a "nice"
-    // 1/2/5 value so the tick labels are legible; floor is 0 on both.
+    // change from its own baseline. The horizontal gridlines follow the
+    // player axis; the enemy axis rides along as right-edge ticks.
     let playerPeak = 1;
     let enemyPeak = 1;
     for (const p of plot) {
       playerPeak = Math.max(playerPeak, p.player, p.healing);
       enemyPeak = Math.max(enemyPeak, p.npc, p.npcHeal);
     }
-    const playerAxis = niceCeil(playerPeak * 1.05);
-    const enemyAxis = niceCeil(enemyPeak * 1.05);
-    const yPlayer = (rate: number) => PAD.top + PLOT_H - (rate / playerAxis) * PLOT_H;
-    const yEnemy = (rate: number) => PAD.top + PLOT_H - (rate / enemyAxis) * PLOT_H;
+    const pAxis = niceAxis(playerPeak, PLOT_H);
+    const eAxis = niceAxis(enemyPeak, PLOT_H);
+    const yPlayer = (rate: number) => PAD.top + PLOT_H - (rate / pAxis.max) * PLOT_H;
+    const yEnemy = (rate: number) => PAD.top + PLOT_H - (rate / eAxis.max) * PLOT_H;
 
     svg.replaceChildren();
 
-    // Gridlines + dual y labels: player rate on the left, enemy rate on the
-    // right, at 0 / half / full.
-    for (const frac of [0, 0.5, 1]) {
-      const y = PAD.top + PLOT_H - frac * PLOT_H;
-      svg.appendChild(el("line", { x1: PAD.left, y1: y, x2: PAD.left + PLOT_W, y2: y, class: "chart-grid" }));
-      const left = el("text", { x: PAD.left - 6, y: y + 3, class: "chart-axis-label", "text-anchor": "end" });
-      left.textContent = formatCompact(frac * playerAxis);
-      svg.appendChild(left);
-      const right = el("text", { x: PAD.left + PLOT_W + 6, y: y + 3, class: "chart-axis-label", "text-anchor": "start" });
-      right.textContent = formatCompact(frac * enemyAxis);
-      svg.appendChild(right);
+    // --- Horizontal grid (player axis) + left labels. `sub` minor slices
+    // per major band: 1 (none), 2 (halves), or 4 (quarters) as height allows.
+    const pBands = Math.round(pAxis.max / pAxis.step);
+    const pMajorPx = PLOT_H / pBands;
+    const pSub = pMajorPx / 2 >= Y_MINOR_MIN ? (pMajorPx / 4 >= Y_MINOR_MIN ? 4 : 2) : 1;
+    const pSlots = pBands * pSub;
+    const pMinorPx = PLOT_H / pSlots;
+    for (let i = 0; i <= pSlots; i++) {
+      const isMajor = i % pSub === 0;
+      const y = PAD.top + PLOT_H - (i / pSlots) * PLOT_H;
+      svg.appendChild(
+        el("line", {
+          x1: PAD.left,
+          y1: y,
+          x2: PAD.left + plotW,
+          y2: y,
+          class: isMajor ? "chart-grid" : "chart-grid chart-grid--minor",
+        }),
+      );
+      if (isMajor || pMinorPx >= Y_MINOR_LABEL) {
+        const t = el("text", {
+          x: PAD.left - 6,
+          y: y + 3,
+          class: isMajor ? "chart-axis-label" : "chart-axis-label chart-axis-label--minor",
+          "text-anchor": "end",
+        });
+        t.textContent = formatCompact((i / pSlots) * pAxis.max);
+        svg.appendChild(t);
+      }
+    }
+
+    // --- Enemy axis: right-edge ticks + labels, no full-width lines.
+    const eBands = Math.round(eAxis.max / eAxis.step);
+    for (let i = 0; i <= eBands; i++) {
+      const y = PAD.top + PLOT_H - (i / eBands) * PLOT_H;
+      svg.appendChild(
+        el("line", { x1: PAD.left + plotW, y1: y, x2: PAD.left + plotW + 4, y2: y, class: "chart-tick" }),
+      );
+      const t = el("text", { x: PAD.left + plotW + 7, y: y + 3, class: "chart-axis-label", "text-anchor": "start" });
+      t.textContent = formatCompact((i / eBands) * eAxis.max);
+      svg.appendChild(t);
     }
 
     // Which side's scale a line is on: "Players" over the left axis,
@@ -253,17 +372,53 @@ registerWidget<LineChartProps>("line-chart", (props) => {
     const capPlayers = el("text", { x: PAD.left + 2, y: 11, class: "chart-cap", "text-anchor": "start" });
     capPlayers.textContent = "Players";
     svg.appendChild(capPlayers);
-    const capEnemies = el("text", { x: PAD.left + PLOT_W - 2, y: 11, class: "chart-cap", "text-anchor": "end" });
+    const capEnemies = el("text", { x: PAD.left + plotW - 2, y: 11, class: "chart-cap", "text-anchor": "end" });
     capEnemies.textContent = "Enemies";
     svg.appendChild(capEnemies);
 
-    // Time-axis ticks, relative to the range start.
-    for (const frac of [0, 0.25, 0.5, 0.75, 1]) {
-      const x = PAD.left + frac * PLOT_W;
-      const t = startMs + frac * (current.endMs - startMs);
-      const label = el("text", { x, y: VB_H - 6, class: "chart-axis-label", "text-anchor": "middle" });
-      label.textContent = formatDuration(t - startMs);
-      svg.appendChild(label);
+    // --- Vertical grid (time axis). Nice major step, one minor level below
+    // it if it fits; both drawn as full-height rules.
+    const spanSec = span / 1000;
+    const xMajor = pickTimeMajor(spanSec, plotW);
+    if (Math.floor(spanSec / xMajor + 1e-6) >= 2) {
+      const xMinor = pickTimeMinor(xMajor, spanSec, plotW);
+      const xStep = xMinor ?? xMajor;
+      const perMajor = xMinor ? Math.round(xMajor / xMinor) : 1;
+      const xMinorPx = (xStep / spanSec) * plotW;
+      const nSlots = Math.floor(spanSec / xStep + 1e-6);
+      for (let i = 0; i <= nSlots; i++) {
+        const tSec = i * xStep;
+        const x = PAD.left + (tSec / spanSec) * plotW;
+        const isMajor = i % perMajor === 0;
+        svg.appendChild(
+          el("line", {
+            x1: x,
+            y1: PAD.top,
+            x2: x,
+            y2: PAD.top + PLOT_H,
+            class: isMajor ? "chart-grid" : "chart-grid chart-grid--minor",
+          }),
+        );
+        if (isMajor || xMinorPx >= X_MINOR_LABEL) {
+          const label = el("text", {
+            x,
+            y: VB_H - 6,
+            class: isMajor ? "chart-axis-label" : "chart-axis-label chart-axis-label--minor",
+            "text-anchor": "middle",
+          });
+          label.textContent = formatAxisTime(tSec * 1000, isMajor ? xMajor : xStep);
+          svg.appendChild(label);
+        }
+      }
+    } else {
+      // Degenerate span: just quarter the range (labels may not be "nice").
+      for (let i = 0; i <= 4; i++) {
+        const x = PAD.left + (i / 4) * plotW;
+        svg.appendChild(el("line", { x1: x, y1: PAD.top, x2: x, y2: PAD.top + PLOT_H, class: "chart-grid" }));
+        const label = el("text", { x, y: VB_H - 6, class: "chart-axis-label", "text-anchor": "middle" });
+        label.textContent = formatAxisTime((i / 4) * span, spanSec / 4);
+        svg.appendChild(label);
+      }
     }
 
     // Death rules (under the series lines).
@@ -307,12 +462,12 @@ registerWidget<LineChartProps>("line-chart", (props) => {
     if (!svgRect || svgRect.width === 0) svgRect = svg.getBoundingClientRect();
     if (svgRect.width === 0 || current.buckets.length === 0) return;
 
-    const xView = ((pendingClientX - svgRect.left) / svgRect.width) * VB_W;
-    if (xView < PAD.left || xView > PAD.left + PLOT_W) {
+    const xView = ((pendingClientX - svgRect.left) / svgRect.width) * vbW;
+    if (xView < PAD.left || xView > PAD.left + plotW) {
       hideHover();
       return;
     }
-    const t = current.startMs + ((xView - PAD.left) / PLOT_W) * (current.endMs - current.startMs);
+    const t = current.startMs + ((xView - PAD.left) / plotW) * (current.endMs - current.startMs);
     const idx = nearestBucket(t);
     const near = current.deaths.find((d) => Math.abs(xOf(d.t) - xView) < 6);
     const deathT = near?.t ?? null;
@@ -332,9 +487,9 @@ registerWidget<LineChartProps>("line-chart", (props) => {
     // Tooltip shows the raw totals for the hovered slice (not the plotted
     // rate); the header notes the slice length.
     tooltip.innerHTML = near
-      ? `<div class="chart-tooltip-time">${formatDuration(near.t - current.startMs)}</div>` +
+      ? `<div class="chart-tooltip-time">${formatAxisTime(near.t - current.startMs, bucketSec)}</div>` +
         `<div class="chart-tooltip-row"><span>Death</span><b>${near.label ?? "—"}</b></div>`
-      : `<div class="chart-tooltip-time">${formatDuration(b.tMid - current.startMs)} · ${bucketSec.toFixed(bucketSec < 10 ? 1 : 0)}s</div>` +
+      : `<div class="chart-tooltip-time">${formatAxisTime(b.tMid - current.startMs, bucketSec)} · ${bucketSec.toFixed(bucketSec < 10 ? 1 : 0)}s</div>` +
         `<div class="chart-tooltip-cols">` +
         `<div class="chart-tooltip-col">` +
         `<div class="chart-tooltip-head">Players</div>` +
@@ -350,7 +505,7 @@ registerWidget<LineChartProps>("line-chart", (props) => {
     tooltip.hidden = false;
     // x is in viewBox units; the SVG fills .chart-plot, so this maps
     // straight to a percentage offset within the tooltip's container.
-    tooltip.style.left = `${(x / VB_W) * 100}%`;
+    tooltip.style.left = `${(x / vbW) * 100}%`;
   }
 
   function hideHover() {
@@ -379,6 +534,7 @@ registerWidget<LineChartProps>("line-chart", (props) => {
     destroy() {
       resizeObserver.disconnect();
       if (hoverRaf) cancelAnimationFrame(hoverRaf);
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
     },
     update(next) {
       current = next;

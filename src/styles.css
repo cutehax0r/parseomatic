@@ -51,6 +51,7 @@
     no Catppuccin token is dark enough to read as distinct from --danger.
     dataviz validator (dark, surface #1e2030, --pairs all): contrast 3:1 PASS,
     CVD separation ΔE 9.9 / normal-vision floor 18.3 PASS. */
+  --chart-death: var(--ctp-pink); /* death markers -- bright, distinct from the four series */
 
   /* Shape/elevation tokens -- kept semantic so the shadcn-ish widget look
      (see docs/ui-widgets.md "Styling") stays a one-block change. */
@@ -834,7 +835,7 @@ body {
   color: var(--text-muted);
 }
 
-/* stat-tile -- label + big number + optional sub. */
+/* stat-tile -- label + big number, with an optional sub value inline beside it. */
 .stat-tile {
   display: flex;
   flex-direction: column;
@@ -853,6 +854,12 @@ body {
   color: var(--text-faint);
 }
 
+.stat-tile-valuerow {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
 .stat-tile-value {
   font-size: 22px;
   font-weight: 600;
@@ -862,6 +869,8 @@ body {
 .stat-tile-sub {
   font-size: 12px;
   color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .stat-tile-sub[hidden] {
@@ -979,7 +988,7 @@ body {
   width: 2px;
   height: 11px;
   border-radius: 0;
-  background-color: var(--text-faint);
+  background-color: var(--chart-death);
 }
 
 .chart-plot {
@@ -989,7 +998,10 @@ body {
 .chart-plot svg {
   display: block;
   width: 100%;
-  height: auto;
+  /* Fixed height (must equal VB_H in line-chart.ts). The widget syncs its
+     viewBox width to the rendered pixel width, so width is fluid but the
+     chart never grows taller as the window widens. */
+  height: 210px;
   /* dragging to hover the crosshair shouldn't rubber-band a text selection */
   user-select: none;
   -webkit-user-select: none;
@@ -1000,9 +1012,24 @@ body {
   stroke-width: 1;
 }
 
+/* Minor gridlines + their labels sit back from the major ones. */
+.chart-grid--minor {
+  opacity: 0.4;
+}
+
+/* Enemy (right) axis: short edge ticks instead of full-width rules. */
+.chart-tick {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
 .chart-axis-label {
   fill: var(--text-faint);
   font-size: 10px;
+}
+
+.chart-axis-label--minor {
+  opacity: 0.7;
 }
 
 /* "Players" / "Enemies" -- which side's scale a line is on. */
@@ -1013,9 +1040,9 @@ body {
 }
 
 .chart-death {
-  stroke: var(--text-faint);
-  stroke-width: 1;
-  opacity: 0.5;
+  stroke: var(--chart-death);
+  stroke-width: 1.25;
+  opacity: 0.85;
 }
 
 .chart-line {

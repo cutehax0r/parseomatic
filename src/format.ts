@@ -12,6 +12,23 @@ export function formatDuration(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+// Time label whose precision follows the tick/bucket step it's labelling:
+// a sub-second axis reads "0.4s", a minutes axis "2:00", a long one
+// "1:05:00". `stepSec` is the spacing between adjacent labels.
+export function formatAxisTime(ms: number, stepSec: number): string {
+  const t = Math.max(0, ms) / 1000;
+  if (stepSec > 0 && stepSec < 1) {
+    if (t < 1) return t === 0 ? "0" : `${t.toFixed(t < 0.1 ? 2 : 1)}s`;
+    const m = Math.floor(t / 60);
+    return `${m}:${(t - m * 60).toFixed(1).padStart(4, "0")}`;
+  }
+  const total = Math.round(t);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = String(total % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
+}
+
 // "" for trash, else Kill / Wipe / ? (synthesized end).
 export function formatEncounterResult(e: EncounterRow): string {
   if (e.isTrash) return "";

@@ -611,8 +611,18 @@ reimplementing by hand as long as the stance holds; the look does not.
   Overview ever needs to look reasonable at very narrow window widths.
 - Auto-scroll-disengage-on-manual-scroll behavior for playback tables is
   undecided (see "Shared state: the playhead").
-- No role-based filtering (tank/healer/dps). Deriving role from
-  `COMBATANT_INFO` `CurrentSpecID` via a static specId→role table was
-  considered and cut as non-essential — filter by `sourceGuid` (individual
-  player) instead. Revisit only if a concrete view actually needs
-  group-by-role.
+- Role-based filtering/grouping (**melee / ranged / healer / tank**) is
+  wanted — see the note below — but not built yet; for now filter by
+  `sourceGuid` (individual player).
+
+### TODO — class + spec → role
+
+Group and filter players by role. Derive it from `COMBATANT_INFO`'s class
++ `CurrentSpecID` through a **hard-coded `specId → role` table** (roles:
+melee, ranged, healer, tank). The table only shifts when Blizzard adds a
+spec or reworks one — a once-or-twice-a-year edit, same maintenance
+profile as the boss name list in `boss-parsers.md`. Longer term this
+becomes real configuration (class/spec → role) rather than a literal
+table, but a static map is the right first cut. Feeds: the group-
+composition summary (`stats-features.md`), a role filter in the filter
+chain, per-role damage/healing rollups.

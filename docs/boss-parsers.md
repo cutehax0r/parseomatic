@@ -167,6 +167,33 @@ how much the log tells us:
 The parser decides which case a hazard is and emits an `ImpliedEntity`
 (replay), a `MechanicEvent` (timeline), or both.
 
+## Blocked on this: the Overview "Progress" tile
+
+The Overview stats row wants a **Progress** tile — boss health remaining
+at the end of the encounter (`0%` on a kill, `14%` on a wipe), with the
+duration as its inline sub value. Deferred until phase logic exists,
+because the naive versions mislead:
+
+- **Boss HP isn't parsed.** `currentHP` / `maxHP` ride on every advanced
+  damage/heal event (the *target's* values), but the parser only keeps the
+  19-field advanced block as raw arena spans — see `event.rs`
+  `extract_damage_heal` / `link_owner`. A Progress tile needs those two
+  fields typed, or a lazy scan of the encounter window. (Latency of an
+  extra per-encounter scan is fine — it can `Promise.all` with the two
+  Overview queries.)
+- **"Boss" identification:** for a first cut, the `Creature`-kind unit(s)
+  with the highest observed `maxHP` in the window. Long term, a curated
+  name list (updated once or twice a tier).
+- **Council fights:** average across the bosses as `Σ current / Σ max`,
+  not a per-boss number.
+- **Why it's blocked:** "lowest HP reached" is wrong — bosses heal
+  mid-fight (phase transitions, e.g. Venomous Abyss boss 5 goes ~0% → 100%
+  on a phase change), so a min taken across the whole fight reports a
+  number the pull never meaningfully sat at. "HP at the encounter end" is
+  closer but still confounded by a heal right before the wipe. Doing it
+  properly means knowing the phase boundaries, i.e. this doc's phase
+  output.
+
 ## Distribution & maintenance
 
 Boss parsers are code, custom per encounter, refreshed each tier — the same
