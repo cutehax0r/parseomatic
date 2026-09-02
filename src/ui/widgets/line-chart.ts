@@ -8,16 +8,29 @@
 // `query_events` will return (server-side bucket sums), so the widget
 // won't change when real data lands.
 //
-// Three series, all plotted as a rate (sum / bucket seconds):
-//   player = --accent (blue)  -- players + their pets
-//   npc    = --danger (red)   -- creature (boss / add) damage
-//   healing = --success (green)
-// Deaths are neutral --text-faint rules so they don't blur with the red
-// npc line. All three series are direct-labeled, so identity is never
-// color-alone. dataviz validator (dark, surface #1e2030, --pairs all):
-// CVD separation ΔE 9.9, normal-vision floor 19.0 -- both pass; the
-// lightness-band FAIL is the known, accepted cost of matching the app's
-// existing Catppuccin tokens.
+// Four series, plain lines (no fills / dots / end labels):
+//   player  = --accent (blue)           -- players + their pets, damage
+//   healing = --success (green)         -- players + their pets, healing
+//   npc     = --chart-deep-red (dk red) -- creature (boss / add) damage
+//   npcHeal = --danger (red)            -- creature healing
+//
+// Two scales, not one: the player lines read against the left y axis, the
+// enemy lines against the right ("Players" / "Enemies" captions mark which
+// side each line is on). Boss numbers dwarf raid numbers, and the point
+// isn't to compare them -- what reads is each side's change from its own
+// baseline, so a boss-damage / boss-healing spike marks a mechanic
+// regardless of absolute size. Each axis max is a "nice" 1/2/5 value;
+// per-slice totals are also in the hover tooltip. "DPS / HPS" is the chart
+// title, in the HTML header row.
+//
+// The line is rolled up from the fine query buckets to ~displaySeconds-wide
+// draw buckets so it reads smooth; hover still resolves the fine buckets.
+// Enemy series are drawn first and lighter so the player curves read on
+// top. Deaths are neutral --text-faint rules so they don't blur with the
+// reds. The legend row carries series identity. dataviz validator (dark,
+// surface #1e2030, --pairs all): CVD separation ΔE 9.9, normal-vision
+// floor 18.3, deep-red contrast 3:1 -- all pass; the lightness-band FAIL
+// is the known, accepted cost of matching the app's Catppuccin tokens.
 
 import { registerWidget } from "../registry";
 import { formatCompact, formatDuration } from "../../format";
@@ -25,11 +38,12 @@ import { formatCompact, formatDuration } from "../../format";
 export interface ChartBucket {
   tMid: number;
   player: number; // player + player-owned pet damage
+  healing: number; // player + player-owned pet healing
   npc: number; // creature (boss / add) damage
-  healing: number;
+  npcHeal: number; // creature (boss / add) healing
 }
 
-type SeriesKey = "player" | "npc" | "healing";
+type SeriesKey = "player" | "healing" | "npc" | "npcHeal";
 
 export interface ChartDeath {
   t: number;
@@ -41,11 +55,18 @@ export interface LineChartProps {
   deaths: ChartDeath[];
   startMs: number;
   endMs: number;
+  // Target width, in seconds, of a *drawn* bucket. The query buckets
+  // (`buckets`) stay fine so the hover tooltip keeps 1s-ish detail; the
+  // line is rolled up to roughly this width so it reads smooth. Optional;
+  // defaults to 8s. Ignored once the query buckets are already coarser.
+  displaySeconds?: number;
 }
 
 const VB_W = 900;
-const VB_H = 268;
-const PAD = { top: 26, right: 52, bottom: 22, left: 44 };
+const VB_H = 264;
+// left / right padding hold the player and enemy y-axis numbers; top
+// clears the "Players" / "Enemies" scale captions.
+const PAD = { top: 20, right: 40, bottom: 22, left: 40 };
 const PLOT_W = VB_W - PAD.left - PAD.right;
 const PLOT_H = VB_H - PAD.top - PAD.bottom;
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -57,6 +78,15 @@ function el<K extends keyof SVGElementTagNameMap>(
   const node = document.createElementNS(SVG_NS, name);
   for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
   return node;
+}
+
+// Round an axis max up to the next 1 / 2 / 5 x 10^n, so tick labels land
+// on readable numbers.
+function niceCeil(v: number): number {
+  if (!(v > 0)) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / mag;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag;
 }
 
 // Catmull-Rom -> cubic bezier, with control-point y clamped to [0, plotH]
@@ -84,13 +114,21 @@ registerWidget<LineChartProps>("line-chart", (props) => {
   const element = document.createElement("div");
   element.className = "chart";
 
+  // Header row: the chart title on the left, the legend pushed to the right.
+  const header = document.createElement("div");
+  header.className = "chart-header";
+  const title = document.createElement("span");
+  title.className = "chart-title";
+  title.textContent = "DPS / HPS";
   const legend = document.createElement("div");
   legend.className = "chart-legend";
   legend.innerHTML =
-    '<span class="chart-legend-item" data-series="player"><i></i>Players</span>' +
-    '<span class="chart-legend-item" data-series="npc"><i></i>Enemies</span>' +
-    '<span class="chart-legend-item" data-series="healing"><i></i>Healing</span>' +
+    '<span class="chart-legend-item" data-series="player"><i></i>Player dmg</span>' +
+    '<span class="chart-legend-item" data-series="healing"><i></i>Player heal</span>' +
+    '<span class="chart-legend-item" data-series="npc"><i></i>Enemy dmg</span>' +
+    '<span class="chart-legend-item" data-series="npc-heal"><i></i>Enemy heal</span>' +
     '<span class="chart-legend-item" data-series="death"><i></i>Death</span>';
+  header.append(title, legend);
 
   const plot = document.createElement("div");
   plot.className = "chart-plot";
@@ -99,7 +137,7 @@ registerWidget<LineChartProps>("line-chart", (props) => {
   tooltip.className = "chart-tooltip";
   tooltip.hidden = true;
   plot.append(svg, tooltip);
-  element.append(legend, plot);
+  element.append(header, plot);
 
   let current: LineChartProps = props;
   const hover: { crosshair: SVGLineElement | null } = { crosshair: null };
@@ -144,30 +182,80 @@ registerWidget<LineChartProps>("line-chart", (props) => {
 
   function render() {
     const { buckets, deaths, startMs } = current;
-    bucketSec = Math.max(0.001, (current.endMs - startMs) / (buckets.length || 1) / 1000);
-    const rateOf = (raw: number) => raw / bucketSec;
+    const span = current.endMs - startMs || 1;
+    const fineSec = Math.max(0.001, span / (buckets.length || 1) / 1000);
+    bucketSec = fineSec; // the hover tooltip reads a fine slice; the line is coarser
 
-    let peak = 1;
-    for (const b of buckets) {
-      const m = Math.max(rateOf(b.player), rateOf(b.npc), rateOf(b.healing));
-      if (m > peak) peak = m;
+    // Roll the fine query buckets up into ~displaySeconds-wide draw buckets
+    // (holding a rate: summed amount / the group's real duration) so the
+    // plotted line is smooth without a second query. Keeps >=~20 points on
+    // short pulls, and no-ops when the query buckets are already coarser.
+    const targetSec = current.displaySeconds && current.displaySeconds > 0 ? current.displaySeconds : 8;
+    let group = Math.max(1, Math.round(targetSec / fineSec));
+    group = Math.min(group, Math.max(1, Math.floor(buckets.length / 20)));
+    type Plot = { tMid: number; player: number; healing: number; npc: number; npcHeal: number };
+    const plot: Plot[] = [];
+    for (let i = 0; i < buckets.length; i += group) {
+      const end = Math.min(i + group, buckets.length);
+      const secs = fineSec * (end - i);
+      let player = 0;
+      let healing = 0;
+      let npc = 0;
+      let npcHeal = 0;
+      for (let j = i; j < end; j++) {
+        player += buckets[j].player;
+        healing += buckets[j].healing;
+        npc += buckets[j].npc;
+        npcHeal += buckets[j].npcHeal;
+      }
+      plot.push({
+        tMid: (buckets[i].tMid + buckets[end - 1].tMid) / 2,
+        player: player / secs,
+        healing: healing / secs,
+        npc: npc / secs,
+        npcHeal: npcHeal / secs,
+      });
     }
-    peak *= 1.1;
-    const yOf = (rate: number) => PAD.top + PLOT_H - (rate / peak) * PLOT_H;
+
+    // Two activity meters, not a shared scale: the player lines scale to
+    // the player axis (left), the enemy lines to the enemy axis (right) --
+    // boss numbers otherwise dwarf raid numbers. What reads is each side's
+    // change from its own baseline. Each axis max is rounded to a "nice"
+    // 1/2/5 value so the tick labels are legible; floor is 0 on both.
+    let playerPeak = 1;
+    let enemyPeak = 1;
+    for (const p of plot) {
+      playerPeak = Math.max(playerPeak, p.player, p.healing);
+      enemyPeak = Math.max(enemyPeak, p.npc, p.npcHeal);
+    }
+    const playerAxis = niceCeil(playerPeak * 1.05);
+    const enemyAxis = niceCeil(enemyPeak * 1.05);
+    const yPlayer = (rate: number) => PAD.top + PLOT_H - (rate / playerAxis) * PLOT_H;
+    const yEnemy = (rate: number) => PAD.top + PLOT_H - (rate / enemyAxis) * PLOT_H;
 
     svg.replaceChildren();
 
-    // Horizontal gridlines + y labels (rate: 0, half, peak).
+    // Gridlines + dual y labels: player rate on the left, enemy rate on the
+    // right, at 0 / half / full.
     for (const frac of [0, 0.5, 1]) {
       const y = PAD.top + PLOT_H - frac * PLOT_H;
       svg.appendChild(el("line", { x1: PAD.left, y1: y, x2: PAD.left + PLOT_W, y2: y, class: "chart-grid" }));
-      const label = el("text", { x: PAD.left - 8, y: y + 4, class: "chart-axis-label", "text-anchor": "end" });
-      label.textContent = formatCompact(frac * peak);
-      svg.appendChild(label);
+      const left = el("text", { x: PAD.left - 6, y: y + 3, class: "chart-axis-label", "text-anchor": "end" });
+      left.textContent = formatCompact(frac * playerAxis);
+      svg.appendChild(left);
+      const right = el("text", { x: PAD.left + PLOT_W + 6, y: y + 3, class: "chart-axis-label", "text-anchor": "start" });
+      right.textContent = formatCompact(frac * enemyAxis);
+      svg.appendChild(right);
     }
-    const axisTitle = el("text", { x: 4, y: 12, class: "chart-axis-label", "text-anchor": "start" });
-    axisTitle.textContent = "DPS / HPS";
-    svg.appendChild(axisTitle);
+
+    // Which side's scale a line is on: "Players" over the left axis,
+    // "Enemies" over the right (just inside the plot's top corners).
+    const capPlayers = el("text", { x: PAD.left + 2, y: 11, class: "chart-cap", "text-anchor": "start" });
+    capPlayers.textContent = "Players";
+    svg.appendChild(capPlayers);
+    const capEnemies = el("text", { x: PAD.left + PLOT_W - 2, y: 11, class: "chart-cap", "text-anchor": "end" });
+    capEnemies.textContent = "Enemies";
+    svg.appendChild(capEnemies);
 
     // Time-axis ticks, relative to the range start.
     for (const frac of [0, 0.25, 0.5, 0.75, 1]) {
@@ -184,26 +272,19 @@ registerWidget<LineChartProps>("line-chart", (props) => {
       svg.appendChild(el("line", { x1: x, y1: PAD.top, x2: x, y2: PAD.top + PLOT_H, class: "chart-death" }));
     }
 
-    // Series: area fill + line + end dot + direct label.
-    const series: Array<{ key: SeriesKey; cls: string; label: string }> = [
-      { key: "player", cls: "chart-line--player", label: "Players" },
-      { key: "npc", cls: "chart-line--npc", label: "Enemies" },
-      { key: "healing", cls: "chart-line--healing", label: "Healing" },
+    // Series: just the lines, no fills / dots / end labels. Enemy series
+    // are drawn first (and lighter -- see styles.css) so the player curves
+    // read on top; the legend carries identity.
+    const series: Array<{ key: SeriesKey; cls: string; y: (r: number) => number }> = [
+      { key: "npc", cls: "chart-line--npc", y: yEnemy },
+      { key: "npcHeal", cls: "chart-line--npc-heal", y: yEnemy },
+      { key: "player", cls: "chart-line--player", y: yPlayer },
+      { key: "healing", cls: "chart-line--healing", y: yPlayer },
     ];
     for (const s of series) {
-      const pts = buckets.map((b) => [xOf(b.tMid), yOf(rateOf(b[s.key]))] as [number, number]);
-      if (pts.length === 0) continue;
-      const line = smoothPath(pts);
-      const baseY = PAD.top + PLOT_H;
-      svg.appendChild(
-        el("path", { d: `${line} L${pts[pts.length - 1][0]},${baseY} L${pts[0][0]},${baseY} Z`, class: `chart-area ${s.cls}` }),
-      );
-      svg.appendChild(el("path", { d: line, class: `chart-line ${s.cls}` }));
-      const last = pts[pts.length - 1];
-      svg.appendChild(el("circle", { cx: last[0], cy: last[1], r: 3.5, class: `chart-dot ${s.cls}` }));
-      const label = el("text", { x: last[0] + 6, y: last[1] + 4, class: `chart-series-label ${s.cls}` });
-      label.textContent = s.label;
-      svg.appendChild(label);
+      if (plot.length === 0) break;
+      const pts = plot.map((p) => [xOf(p.tMid), s.y(p[s.key])] as [number, number]);
+      svg.appendChild(el("path", { d: smoothPath(pts), class: `chart-line ${s.cls}` }));
     }
 
     // Hover crosshair (moved in pointermove; hidden until then).
@@ -254,9 +335,18 @@ registerWidget<LineChartProps>("line-chart", (props) => {
       ? `<div class="chart-tooltip-time">${formatDuration(near.t - current.startMs)}</div>` +
         `<div class="chart-tooltip-row"><span>Death</span><b>${near.label ?? "—"}</b></div>`
       : `<div class="chart-tooltip-time">${formatDuration(b.tMid - current.startMs)} · ${bucketSec.toFixed(bucketSec < 10 ? 1 : 0)}s</div>` +
-        `<div class="chart-tooltip-row"><span>Players</span><b>${formatCompact(b.player)}</b></div>` +
-        `<div class="chart-tooltip-row"><span>Enemies</span><b>${formatCompact(b.npc)}</b></div>` +
-        `<div class="chart-tooltip-row"><span>Healing</span><b>${formatCompact(b.healing)}</b></div>`;
+        `<div class="chart-tooltip-cols">` +
+        `<div class="chart-tooltip-col">` +
+        `<div class="chart-tooltip-head">Players</div>` +
+        `<div class="chart-tooltip-row"><span>Dmg</span><b>${formatCompact(b.player)}</b></div>` +
+        `<div class="chart-tooltip-row"><span>Heal</span><b>${formatCompact(b.healing)}</b></div>` +
+        `</div>` +
+        `<div class="chart-tooltip-col">` +
+        `<div class="chart-tooltip-head">Enemies</div>` +
+        `<div class="chart-tooltip-row"><span>Dmg</span><b>${formatCompact(b.npc)}</b></div>` +
+        `<div class="chart-tooltip-row"><span>Heal</span><b>${formatCompact(b.npcHeal)}</b></div>` +
+        `</div>` +
+        `</div>`;
     tooltip.hidden = false;
     // x is in viewBox units; the SVG fills .chart-plot, so this maps
     // straight to a percentage offset within the tooltip's container.

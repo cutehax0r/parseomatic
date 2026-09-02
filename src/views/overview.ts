@@ -2,11 +2,12 @@
 // encounter selector. Assumes a single selected encounter; anything else
 // (custom range, "Full log") shows an empty state.
 //
-// All numbers are real via query_events: one bucketed query yields both
-// the chart's damage/healing time series and (summed client-side) the
-// stat-tile totals; a second grouped query yields the player table
-// (grouped by sourceOwner, so pet damage folds into the owning player).
-// Death markers come from the loaded deaths list.
+// All numbers are real via query_events: one bucketed query yields the
+// chart's four time series (damage and healing, each split player-side vs
+// creature) and, summed client-side, the stat-tile totals; a second
+// grouped query yields the player table (grouped by sourceOwner, so pet
+// damage folds into the owning player). Death markers come from the
+// loaded deaths list.
 
 import "../ui/widgets"; // registers built-in widgets
 
@@ -114,12 +115,13 @@ async function paint(): Promise<void> {
   if (seq !== paintSeq) return; // a newer selection is painting
 
   const playerDmg = series.reduce((s, r) => s + r.player, 0);
-  const healing = series.reduce((s, r) => s + r.heal, 0);
+  const healing = series.reduce((s, r) => s + r.playerHeal, 0);
   const buckets = series.map((r) => ({
     tMid: r.tMid,
     player: r.player,
+    healing: r.playerHeal,
     npc: r.npc,
-    healing: r.heal,
+    npcHeal: r.npcHeal,
   }));
   const deaths = deathMarkers(e);
 
@@ -130,40 +132,31 @@ async function paint(): Promise<void> {
   built.get("hps")?.update({ label: "HPS", value: formatCompact(healing / seconds) });
   built.get("deaths")?.update({ label: "Deaths", value: String(deathCount) });
   built.get("result")?.update({ label: result || "Result", value: durText, tone });
-  built.get("chart")?.update({ buckets, deaths, startMs: e.startMs, endMs: e.endMs });
+  built.get("chart")?.update({ buckets, deaths, startMs: e.startMs, endMs: e.endMs, displaySeconds: 8 });
   built.get("players")?.update({ rows: playerRows });
 }
 
-// One bucketed pass -> per-slice sums: player-side damage (players +
-// their pets), NPC damage (bosses/adds), and healing. Grand totals are
-// the client-side sum of these.
+// One bucketed pass -> per-slice sums, each split player-side (players +
+// their pets) vs creature (bosses/adds): damage and healing. Grand totals
+// shown in the stat tiles are the client-side sum of the player-side
+// columns.
+type Slice = { tMid: number; player: number; npc: number; playerHeal: number; npcHeal: number };
 function damageHealingSeries(
   bounds: { startMs: number; endMs: number },
   count: number,
-): Promise<Array<{ tMid: number; player: number; npc: number; heal: number }>> {
-  return ctx!.query<{ tMid: number; player: number; npc: number; heal: number }>({
+): Promise<Slice[]> {
+  const dmg = { field: "kind", op: "in", value: DAMAGE_KINDS } as const;
+  const heal = { field: "kind", op: "in", value: HEAL_KINDS } as const;
+  const byPlayer = { field: "sourceOwnerKind", op: "eq", value: "Player" } as const;
+  const byNpc = { field: "sourceOwnerKind", op: "eq", value: "Creature" } as const;
+  return ctx!.query<Slice>({
     ...bounds,
     bucket: { count },
     aggregate: [
-      {
-        op: "sum",
-        field: "amount",
-        as: "player",
-        where: [
-          { field: "kind", op: "in", value: DAMAGE_KINDS },
-          { field: "sourceOwnerKind", op: "eq", value: "Player" },
-        ],
-      },
-      {
-        op: "sum",
-        field: "amount",
-        as: "npc",
-        where: [
-          { field: "kind", op: "in", value: DAMAGE_KINDS },
-          { field: "sourceOwnerKind", op: "eq", value: "Creature" },
-        ],
-      },
-      { op: "sum", field: "amount", as: "heal", where: [{ field: "kind", op: "in", value: HEAL_KINDS }] },
+      { op: "sum", field: "amount", as: "player", where: [dmg, byPlayer] },
+      { op: "sum", field: "amount", as: "npc", where: [dmg, byNpc] },
+      { op: "sum", field: "amount", as: "playerHeal", where: [heal, byPlayer] },
+      { op: "sum", field: "amount", as: "npcHeal", where: [heal, byNpc] },
     ],
   });
 }

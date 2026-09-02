@@ -47,6 +47,10 @@
   --accent-bg-hover: rgba(138, 173, 244, 0.28); /* --ctp-blue at 28% */
   --success: var(--ctp-green); /* kills, passing states */
   --danger: var(--ctp-red); /* wipes, failing states */
+  --chart-deep-red: #c04150; /* second red for the chart's enemy-damage line;
+    no Catppuccin token is dark enough to read as distinct from --danger.
+    dataviz validator (dark, surface #1e2030, --pairs all): contrast 3:1 PASS,
+    CVD separation ΔE 9.9 / normal-vision floor 18.3 PASS. */
 
   /* Shape/elevation tokens -- kept semantic so the shadcn-ish widget look
      (see docs/ui-widgets.md "Styling") stays a one-block change. */
@@ -888,7 +892,8 @@ body {
   border-top: 1px solid var(--border);
 }
 
-/* line-chart -- inline SVG, damage=accent / healing=success / deaths=danger. */
+/* line-chart -- inline SVG. player dmg=accent / player heal=success /
+   enemy dmg=chart-deep-red / enemy heal=danger / deaths=text-faint. */
 .chart {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -896,10 +901,28 @@ body {
   padding: 10px 12px 6px;
 }
 
+.chart-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.chart-title {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  white-space: nowrap;
+}
+
 .chart-legend {
   display: flex;
-  gap: 14px;
-  margin-bottom: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 14px;
   font-size: 11px;
   color: var(--text-muted);
 }
@@ -922,11 +945,15 @@ body {
 }
 
 .chart-legend-item[data-series="npc"] i {
-  background-color: var(--danger);
+  background-color: var(--chart-deep-red);
 }
 
 .chart-legend-item[data-series="healing"] i {
   background-color: var(--success);
+}
+
+.chart-legend-item[data-series="npc-heal"] i {
+  background-color: var(--danger);
 }
 
 .chart-legend-item[data-series="death"] i {
@@ -944,6 +971,9 @@ body {
   display: block;
   width: 100%;
   height: auto;
+  /* dragging to hover the crosshair shouldn't rubber-band a text selection */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .chart-grid {
@@ -954,6 +984,13 @@ body {
 .chart-axis-label {
   fill: var(--text-faint);
   font-size: 10px;
+}
+
+/* "Players" / "Enemies" -- which side's scale a line is on. */
+.chart-cap {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .chart-death {
@@ -974,51 +1011,23 @@ body {
 }
 
 .chart-line--npc {
-  stroke: var(--danger);
+  stroke: var(--chart-deep-red);
 }
 
 .chart-line--healing {
   stroke: var(--success);
 }
 
-.chart-area {
-  stroke: none;
-  opacity: 0.12;
+.chart-line--npc-heal {
+  stroke: var(--danger);
 }
 
-.chart-area.chart-line--player {
-  fill: var(--accent);
-}
-
-.chart-area.chart-line--npc {
-  fill: var(--danger);
-}
-
-.chart-area.chart-line--healing {
-  fill: var(--success);
-}
-
-.chart-dot {
-  stroke: var(--bg-elevated);
+/* Enemy damage/healing are reference context, not the focus: a thinner,
+   lighter line (solid, like the rest) so the player curves read on top. */
+.chart-line.chart-line--npc,
+.chart-line.chart-line--npc-heal {
+  opacity: 0.6;
   stroke-width: 1.5;
-}
-
-.chart-dot.chart-line--player {
-  fill: var(--accent);
-}
-
-.chart-dot.chart-line--npc {
-  fill: var(--danger);
-}
-
-.chart-dot.chart-line--healing {
-  fill: var(--success);
-}
-
-.chart-series-label {
-  fill: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
 }
 
 .chart-crosshair {
@@ -1046,14 +1055,35 @@ body {
 }
 
 .chart-tooltip-time {
-  margin-bottom: 2px;
+  margin-bottom: 4px;
   color: var(--text-faint);
+}
+
+/* Two columns -- Players | Enemies -- each with its own header and
+   damage/healing rows under it. */
+.chart-tooltip-cols {
+  display: flex;
+  gap: 18px;
+}
+
+.chart-tooltip-col {
+  min-width: 82px;
+}
+
+.chart-tooltip-head {
+  margin-bottom: 3px;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 .chart-tooltip-row {
   display: flex;
   gap: 12px;
   justify-content: space-between;
+}
+
+.chart-tooltip-row span {
+  color: var(--text-faint);
 }
 
 .chart-tooltip-row b {
