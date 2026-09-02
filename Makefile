@@ -126,7 +126,7 @@ release:
 		echo ""; \
 		echo "Would perform:"; \
 		echo "  1. Create branch release/$$VERSION (on $$COMMIT)"; \
-		echo "  2. Update first line of README.md to: # Parseomatic $$VERSION"; \
+		echo "  2. Bump version to $${VERSION#v} in src-tauri/tauri.conf.json, src-tauri/Cargo.toml, src-tauri/Cargo.lock, package.json; set README.md first line to # Parseomatic $$VERSION"; \
 		echo "  3. Commit change with message: tagging new release"; \
 		echo "  4. Push branch to GitHub"; \
 		echo "  5. Create PR with title: RELEASE: $$VERSION"; \
@@ -146,14 +146,19 @@ release:
 		git checkout -b "$$BRANCH" "$$COMMIT" >/dev/null 2>&1 || { echo "ERROR: Failed to create branch on $$COMMIT"; exit 1; }; \
 		echo "✓ Created branch $$BRANCH from $$COMMIT"; \
 		echo ""; \
-		echo "Step 2/10: Updating README.md..."; \
+		echo "Step 2/10: Bumping version and updating README.md..."; \
 		if [ ! -f "README.md" ]; then echo "ERROR: README.md not found"; exit 1; fi; \
+		VNUM="$${VERSION#v}"; \
 		sed -i.bak "1s/^#.*[Pp]arseomatic.*$$/# Parseomatic $$VERSION/" README.md || { echo "ERROR: Failed to update README.md"; exit 1; }; \
 		rm -f README.md.bak; \
-		echo "✓ Updated README.md first line"; \
+		sed -i.bak "s/^version = \".*\"/version = \"$$VNUM\"/" src-tauri/Cargo.toml && rm -f src-tauri/Cargo.toml.bak || { echo "ERROR: Failed to bump src-tauri/Cargo.toml"; exit 1; }; \
+		sed -i.bak "s/\"version\": \".*\"/\"version\": \"$$VNUM\"/" src-tauri/tauri.conf.json && rm -f src-tauri/tauri.conf.json.bak || { echo "ERROR: Failed to bump src-tauri/tauri.conf.json"; exit 1; }; \
+		sed -i.bak "s/\"version\": \".*\"/\"version\": \"$$VNUM\"/" package.json && rm -f package.json.bak || { echo "ERROR: Failed to bump package.json"; exit 1; }; \
+		if command -v cargo >/dev/null 2>&1; then ( cd src-tauri && cargo update -p parseomatic >/dev/null 2>&1 ) || true; fi; \
+		echo "✓ Version -> $$VNUM (tauri.conf.json, Cargo.toml, Cargo.lock, package.json); README.md first line -> # Parseomatic $$VERSION"; \
 		echo ""; \
 		echo "Step 3/10: Committing change..."; \
-		git add README.md || { echo "ERROR: Failed to add README.md"; exit 1; }; \
+		git add README.md src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/Cargo.lock package.json || { echo "ERROR: Failed to stage version bump"; exit 1; }; \
 		git commit -m "tagging new release" >/dev/null 2>&1 || { echo "ERROR: Failed to commit"; exit 1; }; \
 		echo "✓ Committed change"; \
 		echo ""; \

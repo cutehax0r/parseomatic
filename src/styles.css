@@ -1079,3 +1079,10 @@ body {
   border-radius: 4px;
   padding: 1px 6px;
 }
+
+.settings-version {
+  margin: 24px 0 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}

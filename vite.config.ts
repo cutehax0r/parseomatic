@@ -1,10 +1,41 @@
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+
+// A human-readable identifier for *this* build, shown in the Settings
+// window (src/settings.ts). Evaluated when Vite starts -- so `make run`
+// stamps the dev-server start time, `make build` stamps the build time.
+// Tauri's own version (tauri.conf.json) feeds the native About panel;
+// this is the finer-grained "which build am I looking at".
+function buildStamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const when = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  let git = "nogit";
+  try {
+    const run = (cmd: string) =>
+      execSync(cmd, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    const sha = run("git rev-parse --short HEAD");
+    git = run("git status --porcelain") ? `${sha}-dirty` : sha;
+  } catch {
+    /* not a git checkout */
+  }
+  return `${when} · ${git}`;
+}
+
 // https://vite.dev/config/
 export default defineConfig(async () => ({
+
+  // Compile-time constants -- see src/settings.ts.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __BUILD_STAMP__: JSON.stringify(buildStamp()),
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
