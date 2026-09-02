@@ -53,6 +53,20 @@ dev: run
 
 build: install
 	bun run tauri build
+	@# `tauri build` mounts the .dmg it just made (to stage / verify it) and
+	@# usually leaves it mounted. Every leftover mount registers another
+	@# com.cutehax0r.parseomatic with Launch Services, and macOS then can't
+	@# tell which copy to launch (you get the dev build *and* a stale one).
+	@# Unregister + unmount any parseomatic DMG we find.
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		for v in /Volumes/dmg.* /Volumes/parseomatic; do \
+			if [ -e "$$v/parseomatic.app" ]; then \
+				echo "Cleaning up mounted DMG $$v"; \
+				[ -x "$(LSREGISTER)" ] && "$(LSREGISTER)" -u "$$v/parseomatic.app" 2>/dev/null || true; \
+				hdiutil detach -quiet "$$v" 2>/dev/null || hdiutil detach -force -quiet "$$v" 2>/dev/null || true; \
+			fi; \
+		done; \
+	fi
 
 test:
 	cd src-tauri && cargo test
@@ -69,15 +83,29 @@ APP_BUNDLE := src-tauri/target/release/bundle/macos/parseomatic.app
 # Once registered, launchd can relaunch it on its own (e.g. after a
 # `kill`, or when Finder/Spotlight/QuickLook touches an associated .txt
 # file) -- with no file argument on that relaunch, it falls straight to
-# the open-file dialog and just sits there looking like a hang. This
-# undoes the registration (and stops any instance already running).
+# the open-file dialog and just sits there looking like a hang. Worse,
+# every `make build` leaves its .dmg mounted, so registrations pile up and
+# macOS can't tell which copy to launch. This purges *all* of them.
 uninstall:
-	@pkill -f "$(APP_BUNDLE)/Contents/MacOS/parseomatic" 2>/dev/null || true
-	@if [ "$$(uname)" = "Darwin" ] && [ -x "$(LSREGISTER)" ] && [ -d "$(APP_BUNDLE)" ]; then \
-		"$(LSREGISTER)" -u "$(APP_BUNDLE)"; \
-		echo "Unregistered $(APP_BUNDLE) from Launch Services."; \
+	@pkill -f "MacOS/parseomatic" 2>/dev/null || true
+	@if [ "$$(uname)" = "Darwin" ] && [ -x "$(LSREGISTER)" ]; then \
+		for v in /Volumes/dmg.* /Volumes/parseomatic; do \
+			if [ -e "$$v/parseomatic.app" ]; then \
+				echo "Detaching mounted DMG $$v"; \
+				hdiutil detach -force -quiet "$$v" 2>/dev/null || true; \
+			fi; \
+		done; \
+		n=0; \
+		for p in $$("$(LSREGISTER)" -dump 2>/dev/null \
+			| sed -n 's/^[[:space:]]*path:[[:space:]]*\(.*parseomatic\.app\) (0x[0-9a-f]*)$$/\1/p' \
+			| sort -u); do \
+			"$(LSREGISTER)" -u "$$p" 2>/dev/null && n=$$((n+1)) || true; \
+		done; \
+		[ -d "$(APP_BUNDLE)" ] && "$(LSREGISTER)" -u "$(APP_BUNDLE)" 2>/dev/null || true; \
+		echo "Unregistered $$n parseomatic bundle(s) from Launch Services."; \
+		echo "(A reboot clears any leftover /Volumes/parseomatic volume records.)"; \
 	else \
-		echo "Nothing to unregister ($(APP_BUNDLE) not found, or not on macOS)."; \
+		echo "Nothing to do (not on macOS, or lsregister missing)."; \
 	fi
 
 # Unified GitHub PR-based release target
