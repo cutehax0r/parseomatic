@@ -139,6 +139,7 @@ Top-down-ish view with a free camera, rendering every entity's position over tim
 - Transparent sphere around an entity while a defensive buff is active
 - Optional floating panel above an entity listing active buffs / cooldown states
 - **Spell cast lines**: each cast is a short-lived animated object between source and target. Faint during cast time, bright flash at resolution, fade out over ~0.5s. Positions come from the event itself (source and target coordinates).
+- **Implied entities**: environmental hazards (slime pools, void zones, blast footprints) that aren't combat-log units. Detection and fidelity vary by how much the log exposes — see `docs/boss-parsers.md` ("Implied entities").
 
 ### 4. Statistics view
 Per-encounter table: total damage, DPS, healing done, healing received, damage taken, per character.

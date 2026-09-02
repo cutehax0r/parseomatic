@@ -132,6 +132,41 @@ useful 90%.
 General pattern: **anchor on observable casts / auras / damage; infer the
 unobservable middle from the outcome.**
 
+## Implied entities
+
+Environmental hazards the app wants to render — a slime pool, a void zone,
+a "don't stand here" blast footprint — that aren't first-class combat-log
+units. A boss parser emits them for the 3D spatial replay (`planning.md`
+§3, "Additional render layers") and for timeline flags. Three cases, by
+how much the log tells us:
+
+1. **Logged on spawn, static.** A persistent ground effect appears as its
+   own spell event when created, carrying `positionX`/`positionY` from the
+   advanced block (`combat-log-format.md` §5), and doesn't move. Position,
+   lifetime, and owner are all known; the only missing piece is
+   footprint — a **maintained shape/size table keyed on spell id** (circle
+   radius, cone, rectangle). Small static data, easy to keep current.
+   Output: `ImpliedEntity { spellId, shape, positions: [{ t, x, y }],
+   startMs, endMs }` — here just one position.
+
+2. **Only detectable on contact.** A "don't stand in this" blast that
+   never logs unless a player is hit by it. All we get is the damage
+   event: its `positionX`/`positionY` (the victim's location at that tick)
+   and timing. Output is a low-fidelity marker — *someone got clipped
+   here, then* — not the true footprint. Multiple hits in a short window
+   hint at the real area; a lone hit is just a dot.
+
+3. **Too complex to fully reconstruct.** Aleria's void zone that "draws a
+   bow and fires arrows when you leave it" would need bespoke geometry and
+   timing logic to recreate spatially. Don't. Fall back to a **per-player
+   right/wrong outcome** — did this player leave the zone / eat an arrow —
+   emitted as a `MechanicEvent` (`outcome`, `targets`) for the encounter
+   timeline. No spatial render, just the judgment, which is most of the
+   analytical value anyway.
+
+The parser decides which case a hazard is and emits an `ImpliedEntity`
+(replay), a `MechanicEvent` (timeline), or both.
+
 ## Distribution & maintenance
 
 Boss parsers are code, custom per encounter, refreshed each tier — the same
