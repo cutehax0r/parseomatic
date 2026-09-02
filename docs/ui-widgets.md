@@ -481,6 +481,11 @@ into columns (by boss, by outcome, by night). Reference for the shape/
 interaction, not the code (React/Tailwind); reproduce in the vanilla +
 CSS-variables setup like everything else.
 
+A timeline/gantt/kanban **encounter** view (phases as lanes, mechanic
+events as bars/cards) is the main consumer of the **boss parsers** design
+(`docs/boss-parsers.md`) — that's where phase boundaries, discrete
+mechanic events, and a `mechanic` filter clause would come from.
+
 ## Example composition (Overview)
 
 Sanity check for the design above, not a committed layout:
