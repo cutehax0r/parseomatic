@@ -108,13 +108,13 @@ named as the reason to build one.
 ## Shared state: the filter chain
 
 Multiple widgets in one view (a bar list, a line chart, a stat tile, all in
-"Damage Done") need to react to the same encounter/role/player/spell/target
+"Damage Done") need to react to the same encounter/player/spell/target
 selection at once. Modeled as one ordered list of AND clauses, shared per
 window/view, not per widget:
 
 ```ts
 interface FilterClause {
-  field: "encounter" | "sourceRole" | "sourceGuid" | "spellId" | "targetGuid" | "kind";
+  field: "encounter" | "sourceGuid" | "spellId" | "targetGuid" | "kind";
   op: "eq" | "in";
   value: unknown;
   label: string; // "Player: Thrall" -- for rendering as a removable chip
@@ -126,7 +126,7 @@ Flat and ordered, not a tree — no OR/NOT needed for "start broad, keep
 narrowing," and the order doubles as the natural order for a breadcrumb/chip
 UI. **A widget's actual query is the view's `filterChain` plus that widget's
 own fixed clause(s)** — "Damage Done" always adds `kind = SPELL_DAMAGE`,
-"Healing Done" elsewhere always adds `kind = SPELL_HEAL`; encounter, role,
+"Healing Done" elsewhere always adds `kind = SPELL_HEAL`; encounter,
 player, spell, and target all come from the shared chain.
 
 **Two ways a clause gets added:**
@@ -142,19 +142,11 @@ player, spell, and target all come from the shared chain.
   as `WindowLogs` already gives every window independent state off one
   shared parsed log.
 
-**Backend note — not every clause is a flat per-event field compare:**
+**Backend note — a clause isn't always a flat per-event field compare:**
 - `encounter`: filter using the `start_row`/`end_row` index range already on
   `Encounter` (`reports.rs`), not a `timestamp_ms` comparison — cheaper, and
   unambiguous at the boundary since it's exactly the range the encounter was
   built from in the first place.
-- `sourceRole`/`targetRole`: not a raw log field anywhere. The nearest
-  available data is `COMBATANT_INFO` field 24, `CurrentSpecID` (stable and
-  early in the field list, unlike the genuinely volatile talent/gear/covenant
-  fields after it — see `docs/combat-log-format.md`), joined through a
-  static specId→role table maintained in this codebase (spec fully
-  determines role in current WoW, no ambiguity to resolve at parse time).
-  Don't confuse this with `COMBATLOG_OBJECT_MAINTANK`/`MAINASSIST` raid
-  flags — those mark up to ~2 designated tanks, not general role.
 
 ## Shared state: the playhead
 
@@ -281,19 +273,44 @@ data, backed by a generic Tauri command (`query_events`, say):
 ```ts
 interface QuerySpec {
   filter: FilterClause[]; // typically ctx.filterChain + the widget's own fixed clauses
-  select?: string[]; // which fields to return; omit for all
+  select?: string[]; // raw-row mode: which fields to return; omit for all
+  groupBy?: string[]; // e.g. ["sourceGuid"] or ["sourceGuid", "spellId"]
+  aggregate?: AggregateClause[]; // present -> one row per groupBy tuple instead of raw events
+}
+
+interface AggregateClause {
+  op: "sum" | "count" | "min" | "max";
+  field?: string; // required for sum/min/max; omitted for count
+  as: string; // output column name
 }
 ```
 
-It returns rows, not pre-aggregated answers. Deliberately kept small: a
-generic backend aggregate DSL would have to anticipate every possible
-computation (crit rate, min/max, uptime %, "which two players were closest
+**Two modes, one command.** With no `aggregate`, it returns raw rows as
+before (`select` picks columns). With `aggregate`, the backend does the
+group-by/reduce over the columnar `EventStore` and returns one row per
+distinct `groupBy` tuple — the group-key fields plus each `as` column.
+
+Aggregation is in from the start, not deferred, because the common
+Overview/Statistics widgets — per-player Damage Done / Healing Done / Damage
+Taken bar lists, raid DPS/HPS totals, damage-taken-by-ability, death
+counts — are all `sum`/`count` grouped by one or two fields. The
+alternative, shipping every matching event over IPC to reduce in JS on every
+filter-chain change (20 players × thousands of rows, re-summed on each
+selection), is exactly the cost the performance tiebreaker (`planning.md`)
+says to avoid. Reducing in Rust against data that's already
+struct-of-arrays is cheap and keeps the IPC payload proportional to the
+answer, not the input.
+
+**Scope stays deliberately small: `sum`/`count`/`min`/`max` with group-by,
+nothing more.** A general aggregate DSL would have to anticipate every
+possible computation (crit rate, uptime %, "which two players were closest
 when a debuff was removed" — see `docs/widget-distribution.md`'s worked
-example), and most of those don't fit one shape. Basic sum/count/group-by
-may earn a place in `QuerySpec` later if enough widgets duplicate the same
-one, but bespoke analysis is expected to live in widget code, operating on
-rows `ctx.query` already returned (including position fields, already
-tracked per event for the planned 3D replay) — not as a backend feature.
+example), and most of those don't fit one shape. Anything past
+sum/count/min/max stays in widget code, operating on rows `ctx.query`
+returned in raw mode (including position fields, already tracked per event
+for the planned 3D replay) — not a backend feature. Conditional aggregates
+(crit rate = crits ÷ hits) are two queries, or a client-side pass over raw
+rows — not a new clause type.
 
 ## Starter widget set
 
@@ -389,3 +406,8 @@ grid rules, plus one block per starter widget's classes.
   Overview ever needs to look reasonable at very narrow window widths.
 - Auto-scroll-disengage-on-manual-scroll behavior for playback tables is
   undecided (see "Shared state: the playhead").
+- No role-based filtering (tank/healer/dps). Deriving role from
+  `COMBATANT_INFO` `CurrentSpecID` via a static specId→role table was
+  considered and cut as non-essential — filter by `sourceGuid` (individual
+  player) instead. Revisit only if a concrete view actually needs
+  group-by-role.
