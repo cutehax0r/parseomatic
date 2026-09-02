@@ -40,6 +40,8 @@ Per `planning.md`'s Views section:
 - **Statistics view** — per-encounter/per-character damage/healing, drill-down, time windowing, character comparison.
 - **Entity state replay + checkpointing** — needed for the above two; not started.
 - **Directory monitoring / live log tailing** (`notify` crate).
+- **Panel/Widget UI system** (`docs/ui-widgets.md`) — the reusable layout-container/widget architecture the views above are meant to be built from (Panel, Widget, shared `ViewContext` covering the filter chain and playhead), plus the new **Overview** view that will be its first consumer. Architecture doc written; nothing implemented yet (no `src/ui/`, no `src/views/`). Debug/Raw are explicitly not being migrated onto it.
+- **Third-party widget distribution** (`docs/widget-distribution.md`) — packaging/loading widget code from outside the app and the (deliberately no-sandbox, open-trust) security model around it. Design doc written; not started, and explicitly deferred until a handful of real built-in widgets exist.
 
 See `docs/stats-features.md` for the user's own working notes toward the statistics view.
 
