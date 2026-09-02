@@ -400,9 +400,12 @@ interface AggregateClause {
 
 // Queryable columns (query::Field, Rust). `sourceOwner` resolves a
 // player's pet/guardian to its owner so pet damage folds into the owning
-// player; `spellId` is the intern-table index, not the WoW id.
+// player; `sourceOwnerKind` is that resolved unit's kind ("Player" for
+// players and player-owned pets, "Creature" for bosses/adds) — the
+// player-side vs enemy-side split; `spellId` is the intern-table index,
+// not the WoW id.
 type Field =
-  | "time" | "kind" | "sourceUnit" | "sourceOwner"
+  | "time" | "kind" | "sourceUnit" | "sourceOwner" | "sourceOwnerKind"
   | "targetUnit" | "spellId" | "hitType" | "amount" | "crit";
 ```
 
@@ -422,11 +425,12 @@ typed `EventStore` columns for this.
   boundary fold into the final slice. The Overview chart uses this
   (~1 bucket/s, capped near the chart's pixel width).
 - **per-clause `where`** — lets one scan produce several conditionally
-  filtered aggregates. The Overview chart's damage and healing series
-  (`sum amount where kind in DAMAGE` / `... in HEAL`) come from one
-  bucketed query, and its stat-tile totals are the client-side sum of
-  those buckets — so the whole view is two `query_events` calls (series +
-  player table).
+  filtered aggregates. The Overview chart's three series — player-side
+  damage (`kind in DAMAGE` + `sourceOwnerKind eq "Player"`), enemy damage
+  (`... + sourceOwnerKind eq "Creature"`), and healing (`kind in HEAL`) —
+  all come from one bucketed query, and its stat-tile totals are the
+  client-side sum of those buckets, so the whole view is two
+  `query_events` calls (series + player table).
 
 Aggregation is in from the start, not deferred, because the common
 Overview/Statistics widgets — per-player Damage Done / Healing Done / Damage

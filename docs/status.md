@@ -31,7 +31,7 @@ Sharing one generic recycling `VirtualList<T>` (`src/virtual-list.ts`) — row p
 - Catppuccin Macchiato theme throughout.
 
 ### Performance
-The high/medium-impact items 1-7 in `performance-concerns.md` are resolved (virtualized rows, shared arena, id-based lookups, throttled fetches, reduced lock hold time, skipped redundant refetches). Item 8 (the ~50-100ms hitch switching to Overview) is open. Otherwise only "premature to fix" low-impact items remain.
+The high/medium-impact items 1-7 in `performance-concerns.md` are resolved (virtualized rows, shared arena, id-based lookups, throttled fetches, reduced lock hold time, skipped redundant refetches). Item 9 (per-row string filters on the hot query path) is resolved — `kind` and `sourceOwnerKind` filters compile to enum sets once per query. Item 8 (the ~50-100ms hitch switching to Overview) is partly done: the chart series + stat totals are now one bucketed query, so 2 round trips not 3; the eager-build / memoize / precompute ideas remain. Otherwise only "premature to fix" low-impact items remain.
 
 ## What's not built yet
 
@@ -41,11 +41,24 @@ Per `planning.md`'s Views section:
 - **Statistics view** — per-encounter/per-character damage/healing, drill-down, time windowing, character comparison.
 - **Entity state replay + checkpointing** — needed for the above two; not started.
 - **Directory monitoring / live log tailing** (`notify` crate).
-- **Panel/Widget UI system** (`docs/ui-widgets.md`) — first cut BUILT (`src/ui/`, `src/ui/widgets/`, `src/views/overview.ts`, the Overview view, the `query_events` aggregate DSL incl. time-bucketed series). Overview's numbers are all real. Still pending on it: `filterChain` / `playhead` in `ViewContext`, the timeline/kanban view. Debug/Raw are not migrated onto it.
+- **Panel/Widget UI system** (`docs/ui-widgets.md`) — first cut BUILT (`src/ui/`, `src/ui/widgets/`, `src/views/overview.ts`, the Overview view, the `query_events` aggregate DSL incl. time-bucketed series). Overview's numbers are all real. The line chart plots rates (DPS/HPS — each bucket's sum ÷ bucket seconds) and splits damage into player-side (blue) vs creature/NPC (red), healing green, deaths as neutral-grey rules; the split rides a `sourceOwnerKind` query field (owner-resolved unit kind). Still pending on it: `filterChain` / `playhead` in `ViewContext`, the timeline/kanban view. Debug/Raw are not migrated onto it.
 - **Third-party widget distribution** (`docs/widget-distribution.md`) — packaging/loading widget code from outside the app and the (deliberately no-sandbox, open-trust) security model around it. Design doc written; not started, and explicitly deferred until a handful of real built-in widgets exist.
 - **Boss parsers** (`docs/boss-parsers.md`) — per-encounter analyzers that emit phase boundaries, discrete mechanic events, and derived stats to drive a timeline/gantt/kanban encounter view, phase-aware graphs, and mechanic filtering. Design doc written; nothing built, no parsers written.
 
 See `docs/stats-features.md` for the user's own working notes toward the statistics view.
+
+## Picking this up next session
+
+Recently landed (this session): DPS/HPS chart with player/enemy/healing split, DPS-rate Y axis, tooltip showing raw slice totals, default window ~80% × 80% of the monitor, `make run <relative-path>` fixed (`$(abspath …)` — `tauri dev` runs the binary with cwd `src-tauri/`), perf items #1 and #9 (kind + `sourceOwnerKind` filters compiled to enum sets once per query).
+
+Open threads, roughly in priority order — none started, confirm with the user before picking one up:
+- **Overview switch hitch** (`performance-concerns.md` #8, "Partly done"): the remaining ideas are (b) build the Overview tree eagerly on log load, (c) memoize `query_events` by `(window, spec)`, (d) render the shell with stale values then swap, (e) precompute per-encounter aggregates in a parse-time rayon pass, (f) SVG path build off the critical path.
+- **`ViewContext` filter chain + drill-down** (`ui-widgets.md`): `filterChain` / `playhead`, so clicking a player/series narrows every widget in the view.
+- **Log page + `event-table` widget** with multi-target cast grouping (one row per cast, targets folded in).
+- **Boss parsers** (`docs/boss-parsers.md`) — design doc only; nothing built.
+- Assorted smaller TODO notes live in `docs/ui-widgets.md` (hide-resets toggle, trash-span naming, view-changes-in-history, show/hide-debug-features, linked-windows/global-toolbar, optional log-scale Y axis) and the low-impact list in `performance-concerns.md`.
+
+Environment note: the `~/.cargo/bin` shims are currently missing — call cargo via `/Users/colin/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo` (or `rustup` from Homebrew) until `rustup` re-links them. `make build`/`make run` go through `bun`/`tauri` and are unaffected.
 
 ## Known constraints worth remembering
 
