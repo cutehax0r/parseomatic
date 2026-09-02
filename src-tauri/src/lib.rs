@@ -93,6 +93,11 @@ fn set_represented_filename(window: &WebviewWindow, path: &str) {
     if let Ok(ptr) = window.ns_window() {
         let ns_string = objc2_foundation::NSString::from_str(path);
         let ns_window: &objc2_app_kit::NSWindow = unsafe { &*ptr.cast() };
+        // A represented filename makes AppKit treat this as a document
+        // window and re-run its state-restoration / auto-cascade placement
+        // -- which walks the window down-and-right off the screen over the
+        // next second. We position windows ourselves, so opt out.
+        ns_window.setRestorable(false);
         ns_window.setRepresentedFilename(&ns_string);
     }
 }
@@ -1097,32 +1102,17 @@ pub fn run() {
                 register_drag_drop(&main_window);
                 register_focus_sync(&main_window);
 
-                // Resize now, while the page is still empty -- the big
-                // 800x600 -> ~80% resize is cheap here; deferring it until
-                // the DOM is populating reflows a live page and adds a
-                // visible multi-second hitch to load.
+                // Resize + center now, while the page is still empty (a big
+                // resize on a populating DOM stalls load). Done once -- no
+                // deferred re-assert; that was fighting AppKit's own
+                // placement and could walk the window off-screen.
                 size_to_screen(&main_window);
 
                 if let Some(path) = std::env::args().nth(1) {
                     open_path_in_window(&main_window, Path::new(&path));
                 } else {
-                    pick_and_open_log(main_window.clone());
+                    pick_and_open_log(main_window);
                 }
-
-                // Re-center a moment later. The setup-time center above
-                // races AppKit's own window placement and lands off-center
-                // ~1 launch in 2; re-asserting only the *position* (no
-                // resize) is cheap and doesn't reflow page content.
-                let mw = main_window.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(150));
-                    let inner = mw.clone();
-                    let _ = mw.run_on_main_thread(move || {
-                        if let Some(size) = target_size(&inner) {
-                            center_on_monitor(&inner, size);
-                        }
-                    });
-                });
             }
 
             Ok(())
