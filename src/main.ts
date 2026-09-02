@@ -951,8 +951,8 @@ function setHistoryPopupOpen(open: boolean): void {
   }
 }
 
-// Newest-first list; the current entry is marked; a "Clear history" row
-// sits under a divider at the bottom.
+// Newest-first list; the current entry is marked. "Clear History" lives on
+// the app menu bar's History menu, not here.
 function renderHistoryPopup(state: HistoryState): void {
   const popup = document.querySelector<HTMLElement>("#history-popup");
   if (!popup) return;
@@ -967,18 +967,6 @@ function renderHistoryPopup(state: HistoryState): void {
     if (i === state.cursor) row.setAttribute("aria-current", "true");
     popup.appendChild(row);
   }
-
-  const sep = document.createElement("div");
-  sep.className = "picker-section";
-  sep.setAttribute("aria-hidden", "true");
-  popup.appendChild(sep);
-
-  const clear = document.createElement("div");
-  clear.className = "picker-option";
-  clear.setAttribute("role", "menuitem");
-  clear.dataset.act = "clear";
-  clear.textContent = "Clear history";
-  popup.appendChild(clear);
 }
 
 // Last nav state pushed to the native History menu -- skip the IPC when
@@ -1025,8 +1013,7 @@ function setupHistory(): void {
   popup.addEventListener("click", (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>(".picker-option");
     if (!row) return;
-    if (row.dataset.act === "clear") clearHistory();
-    else if (row.dataset.index !== undefined) historyGoto(Number(row.dataset.index));
+    if (row.dataset.index !== undefined) historyGoto(Number(row.dataset.index));
     setHistoryPopupOpen(false);
     menuBtn.focus();
   });
