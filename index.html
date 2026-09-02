@@ -93,6 +93,30 @@
             <path d="M4 6h16M4 12h10M4 18h13"></path>
           </svg>
         </button>
+        <button
+          id="view-overview-btn"
+          class="toolbar-btn"
+          data-view="overview"
+          title="Overview"
+          aria-pressed="false"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="3" y="3" width="8" height="10" rx="1"></rect>
+            <rect x="3" y="16" width="8" height="5" rx="1"></rect>
+            <rect x="14" y="3" width="7" height="5" rx="1"></rect>
+            <rect x="14" y="11" width="7" height="10" rx="1"></rect>
+          </svg>
+        </button>
       </div>
       <div id="encounter-picker-slot" class="toolbar-divider" hidden></div>
       <div id="encounter-picker" class="picker" data-open="false" hidden>
@@ -291,6 +315,12 @@
           <div id="raw-rows" class="raw-rows"></div>
         </div>
       </div>
+      <section id="overview-view" class="overview-view" hidden>
+        <div id="overview-mount"></div>
+        <p id="overview-empty" class="overview-empty" hidden>
+          Select a single encounter in the toolbar to see its overview.
+        </p>
+      </section>
     </main>
     <div id="status-bar" class="statusbar" hidden>
       <div class="statusbar-track">

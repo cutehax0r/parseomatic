@@ -30,21 +30,27 @@ enum ViewKind {
     #[default]
     Debug,
     Raw,
+    Overview,
 }
+
+// Every view in the radio group -- the single source of truth for
+// `sync_view_menu`'s loop and anywhere else that has to touch them all.
+const ALL_VIEWS: [ViewKind; 3] = [ViewKind::Debug, ViewKind::Raw, ViewKind::Overview];
 
 impl ViewKind {
     fn from_id(s: &str) -> Option<ViewKind> {
-        match s {
-            "debug" => Some(ViewKind::Debug),
-            "raw" => Some(ViewKind::Raw),
-            _ => None,
-        }
+        ALL_VIEWS.into_iter().find(|v| v.id() == s)
+    }
+
+    fn from_menu_id(s: &str) -> Option<ViewKind> {
+        ALL_VIEWS.into_iter().find(|v| v.menu_id() == s)
     }
 
     fn id(&self) -> &'static str {
         match self {
             ViewKind::Debug => "debug",
             ViewKind::Raw => "raw",
+            ViewKind::Overview => "overview",
         }
     }
 
@@ -52,6 +58,7 @@ impl ViewKind {
         match self {
             ViewKind::Debug => "view_debug",
             ViewKind::Raw => "view_raw",
+            ViewKind::Overview => "view_overview",
         }
     }
 }
@@ -170,7 +177,7 @@ fn current_view_for(app: &AppHandle, label: &str) -> ViewKind {
 /// one's actual state.
 fn sync_view_menu(window: &WebviewWindow, current: ViewKind) {
     let view_menu = window.app_handle().state::<ViewMenu>();
-    for view in [ViewKind::Debug, ViewKind::Raw] {
+    for view in ALL_VIEWS {
         if let Some(check) = view_menu.0.get(view.menu_id()).and_then(|i| i.as_check_menuitem().cloned()) {
             let _ = check.set_checked(view == current);
         }
@@ -810,17 +817,25 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri
         .select_all()
         .build()?;
 
-    // A radio group over two independent CheckMenuItems (muda has no
-    // distinct radio-item type) -- Debug starts checked to match
-    // ViewKind::default(). More views join this same group later; see
-    // sync_view_menu for how exclusivity is enforced on selection.
+    // A radio group over independent CheckMenuItems (muda has no distinct
+    // radio-item type) -- Debug starts checked to match ViewKind::default().
+    // See sync_view_menu for how exclusivity is enforced on selection.
     let debug_view_item =
         CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, true, None::<&str>)?;
     let raw_view_item =
         CheckMenuItem::with_id(app, ViewKind::Raw.menu_id(), "Raw", true, false, None::<&str>)?;
+    let overview_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Overview.menu_id(),
+        "Overview",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&debug_view_item)
         .item(&raw_view_item)
+        .item(&overview_view_item)
         .build()?;
 
     // Standard-issue macOS Window menu: Minimize/Zoom/Fullscreen and
@@ -934,16 +949,11 @@ pub fn run() {
             } else if event.id() == "open_settings" {
                 let app = app.clone();
                 std::thread::spawn(move || open_settings_window(&app));
-            } else if event.id() == "view_debug" || event.id() == "view_raw" {
+            } else if let Some(view) = ViewKind::from_menu_id(event.id().as_ref()) {
                 // No window creation involved -- state mutation + an
                 // event emit, both cheap and non-blocking, so this runs
                 // directly rather than spawning a thread.
                 if let Some(window) = focused_webview_window(app) {
-                    let view = if event.id() == "view_debug" {
-                        ViewKind::Debug
-                    } else {
-                        ViewKind::Raw
-                    };
                     apply_view_change(&window, view);
                 }
             }

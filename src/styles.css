@@ -727,6 +727,316 @@ body {
   border-radius: 3px;
 }
 
+/* ===========================================================================
+   Overview view -- the first Panel/Widget page (src/ui/, src/views/overview.ts).
+   SaaS-dashboard style built from the existing tokens: bordered cards on
+   --bg-elevated, small uppercase labels, big tabular-nums values.
+   =========================================================================== */
+.overview-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px 24px 32px;
+}
+
+.overview-view[hidden] {
+  display: none;
+}
+
+.overview-empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.overview-empty[hidden] {
+  display: none;
+}
+
+/* Panel -- CSS-grid layout container. `--cols` / `--span` are set inline
+   by buildView (src/ui/panel.ts). Panels nest: a cell can hold another. */
+.panel {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.panel-cell {
+  grid-column: span var(--span, 1);
+  min-width: 0;
+}
+
+.section-heading {
+  margin: 10px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.encounter-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.encounter-title h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.encounter-title-meta {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.encounter-title[data-tone="kill"] .encounter-title-meta {
+  color: var(--success);
+}
+
+.encounter-title[data-tone="wipe"] .encounter-title-meta {
+  color: var(--danger);
+}
+
+/* stat-tile -- label + big number + optional sub. */
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--bg-elevated);
+}
+
+.stat-tile-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.stat-tile-value {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-tile-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.stat-tile-sub[hidden] {
+  display: none;
+}
+
+.stat-tile[data-tone="kill"] .stat-tile-value {
+  color: var(--success);
+}
+
+.stat-tile[data-tone="wipe"] .stat-tile-value {
+  color: var(--danger);
+}
+
+/* player-table -- plain grid, not virtualized (<= ~30 players). */
+.player-table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.player-table-row {
+  display: grid;
+  grid-template-columns: 1fr 90px 110px;
+  gap: 10px;
+  padding: 6px 14px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.player-table-row > span:nth-child(n + 2) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.player-table-head {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
+}
+
+.player-table-body .player-table-row + .player-table-row {
+  border-top: 1px solid var(--border);
+}
+
+/* line-chart -- inline SVG, damage=accent / healing=success / deaths=danger. */
+.chart {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--bg-elevated);
+  padding: 10px 12px 6px;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chart-legend-item i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background-color: var(--text-faint);
+}
+
+.chart-legend-item[data-series="damage"] i {
+  background-color: var(--accent);
+}
+
+.chart-legend-item[data-series="healing"] i {
+  background-color: var(--success);
+}
+
+.chart-legend-item[data-series="death"] i {
+  width: 2px;
+  height: 11px;
+  border-radius: 0;
+  background-color: var(--danger);
+}
+
+.chart-plot {
+  position: relative;
+}
+
+.chart-plot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.chart-axis-label {
+  fill: var(--text-faint);
+  font-size: 10px;
+}
+
+.chart-death {
+  stroke: var(--danger);
+  stroke-width: 1;
+  opacity: 0.45;
+}
+
+.chart-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chart-line--damage {
+  stroke: var(--accent);
+}
+
+.chart-line--healing {
+  stroke: var(--success);
+}
+
+.chart-area {
+  stroke: none;
+  opacity: 0.12;
+}
+
+.chart-area.chart-line--damage {
+  fill: var(--accent);
+}
+
+.chart-area.chart-line--healing {
+  fill: var(--success);
+}
+
+.chart-dot {
+  stroke: var(--bg-elevated);
+  stroke-width: 1.5;
+}
+
+.chart-dot.chart-line--damage {
+  fill: var(--accent);
+}
+
+.chart-dot.chart-line--healing {
+  fill: var(--success);
+}
+
+.chart-series-label {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.chart-crosshair {
+  stroke: var(--text-faint);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.chart-tooltip {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg);
+  box-shadow: var(--shadow-popover);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.chart-tooltip[hidden] {
+  display: none;
+}
+
+.chart-tooltip-time {
+  margin-bottom: 2px;
+  color: var(--text-faint);
+}
+
+.chart-tooltip-row {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.chart-tooltip-row b {
+  font-variant-numeric: tabular-nums;
+}
+
 /* Settings window (settings.html) -- a separate, deliberately minimal
    window/page, not part of the log-viewer's own toolbar/content layout
    above. */

@@ -1,9 +1,22 @@
 # UI: Panels and Widgets
 
-How new views get built going forward, starting with the upcoming
-**Overview** view. Debug and Raw (`docs/status.md`) are explicitly *not*
-migrated onto this — they stay hand-rolled as the quick "does the parser
-actually work" sanity check, and this doc doesn't change them.
+How new views get built going forward, starting with the **Overview**
+view. Debug and Raw (`docs/status.md`) are explicitly *not* migrated onto
+this — they stay hand-rolled as the quick "does the parser actually work"
+sanity check, and this doc doesn't change them.
+
+> **Implementation status.** A first cut is built: `src/ui/` (`spec.ts`,
+> `registry.ts`, `panel.ts` `buildView`, `context.ts`, `query.ts`),
+> `src/ui/widgets/` (`encounter-title`, `section-heading`, `stat-tile`,
+> `player-table`, `line-chart`), and `src/views/overview.ts` — the
+> Overview view, wired to the encounter picker. Deliberately minimal vs.
+> the design below: `ViewContext` carries `range` + the loaded log's
+> lists + `query` + `requestFrame` + `subscribe`, **no `filterChain` or
+> `playhead` yet**; `WidgetFactory` is `(props, ctx)` — the widget builds
+> its own `element`, no `root` mount param; `query.ts` throws (no
+> `query_events` backend yet, so Overview's damage/healing/player numbers
+> and chart series are mocked). Overview assumes a single selected
+> encounter and shows an empty state otherwise.
 
 Packaging/loading third-party widget code and the trust model around that
 are a separate concern — see `docs/widget-distribution.md`. This doc is
@@ -349,6 +362,23 @@ returned in raw mode (including position fields, already tracked per event
 for the planned 3D replay) — not a backend feature. Conditional aggregates
 (crit rate = crits ÷ hits) are two queries, or a client-side pass over raw
 rows — not a new clause type.
+
+**Per-encounter player rows (what the Overview "Players" table needs, once
+real):**
+- **Roster is per-encounter, never log-wide.** Players come and go across a
+  raid night. The roster for an encounter is the set of player units with
+  damage / healing / cast activity inside its `[start_row, end_row]` range —
+  derived from the events, not from a static player list.
+- **Pet contributions roll up into the owning player.** A pet/guardian/totem
+  owned by a player (`UnitRow.owner`) has its damage and healing added to
+  that player's row; pets are not their own rows. (How to surface the
+  pet-vs-player split visually is a later question — for now it's just
+  summed in.) The group-by key for a "damage by player" query is therefore
+  *effective owner* (`owner ?? self` when the source is a player-owned
+  unit), not the raw `sourceGuid`.
+
+Until `query_events` exists, Overview mocks both: a stable per-encounter
+subset of the log's players, with synthesized numbers.
 
 ## Starter widget set
 

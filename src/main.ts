@@ -1,18 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { VirtualList } from "./virtual-list";
+import type { UnitRow, EncounterRow, DeathRow, RangeSource, RangeSelection } from "./types";
+import { formatDuration, formatEncounterResult } from "./format";
+import { setRange, setLogData } from "./ui/context";
+import { renderOverview } from "./views/overview";
 
 interface WindowInfo {
   lineCount: number;
   percent: number;
   done: boolean;
-}
-
-interface UnitRow {
-  guid: string;
-  name: string;
-  kind: string;
-  owner: string | null;
 }
 
 interface SpellRow {
@@ -24,24 +21,6 @@ interface SpellRow {
 interface ZoneRow {
   mapId: number;
   name: string;
-}
-
-interface EncounterRow {
-  name: string;
-  encounterId: number;
-  difficultyId: number;
-  groupSize: number;
-  startMs: number;
-  endMs: number;
-  durationMs: number;
-  success: boolean | null;
-  isTrash: boolean;
-}
-
-interface DeathRow {
-  playerName: string;
-  timestampMs: number;
-  encounterName: string;
 }
 
 interface GearItemRow {
@@ -130,7 +109,7 @@ let lastListsLineCount: number | null = null;
 let unitsById: UnitRow[] = [];
 let spellsById: SpellRow[] = [];
 
-type ViewMode = "debug" | "raw";
+type ViewMode = "debug" | "raw" | "overview";
 let currentViewMode: ViewMode = "debug";
 
 const RAW_ROW_HEIGHT = 24;
@@ -208,20 +187,6 @@ function renderTable(tabKey: string, gridColumns: string, rows: string[][], empt
   if (scrollEl) scrollEl.hidden = isEmpty;
 
   table.list.setTotal(rows.length);
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.round(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function formatEncounterResult(e: EncounterRow): string {
-  if (e.isTrash) return "";
-  if (e.success === true) return "Kill";
-  if (e.success === false) return "Wipe";
-  return "?"; // implicit end synthesized (malformed log / EOF-while-open)
 }
 
 function renderDebugLists(lists: DebugListsPayload): DebugCounts {
@@ -433,20 +398,13 @@ async function loadRawView() {
 // becomes one `encounter-picker` widget writing to `ctx.setFilterChain`;
 // the window CustomEvent is the stand-in until then.
 
+// `RangeSource` / `RangeSelection` live in ./types (shared with src/ui).
 // The filter is ALWAYS a concrete [startMs, endMs]. `source` is only what
 // the menu highlights and how the button labels it: picking an encounter
 // row sets the range to that encounter's bounds but keeps its own
-// identity; "custom" is the free range edited in the popover -- a subset
-// of one encounter, or a span crossing several. There's no "everything"
-// source: the whole-log range is just a custom range at full width, and
-// the popover's snap buttons put it there.
-type RangeSource = { kind: "custom" } | { kind: "encounter"; index: number };
-
-interface RangeSelection {
-  startMs: number;
-  endMs: number;
-  source: RangeSource;
-}
+// identity; "custom" is the free range edited in the popover. There's no
+// "everything" source -- the whole-log range is just a custom range at
+// full width, which the popover's snap buttons produce.
 
 // Menu layout mode. "grouped" (below) = bosses grouped by name + a
 // separate Trash section. "chronological" (planned, gated on a Settings
@@ -728,6 +686,9 @@ function applySelection(sel: RangeSelection, opts: { silent?: boolean } = {}): v
   });
   refreshCustomRangeSubtitle();
 
+  // Shared range store -- views (src/ui) read/subscribe here. The window
+  // CustomEvent stays as a coarse stand-in; nothing else listens yet.
+  setRange(rangeSelection);
   if (!opts.silent) {
     window.dispatchEvent(new CustomEvent("filter-changed", { detail: { range: rangeSelection } }));
   }
@@ -948,8 +909,10 @@ async function refreshStatus() {
   const statusEl = document.querySelector<HTMLElement>("#log-status");
   const debugView = document.querySelector<HTMLElement>("#debug-view");
   const rawView = document.querySelector<HTMLElement>("#raw-view");
+  const overviewView = document.querySelector<HTMLElement>("#overview-view");
   const debugBtn = document.querySelector<HTMLButtonElement>("#view-debug-btn");
   const rawBtn = document.querySelector<HTMLButtonElement>("#view-raw-btn");
+  const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
   const statusBar = document.querySelector<HTMLElement>("#status-bar");
   const statusBarFill = document.querySelector<HTMLElement>("#statusbar-fill");
   const statusBarText = document.querySelector("#statusbar-text");
@@ -958,8 +921,10 @@ async function refreshStatus() {
     !statusEl ||
     !debugView ||
     !rawView ||
+    !overviewView ||
     !debugBtn ||
     !rawBtn ||
+    !overviewBtn ||
     !statusBar ||
     !statusBarFill ||
     !statusBarText
@@ -971,9 +936,10 @@ async function refreshStatus() {
     invoke<WindowInfo | null>("window_info"),
     invoke<string>("current_view"),
   ]);
-  currentViewMode = viewId === "raw" ? "raw" : "debug";
+  currentViewMode = viewId === "raw" ? "raw" : viewId === "overview" ? "overview" : "debug";
   debugBtn.setAttribute("aria-pressed", String(currentViewMode === "debug"));
   rawBtn.setAttribute("aria-pressed", String(currentViewMode === "raw"));
+  overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
 
   if (!info) {
     statusEl.textContent = "No combat log open";
@@ -981,6 +947,7 @@ async function refreshStatus() {
     content.classList.remove("has-data");
     debugView.hidden = true;
     rawView.hidden = true;
+    overviewView.hidden = true;
     lastLineCount = null;
     lastCounts = null;
     lastListsLineCount = null;
@@ -1000,6 +967,7 @@ async function refreshStatus() {
     content.classList.remove("has-data");
     debugView.hidden = true;
     rawView.hidden = true;
+    overviewView.hidden = true;
     setEncounterPickerVisible(false);
 
     statusBar.hidden = false;
@@ -1027,11 +995,15 @@ async function refreshStatus() {
       content.classList.remove("has-data");
       debugView.hidden = true;
       rawView.hidden = true;
+      overviewView.hidden = true;
       setEncounterPickerVisible(false);
       return;
     }
     lastCounts = renderDebugLists(lists);
     lastListsLineCount = info.lineCount;
+
+    // Feed the shared stores the src/ui views read from.
+    setLogData({ encounters: lists.encounters, deaths: lists.deaths, units: lists.units });
 
     // New log -> repopulate the encounter picker and reset the range to
     // the whole log (notifying any listener the filter changed).
@@ -1046,7 +1018,10 @@ async function refreshStatus() {
   setEncounterPickerVisible(true);
   debugView.hidden = currentViewMode !== "debug";
   rawView.hidden = currentViewMode !== "raw";
-  if (currentViewMode === "raw") {
+  overviewView.hidden = currentViewMode !== "overview";
+  if (currentViewMode === "overview") {
+    renderOverview();
+  } else if (currentViewMode === "raw") {
     await loadRawView();
   } else {
     // The active tab's scroll container had clientHeight 0 while the
@@ -1093,6 +1068,10 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.querySelector("#view-raw-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "raw" });
+  });
+
+  document.querySelector("#view-overview-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "overview" });
   });
 
   listen("log-changed", () => refreshStatus());
