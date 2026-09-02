@@ -95,14 +95,49 @@ registerWidget<LineChartProps>("line-chart", (props) => {
   let current: LineChartProps = props;
   const hover: { crosshair: SVGLineElement | null } = { crosshair: null };
 
+  // Hover is driven off pointermove but processed at most once per frame,
+  // against a cached SVG rect (a ResizeObserver keeps it fresh -- reading
+  // getBoundingClientRect per move forces a synchronous layout). The
+  // crosshair is bucket-quantized, so a move that lands in the same
+  // bucket (and the same death, if any) skips the DOM write entirely.
+  let svgRect: DOMRect | null = null;
+  let hoverRaf = 0;
+  let pendingClientX = 0;
+  let lastBucketIdx = -1;
+  let lastDeathT: number | null = null;
+  const resizeObserver = new ResizeObserver(() => {
+    svgRect = svg.getBoundingClientRect();
+  });
+  resizeObserver.observe(svg);
+
   const xOf = (t: number) => {
     const span = current.endMs - current.startMs || 1;
     return PAD.left + ((t - current.startMs) / span) * PLOT_W;
   };
 
+  // Nearest bucket to time `t` -- buckets are sorted by tMid.
+  function nearestBucket(t: number): number {
+    const bs = current.buckets;
+    if (t <= bs[0].tMid) return 0;
+    if (t >= bs[bs.length - 1].tMid) return bs.length - 1;
+    let lo = 0;
+    let hi = bs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (bs[mid].tMid < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo > 0 && t - bs[lo - 1].tMid < bs[lo].tMid - t ? lo - 1 : lo;
+  }
+
   function render() {
     const { buckets, deaths, startMs } = current;
-    const peak = Math.max(1, ...buckets.flatMap((b) => [b.damage, b.healing])) * 1.1;
+    let peak = 1;
+    for (const b of buckets) {
+      if (b.damage > peak) peak = b.damage;
+      if (b.healing > peak) peak = b.healing;
+    }
+    peak *= 1.1;
     const yOf = (v: number) => PAD.top + PLOT_H - (v / peak) * PLOT_H;
 
     svg.replaceChildren();
@@ -160,19 +195,33 @@ registerWidget<LineChartProps>("line-chart", (props) => {
   }
 
   function onMove(ev: PointerEvent) {
-    const rect = svg.getBoundingClientRect();
-    const xView = ((ev.clientX - rect.left) / rect.width) * VB_W;
-    if (xView < PAD.left || xView > PAD.left + PLOT_W || current.buckets.length === 0) {
-      onLeave();
+    pendingClientX = ev.clientX;
+    if (hoverRaf) return;
+    hoverRaf = requestAnimationFrame(() => {
+      hoverRaf = 0;
+      processHover();
+    });
+  }
+
+  function processHover() {
+    if (!svgRect || svgRect.width === 0) svgRect = svg.getBoundingClientRect();
+    if (svgRect.width === 0 || current.buckets.length === 0) return;
+
+    const xView = ((pendingClientX - svgRect.left) / svgRect.width) * VB_W;
+    if (xView < PAD.left || xView > PAD.left + PLOT_W) {
+      hideHover();
       return;
     }
     const t = current.startMs + ((xView - PAD.left) / PLOT_W) * (current.endMs - current.startMs);
-    let nearest = current.buckets[0];
-    for (const b of current.buckets) {
-      if (Math.abs(b.tMid - t) < Math.abs(nearest.tMid - t)) nearest = b;
-    }
+    const idx = nearestBucket(t);
     const near = current.deaths.find((d) => Math.abs(xOf(d.t) - xView) < 6);
-    const x = xOf(nearest.tMid);
+    const deathT = near?.t ?? null;
+    if (idx === lastBucketIdx && deathT === lastDeathT) return; // same cell, nothing to redraw
+    lastBucketIdx = idx;
+    lastDeathT = deathT;
+
+    const b = current.buckets[idx];
+    const x = xOf(b.tMid);
     hover.crosshair?.setAttribute("x1", String(x));
     hover.crosshair?.setAttribute("x2", String(x));
     hover.crosshair?.setAttribute("visibility", "visible");
@@ -183,27 +232,42 @@ registerWidget<LineChartProps>("line-chart", (props) => {
     tooltip.innerHTML = near
       ? `<div class="chart-tooltip-time">${formatDuration(near.t - current.startMs)}</div>` +
         `<div class="chart-tooltip-row"><span>Death</span><b>${near.label ?? "—"}</b></div>`
-      : `<div class="chart-tooltip-time">${formatDuration(nearest.tMid - current.startMs)}</div>` +
-        `<div class="chart-tooltip-row"><span>Damage</span><b>${formatCompact(nearest.damage)}</b></div>` +
-        `<div class="chart-tooltip-row"><span>Healing</span><b>${formatCompact(nearest.healing)}</b></div>`;
+      : `<div class="chart-tooltip-time">${formatDuration(b.tMid - current.startMs)}</div>` +
+        `<div class="chart-tooltip-row"><span>Damage</span><b>${formatCompact(b.damage)}</b></div>` +
+        `<div class="chart-tooltip-row"><span>Healing</span><b>${formatCompact(b.healing)}</b></div>`;
     tooltip.hidden = false;
     // x is in viewBox units; the SVG fills .chart-plot, so this maps
     // straight to a percentage offset within the tooltip's container.
     tooltip.style.left = `${(x / VB_W) * 100}%`;
   }
 
-  function onLeave() {
+  function hideHover() {
     tooltip.hidden = true;
     hover.crosshair?.setAttribute("visibility", "hidden");
+    lastBucketIdx = -1;
+    lastDeathT = null;
+  }
+
+  function onLeave() {
+    if (hoverRaf) {
+      cancelAnimationFrame(hoverRaf);
+      hoverRaf = 0;
+    }
+    hideHover();
   }
 
   svg.addEventListener("pointermove", onMove);
   svg.addEventListener("pointerleave", onLeave);
 
   render();
+  svgRect = svg.getBoundingClientRect();
 
   return {
     element,
+    destroy() {
+      resizeObserver.disconnect();
+      if (hoverRaf) cancelAnimationFrame(hoverRaf);
+    },
     update(next) {
       current = next;
       render();

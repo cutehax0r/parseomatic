@@ -945,7 +945,10 @@ function setHistoryPopupOpen(open: boolean): void {
   picker.dataset.open = String(open);
   btn.setAttribute("aria-expanded", String(open));
   popup.hidden = !open;
-  if (open) popup.focus();
+  if (open) {
+    renderHistoryPopup(historyState()); // built lazily -- only while visible
+    popup.focus();
+  }
 }
 
 // Newest-first list; the current entry is marked; a "Clear history" row
@@ -978,16 +981,27 @@ function renderHistoryPopup(state: HistoryState): void {
   popup.appendChild(clear);
 }
 
+// Last nav state pushed to the native History menu -- skip the IPC when
+// it hasn't moved. `null` forces a send on the first call and after a
+// focus change (a different window re-asserting).
+let lastNavSent: { back: boolean; forward: boolean } | null = null;
+
 function syncHistoryUi(state: HistoryState): void {
   const back = document.querySelector<HTMLButtonElement>("#history-back-btn");
   const fwd = document.querySelector<HTMLButtonElement>("#history-forward-btn");
   if (back) back.disabled = !state.canBack;
   if (fwd) fwd.disabled = !state.canForward;
-  renderHistoryPopup(state);
-  void invoke("set_history_nav", {
-    canBack: state.canBack,
-    canForward: state.canForward,
-  }).catch(() => {});
+
+  // Only rebuild the popup DOM while it's actually visible.
+  if (historyPopupOpen()) renderHistoryPopup(state);
+
+  if (!lastNavSent || lastNavSent.back !== state.canBack || lastNavSent.forward !== state.canForward) {
+    lastNavSent = { back: state.canBack, forward: state.canForward };
+    void invoke("set_history_nav", {
+      canBack: state.canBack,
+      canForward: state.canForward,
+    }).catch(() => {});
+  }
 }
 
 function setupHistory(): void {
@@ -1039,7 +1053,12 @@ function setupHistory(): void {
     else if (ev.payload === "clear") clearHistory();
   });
   // The menu bar is app-level; on focus, re-assert this window's nav state.
-  listen("window-focused", () => syncHistoryUi(historyState()));
+  // On focus the app-level History menu may be showing another window's
+  // nav state -- force a re-send even if ours hasn't changed.
+  listen("window-focused", () => {
+    lastNavSent = null;
+    syncHistoryUi(historyState());
+  });
 }
 
 async function refreshStatus() {
