@@ -199,6 +199,13 @@ trash after `<boss X>` with no later encounter → `Post-<boss X> trash N`;
 fall back to `Trash N` only when the log has no encounters at all. Not
 urgent — do it when the picker is next revisited.
 
+**TODO — "Hide resets" toggle.** A *reset* is an encounter whose combat
+lasts under ~10 s with few or no deaths — an aborted pull, not a real
+attempt. A picker/Settings toggle (default on?) filters these out of the
+list so a long progression night isn't cluttered with them. Pure display
+filter, doesn't touch the range model. Thresholds (duration cap, death
+count) worth making configurable. Not urgent.
+
 ## Shared state: the playhead
 
 ```ts

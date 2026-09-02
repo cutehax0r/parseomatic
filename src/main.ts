@@ -577,6 +577,10 @@ function makePickerSection(text: string): HTMLElement {
 // per boss (grouped by encounterId, falling back to name; first-seen
 // order kept, pulls numbered chronologically within the group), then a
 // separate Trash section as a flat numbered list.
+//
+// TODO(settings): a "Hide resets" toggle -- drop encounters whose combat
+// lasted < ~10s with few/no deaths (aborted pulls). Display filter only.
+// See docs/ui-widgets.md.
 function appendGroupedEncounters(menu: HTMLElement): void {
   const groups = new Map<string, number[]>(); // group key -> original indices
   encounterRows.forEach((e, i) => {
