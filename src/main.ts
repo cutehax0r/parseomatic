@@ -422,56 +422,74 @@ async function loadRawView() {
 
 // ---- Encounter picker -----------------------------------------------------
 //
-// A custom popup listbox in the toolbar (index.html #encounter-picker).
-// UI only for now: it populates from the loaded log's encounter list and
+// A custom popup listbox in the toolbar (index.html #encounter-picker),
+// plus a "Custom range" popover with two datetime-local inputs. UI only
+// for now: it populates from the loaded log's encounter list and
 // broadcasts the current selection as a `filter-changed` CustomEvent on
-// `window`. Nothing consumes that event yet -- the planned "Log" page's
-// table widget will. Raw/Debug views are deliberately untouched.
+// `window` (`detail.range`). Nothing consumes that event yet -- the
+// planned "Log" page's table widget will. Raw/Debug are untouched.
 //
 // When the ViewContext/filter-chain from docs/ui-widgets.md lands, this
 // becomes one `encounter-picker` widget writing to `ctx.setFilterChain`;
 // the window CustomEvent is the stand-in until then.
 
-// `custom` is a free time range -- a subset of one encounter, or a span
-// crossing several. Its bounds come from a future timeline brush on the
-// Log page; picking "Custom range" from the menu just switches into that
-// mode (null bounds) until then.
-type EncounterFilter =
-  | { kind: "all" }
-  | { kind: "custom"; startMs: number | null; endMs: number | null }
-  | { kind: "encounter"; index: number };
+// The filter is ALWAYS a concrete [startMs, endMs]. `source` is only what
+// the menu highlights and how the button labels it: picking an encounter
+// row sets the range to that encounter's bounds but keeps its own
+// identity; "custom" is the free range edited in the popover -- a subset
+// of one encounter, or a span crossing several. There's no "everything"
+// source: the whole-log range is just a custom range at full width, and
+// the popover's snap buttons put it there.
+type RangeSource = { kind: "custom" } | { kind: "encounter"; index: number };
 
-// Menu layout mode. "grouped" = bosses grouped by name with a separate
-// Trash section (below). "chronological" (planned, gated on a Settings
+interface RangeSelection {
+  startMs: number;
+  endMs: number;
+  source: RangeSource;
+}
+
+// Menu layout mode. "grouped" (below) = bosses grouped by name + a
+// separate Trash section. "chronological" (planned, gated on a Settings
 // toggle "Sort pulls chronologically / trash separately") = one flat
 // file-ordered list interleaving trash and pulls by time. Only "grouped"
 // is implemented; see docs/ui-widgets.md.
 const pickerSortMode: "grouped" | "chronological" = "grouped";
 
 let encounterRows: EncounterRow[] = [];
-let encounterFilter: EncounterFilter = { kind: "all" };
-// Original-array index -> the collapsed button's label for that option
+// The loaded log's overall time extent -- the snap targets and the
+// datetime inputs' min/max. Derived from the encounter list, whose
+// leading/trailing synthesized trash spans reach the first/last event
+// (see reports.rs).
+let logStartMs = 0;
+let logEndMs = 0;
+let rangeSelection: RangeSelection = { startMs: 0, endMs: 0, source: { kind: "custom" } };
+// Original-array index -> the collapsed button's label for that encounter
 // ("Boss Name — Pull 2", "Trash 3"). Built alongside the menu.
 const encounterOptionLabels = new Map<number, string>();
 let activeOption: HTMLElement | null = null;
 
-function filtersEqual(a: EncounterFilter, b: EncounterFilter): boolean {
-  if (a.kind !== b.kind) return false;
-  if (a.kind === "encounter" && b.kind === "encounter") return a.index === b.index;
-  return true; // "all"==="all"; any "custom" maps to the single Custom range row
+function computeLogExtent(): void {
+  logStartMs = encounterRows.reduce((m, e) => Math.min(m, e.startMs), Number.POSITIVE_INFINITY);
+  logEndMs = encounterRows.reduce((m, e) => Math.max(m, e.endMs), Number.NEGATIVE_INFINITY);
+  if (!Number.isFinite(logStartMs)) logStartMs = 0;
+  if (!Number.isFinite(logEndMs)) logEndMs = 0;
 }
 
-function encounterFilterLabel(filter: EncounterFilter): string {
-  switch (filter.kind) {
-    case "all":
-      return "Everything";
-    case "custom":
-      return filter.startMs !== null && filter.endMs !== null
-        ? `Custom range (${formatClockTime(filter.startMs)}–${formatClockTime(filter.endMs)})`
-        : "Custom range";
-    case "encounter":
-      return encounterOptionLabels.get(filter.index) ?? "Everything";
-  }
+function fullLogSelection(): RangeSelection {
+  return { startMs: logStartMs, endMs: logEndMs, source: { kind: "custom" } };
+}
+
+function rangeIsFullLog(sel: RangeSelection): boolean {
+  return sel.startMs <= logStartMs && sel.endMs >= logEndMs;
+}
+
+function sourcesEqual(a: RangeSource, b: RangeSource): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind === "encounter" && b.kind === "encounter" ? a.index === b.index : true;
+}
+
+function pad(n: number, width = 2): string {
+  return String(n).padStart(width, "0");
 }
 
 function formatDurationWords(ms: number): string {
@@ -481,12 +499,53 @@ function formatDurationWords(ms: number): string {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function sameCalendarDay(a: number, b: number): boolean {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
+// Clock with seconds. Millisecond precision lives in the datetime inputs
+// and the stored range, not in any label (a label to .001s is unreadable).
 function formatClockTime(ms: number): string {
   const d = new Date(ms);
-  const minutes = String(d.getMinutes()).padStart(2, "0");
   const meridiem = d.getHours() >= 12 ? "pm" : "am";
   const hours = d.getHours() % 12 || 12;
-  return `${hours}:${minutes}${meridiem}`;
+  return `${hours}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${meridiem}`;
+}
+
+// One end of a range. Prefixes "Mon D " only when the two ends fall on
+// different calendar days (a raid crossing midnight).
+function formatRangeEndpoint(ms: number, otherMs: number): string {
+  const clock = formatClockTime(ms);
+  if (sameCalendarDay(ms, otherMs)) return clock;
+  const d = new Date(ms);
+  return `${MONTH_ABBR[d.getMonth()]} ${d.getDate()} ${clock}`;
+}
+
+function formatRange(startMs: number, endMs: number): string {
+  return `${formatRangeEndpoint(startMs, endMs)} – ${formatRangeEndpoint(endMs, startMs)}`;
+}
+
+// ms <-> <input type="datetime-local" step="0.001"> value, local time,
+// millisecond precision ("2026-04-14T20:03:53.934").
+function toDatetimeLocal(ms: number): string {
+  const d = new Date(ms);
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+  );
+}
+
+function fromDatetimeLocal(value: string): number | null {
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? null : ms;
 }
 
 type EncounterOutcome = "kill" | "wipe" | "unknown";
@@ -497,29 +556,38 @@ function encounterOutcomeWord(e: EncounterRow): EncounterOutcome {
   return "unknown"; // synthesized end -- malformed log / EOF while open
 }
 
+// Collapsed-button text for the current selection.
+function selectionLabel(sel: RangeSelection): string {
+  if (sel.source.kind === "encounter") {
+    return encounterOptionLabels.get(sel.source.index) ?? formatRange(sel.startMs, sel.endMs);
+  }
+  return rangeIsFullLog(sel) ? "Full log" : formatRange(sel.startMs, sel.endMs);
+}
+
 interface PickerOptionOpts {
-  filter: EncounterFilter;
+  source: RangeSource;
   pull?: boolean;
   // Trailing detail rendered as "(meta)", or "(outcome: meta)" when
   // `outcome` is set (kill/wipe get a colored word; trash passes no
-  // outcome and stays fully faint).
+  // outcome and stays fully faint). An empty string still creates the
+  // element -- the Custom range row's subtitle is filled in later.
   meta?: string;
   outcome?: EncounterOutcome;
 }
 
 function makePickerOption(label: string, opts: PickerOptionOpts): HTMLElement {
-  const { filter, pull = false, meta, outcome } = opts;
+  const { source, pull = false, meta, outcome } = opts;
 
   const opt = document.createElement("div");
   opt.className = pull ? "picker-option picker-option--pull" : "picker-option";
   opt.setAttribute("role", "option");
-  opt.dataset.filter = JSON.stringify(filter);
+  opt.dataset.source = JSON.stringify(source);
 
   const name = document.createElement("span");
   name.textContent = label;
   opt.appendChild(name);
 
-  if (meta || outcome) {
+  if (meta !== undefined || outcome) {
     const metaEl = document.createElement("span");
     metaEl.className = "picker-option-meta";
     if (outcome) {
@@ -531,12 +599,12 @@ function makePickerOption(label: string, opts: PickerOptionOpts): HTMLElement {
       word.textContent = outcome;
       metaEl.append("(", word, `: ${meta ?? ""})`);
     } else {
-      metaEl.textContent = `(${meta ?? ""})`;
+      metaEl.textContent = meta ? `(${meta})` : "";
     }
     opt.appendChild(metaEl);
   }
 
-  if (filtersEqual(filter, encounterFilter)) opt.setAttribute("aria-selected", "true");
+  if (sourcesEqual(source, rangeSelection.source)) opt.setAttribute("aria-selected", "true");
   return opt;
 }
 
@@ -578,7 +646,7 @@ function appendGroupedEncounters(menu: HTMLElement): void {
           const label = `Pull ${n + 1}`;
           menu.appendChild(
             makePickerOption(label, {
-              filter: { kind: "encounter", index: idx },
+              source: { kind: "encounter", index: idx },
               pull: true,
               meta: formatDurationWords(e.durationMs),
               outcome: encounterOutcomeWord(e),
@@ -592,12 +660,15 @@ function appendGroupedEncounters(menu: HTMLElement): void {
   const trashIndices = encounterRows.map((e, i) => (e.isTrash ? i : -1)).filter((i) => i >= 0);
   if (trashIndices.length > 0) {
     menu.appendChild(makePickerSection("Trash"));
+    // TODO: better trash names -- "Pre-<boss> trash N" / "Post-<boss> trash N"
+    // by adjacency to encounters, "Trash N" only when the log has no bosses.
+    // See docs/ui-widgets.md.
     trashIndices.forEach((idx, n) => {
       const e = encounterRows[idx];
       const label = `Trash ${n + 1}`;
       menu.appendChild(
         makePickerOption(label, {
-          filter: { kind: "encounter", index: idx },
+          source: { kind: "encounter", index: idx },
           meta: `${formatClockTime(e.startMs)}: ${formatDurationWords(e.durationMs)}`,
         }),
       );
@@ -606,19 +677,17 @@ function appendGroupedEncounters(menu: HTMLElement): void {
   }
 }
 
-// Rebuilds the popup from `encounterRows`. Fixed leading options
-// ("Everything", "Custom range"), then the encounter list in whichever
-// layout `pickerSortMode` selects. Called once per loaded log.
+// Rebuilds the popup from `encounterRows`: the "Custom range" row (opens
+// the popover; its subtitle mirrors the current range), then the
+// encounter list in whichever layout `pickerSortMode` selects. Called
+// once per loaded log.
 function buildEncounterMenu(): void {
   const menu = document.querySelector<HTMLElement>("#encounter-picker-menu");
   if (!menu) return;
   menu.replaceChildren();
   encounterOptionLabels.clear();
 
-  menu.appendChild(makePickerOption("Everything", { filter: { kind: "all" } }));
-  menu.appendChild(
-    makePickerOption("Custom range", { filter: { kind: "custom", startMs: null, endMs: null } }),
-  );
+  menu.appendChild(makePickerOption("Custom range", { source: { kind: "custom" }, meta: "" }));
 
   if (pickerSortMode === "grouped") {
     appendGroupedEncounters(menu);
@@ -627,25 +696,40 @@ function buildEncounterMenu(): void {
     // interleaving trash and pulls by time. See docs/ui-widgets.md.
     appendGroupedEncounters(menu);
   }
+
+  refreshCustomRangeSubtitle();
 }
 
-function setEncounterFilter(filter: EncounterFilter, opts: { silent?: boolean } = {}): void {
-  encounterFilter = filter;
+// The Custom range row shows the current range as its subtitle -- that's
+// what clicking it lets you edit -- regardless of which row is selected.
+function refreshCustomRangeSubtitle(): void {
+  const el = document.querySelector<HTMLElement>(
+    '#encounter-picker-menu .picker-option[data-source*="custom"] .picker-option-meta',
+  );
+  if (!el) return;
+  el.textContent = rangeIsFullLog(rangeSelection)
+    ? "(full log)"
+    : `(${formatRange(rangeSelection.startMs, rangeSelection.endMs)})`;
+}
+
+function applySelection(sel: RangeSelection, opts: { silent?: boolean } = {}): void {
+  rangeSelection = sel;
 
   const labelEl = document.querySelector<HTMLElement>("#encounter-picker-label");
-  if (labelEl) labelEl.textContent = encounterFilterLabel(filter);
+  if (labelEl) labelEl.textContent = selectionLabel(sel);
 
   document.querySelectorAll<HTMLElement>("#encounter-picker-menu .picker-option").forEach((opt) => {
-    const raw = opt.dataset.filter;
-    if (raw && filtersEqual(JSON.parse(raw) as EncounterFilter, filter)) {
+    const raw = opt.dataset.source;
+    if (raw && sourcesEqual(JSON.parse(raw) as RangeSource, sel.source)) {
       opt.setAttribute("aria-selected", "true");
     } else {
       opt.removeAttribute("aria-selected");
     }
   });
+  refreshCustomRangeSubtitle();
 
   if (!opts.silent) {
-    window.dispatchEvent(new CustomEvent("filter-changed", { detail: { encounter: encounterFilter } }));
+    window.dispatchEvent(new CustomEvent("filter-changed", { detail: { range: rangeSelection } }));
   }
 }
 
@@ -667,55 +751,138 @@ function moveActiveOption(delta: number): void {
   setActiveOption(opts[(cur + delta + opts.length) % opts.length]);
 }
 
-function setPickerOpen(open: boolean): void {
-  const picker = document.querySelector<HTMLElement>("#encounter-picker");
-  const btn = document.querySelector<HTMLButtonElement>("#encounter-picker-btn");
-  const menu = document.querySelector<HTMLElement>("#encounter-picker-menu");
-  if (!picker || !btn || !menu) return;
-
-  picker.dataset.open = String(open);
-  btn.setAttribute("aria-expanded", String(open));
-  menu.hidden = !open;
-
-  if (open) {
-    const selected = menu.querySelector<HTMLElement>('.picker-option[aria-selected="true"]');
-    setActiveOption(selected ?? menu.querySelector<HTMLElement>(".picker-option"));
-    menu.focus();
-  } else {
-    setActiveOption(null);
-  }
-}
-
-function isPickerOpen(): boolean {
+function pickerSurfacesOpen(): boolean {
   return document.querySelector<HTMLElement>("#encounter-picker")?.dataset.open === "true";
 }
 
-// Toolbar slot + button visibility -- shown only once a log has finished
+function closePicker(): void {
+  const picker = document.querySelector<HTMLElement>("#encounter-picker");
+  const btn = document.querySelector<HTMLButtonElement>("#encounter-picker-btn");
+  const menu = document.querySelector<HTMLElement>("#encounter-picker-menu");
+  const popover = document.querySelector<HTMLElement>("#encounter-range-popover");
+  if (!picker || !btn || !menu || !popover) return;
+  picker.dataset.open = "false";
+  btn.setAttribute("aria-expanded", "false");
+  menu.hidden = true;
+  popover.hidden = true;
+  setActiveOption(null);
+}
+
+function openPickerMenu(): void {
+  const picker = document.querySelector<HTMLElement>("#encounter-picker");
+  const btn = document.querySelector<HTMLButtonElement>("#encounter-picker-btn");
+  const menu = document.querySelector<HTMLElement>("#encounter-picker-menu");
+  const popover = document.querySelector<HTMLElement>("#encounter-range-popover");
+  if (!picker || !btn || !menu || !popover) return;
+  popover.hidden = true;
+  menu.hidden = false;
+  picker.dataset.open = "true";
+  btn.setAttribute("aria-expanded", "true");
+  const selected = menu.querySelector<HTMLElement>('.picker-option[aria-selected="true"]');
+  setActiveOption(selected ?? menu.querySelector<HTMLElement>(".picker-option"));
+  menu.focus();
+}
+
+function openRangePopover(): void {
+  const picker = document.querySelector<HTMLElement>("#encounter-picker");
+  const menu = document.querySelector<HTMLElement>("#encounter-picker-menu");
+  const popover = document.querySelector<HTMLElement>("#encounter-range-popover");
+  const startInput = document.querySelector<HTMLInputElement>("#range-start");
+  const endInput = document.querySelector<HTMLInputElement>("#range-end");
+  const errorEl = document.querySelector<HTMLElement>("#range-error");
+  if (!picker || !menu || !popover || !startInput || !endInput) return;
+
+  const min = toDatetimeLocal(logStartMs);
+  const max = toDatetimeLocal(logEndMs);
+  for (const input of [startInput, endInput]) {
+    input.min = min;
+    input.max = max;
+  }
+  startInput.value = toDatetimeLocal(rangeSelection.startMs);
+  endInput.value = toDatetimeLocal(rangeSelection.endMs);
+  if (errorEl) errorEl.hidden = true;
+
+  menu.hidden = true;
+  popover.hidden = false;
+  picker.dataset.open = "true";
+  setActiveOption(null);
+  startInput.focus();
+}
+
+function applyRangePopover(): void {
+  const startInput = document.querySelector<HTMLInputElement>("#range-start");
+  const endInput = document.querySelector<HTMLInputElement>("#range-end");
+  const errorEl = document.querySelector<HTMLElement>("#range-error");
+  if (!startInput || !endInput) return;
+
+  const fail = (msg: string) => {
+    if (errorEl) {
+      errorEl.textContent = msg;
+      errorEl.hidden = false;
+    }
+  };
+
+  const rawStart = fromDatetimeLocal(startInput.value);
+  const rawEnd = fromDatetimeLocal(endInput.value);
+  if (rawStart === null || rawEnd === null) {
+    fail("Enter a start and end time.");
+    return;
+  }
+  // Clamp into the log's extent.
+  const startMs = Math.max(logStartMs, Math.min(rawStart, logEndMs));
+  const endMs = Math.max(logStartMs, Math.min(rawEnd, logEndMs));
+  if (startMs >= endMs) {
+    fail("Start must be before end.");
+    return;
+  }
+
+  applySelection({ startMs, endMs, source: { kind: "custom" } });
+  closePicker();
+  document.querySelector<HTMLButtonElement>("#encounter-picker-btn")?.focus();
+}
+
+// Menu row -> selection. The Custom range row opens the popover instead of
+// applying immediately.
+function chooseOption(opt: HTMLElement): void {
+  const raw = opt.dataset.source;
+  if (!raw) return;
+  const source = JSON.parse(raw) as RangeSource;
+  if (source.kind === "custom") {
+    openRangePopover();
+    return;
+  }
+  const e = encounterRows[source.index];
+  if (!e) return;
+  applySelection({ startMs: e.startMs, endMs: e.endMs, source });
+  closePicker();
+  document.querySelector<HTMLButtonElement>("#encounter-picker-btn")?.focus();
+}
+
+// Toolbar slot + picker visibility -- shown only once a log has finished
 // parsing (same gate as the debug/raw views).
 function setEncounterPickerVisible(visible: boolean): void {
   const slot = document.querySelector<HTMLElement>("#encounter-picker-slot");
   const picker = document.querySelector<HTMLElement>("#encounter-picker");
   if (slot) slot.hidden = !visible;
   if (picker) picker.hidden = !visible;
-  if (!visible) setPickerOpen(false);
+  if (!visible) closePicker();
 }
 
 function setupEncounterPicker(): void {
   const btn = document.querySelector<HTMLButtonElement>("#encounter-picker-btn");
   const menu = document.querySelector<HTMLElement>("#encounter-picker-menu");
-  if (!btn || !menu) return;
+  const popover = document.querySelector<HTMLElement>("#encounter-range-popover");
+  if (!btn || !menu || !popover) return;
 
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    setPickerOpen(!isPickerOpen());
+    if (pickerSurfacesOpen()) closePicker();
+    else openPickerMenu();
   });
 
   menu.addEventListener("click", (e) => {
     const opt = (e.target as HTMLElement).closest<HTMLElement>(".picker-option");
-    if (!opt?.dataset.filter) return;
-    setEncounterFilter(JSON.parse(opt.dataset.filter) as EncounterFilter);
-    setPickerOpen(false);
-    btn.focus();
+    if (opt?.dataset.source) chooseOption(opt);
   });
 
   menu.addEventListener("keydown", (e) => {
@@ -731,24 +898,48 @@ function setupEncounterPicker(): void {
       case "Enter":
       case " ":
         e.preventDefault();
-        if (activeOption?.dataset.filter) {
-          setEncounterFilter(JSON.parse(activeOption.dataset.filter) as EncounterFilter);
-          setPickerOpen(false);
-          btn.focus();
-        }
+        if (activeOption) chooseOption(activeOption);
         break;
       case "Escape":
         e.preventDefault();
-        setPickerOpen(false);
+        closePicker();
         btn.focus();
         break;
     }
   });
 
-  // Click anywhere outside an open picker closes it.
+  popover.addEventListener("click", (e) => {
+    const t = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
+    if (!t) return;
+    if (t.dataset.snap === "start") {
+      const i = document.querySelector<HTMLInputElement>("#range-start");
+      if (i) i.value = toDatetimeLocal(logStartMs);
+    } else if (t.dataset.snap === "end") {
+      const i = document.querySelector<HTMLInputElement>("#range-end");
+      if (i) i.value = toDatetimeLocal(logEndMs);
+    } else if (t.dataset.act === "apply") {
+      applyRangePopover();
+    } else if (t.dataset.act === "cancel") {
+      closePicker();
+      btn.focus();
+    }
+  });
+
+  popover.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closePicker();
+      btn.focus();
+    } else if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") {
+      e.preventDefault();
+      applyRangePopover();
+    }
+  });
+
+  // Click anywhere outside an open picker closes it (menu or popover).
   document.addEventListener("click", (e) => {
     const picker = document.querySelector<HTMLElement>("#encounter-picker");
-    if (picker && isPickerOpen() && !picker.contains(e.target as Node)) setPickerOpen(false);
+    if (picker && pickerSurfacesOpen() && !picker.contains(e.target as Node)) closePicker();
   });
 }
 
@@ -795,7 +986,9 @@ async function refreshStatus() {
     lastListsLineCount = null;
     encounterRows = [];
     encounterOptionLabels.clear();
-    setEncounterFilter({ kind: "all" }, { silent: true });
+    logStartMs = 0;
+    logEndMs = 0;
+    applySelection({ startMs: 0, endMs: 0, source: { kind: "custom" } }, { silent: true });
     setEncounterPickerVisible(false);
     return;
   }
@@ -840,11 +1033,12 @@ async function refreshStatus() {
     lastCounts = renderDebugLists(lists);
     lastListsLineCount = info.lineCount;
 
-    // New log -> repopulate the encounter picker and reset its selection
-    // to "Everything" (notifying any listener that the filter cleared).
+    // New log -> repopulate the encounter picker and reset the range to
+    // the whole log (notifying any listener the filter changed).
     encounterRows = lists.encounters;
+    computeLogExtent();
     buildEncounterMenu();
-    setEncounterFilter({ kind: "all" });
+    applySelection(fullLogSelection());
   }
   updateSummaryText();
 

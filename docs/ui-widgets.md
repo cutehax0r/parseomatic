@@ -147,26 +147,44 @@ player, spell, and target all come from the shared chain.
   `Encounter` (`reports.rs`), not a `timestamp_ms` comparison — cheaper, and
   unambiguous at the boundary since it's exactly the range the encounter was
   built from in the first place.
-- A **free time range** (`[startMs, endMs]`) is the other way to set the
-  view's time scope — a subset of one encounter, or a span crossing
-  several. Unlike `encounter` it *is* a `timestamp_ms BETWEEN` compare
-  (there's no prebuilt row range). Its bounds come from a timeline brush on
-  the Log page. Model it as its own clause shape, not an `encounter` clause.
+- The time scope is **always a concrete `[startMs, endMs]`**, never a
+  distinct "all" state. Picking an encounter row sets the range to that
+  encounter's `start_ms`/`end_ms`; "Custom range" sets it freely. The
+  backend can still take the `start_row`/`end_row` fast path when the
+  range came from an encounter, and fall back to a `timestamp_ms BETWEEN`
+  compare otherwise.
 
 **Encounter picker (built ahead of the filter chain, hand-wired in
-`main.ts` like Debug/Raw).** A toolbar popup listbox: `Everything`,
-`Custom range` (the free time range above), then the encounter list. What
-it writes today is a `filter-changed` `CustomEvent` on `window`
-(`{ kind: "all" | "custom" | "encounter" }`); it folds into
-`ctx.setFilterChain` as an `encounter-picker` widget once ViewContext
-exists. The list's **layout is a display preference, not part of the
-filter model**: default is grouped (one header per boss by `encounterId`,
-pulls numbered within it, a separate Trash section); a planned Settings
-toggle ("Sort pulls chronologically / trash separately") switches it to
-one flat file-ordered list interleaving trash and pulls by time
-(`trash 1, trash 2, boss1 wipe 1, boss1 wipe 2, boss1 kill, trash 3,
-boss2 kill, …`). Kill/wipe outcomes are colored (`--success`/`--danger`);
-trash and synthesized ("unknown") ends are not.
+`main.ts` like Debug/Raw).** A toolbar popup listbox — `Custom range`,
+then the grouped encounter list — plus a **Custom range popover**: two
+native `datetime-local` inputs (`step="0.001"` for a milliseconds field,
+`min`/`max` clamped to the log's extent, seeded from the current range on
+open) with per-field "Log start" / "Log end" snap buttons and Cancel /
+Apply. There is no "Everything" row — the whole-log range is just a
+custom range at full width, which the snap buttons produce; the button
+labels it "Full log" at that width, otherwise the range, or "Boss —
+Pull N" when an encounter row is selected. The log's overall extent is
+derived from the encounter list (its leading/trailing synthesized trash
+spans reach the first/last event — see `reports.rs`). What the picker
+writes today is a `filter-changed` `CustomEvent` on `window` —
+`detail.range = { startMs, endMs, source: { kind: "custom" } | { kind:
+"encounter", index } }` — and it folds into `ctx.setFilterChain` as an
+`encounter-picker` widget once ViewContext exists. A **timeline brush on
+the Log page** is the other way to set the same range. The list's
+**layout is a display preference, not part of the filter model**:
+default is grouped (one header per boss by `encounterId`, pulls numbered
+within it, a separate Trash section); a planned Settings toggle ("Sort
+pulls chronologically / trash separately") switches it to one flat
+file-ordered list interleaving trash and pulls by time (`trash 1,
+trash 2, boss1 wipe 1, boss1 wipe 2, boss1 kill, trash 3, boss2 kill,
+…`). Kill/wipe outcomes are colored (`--success`/`--danger`); trash and
+synthesized ("unknown") ends are not.
+
+**TODO — trash span names.** `Trash 1, Trash 2, …` is uninformative. Name
+by adjacency instead: trash before an encounter → `Pre-<boss X> trash N`;
+trash after `<boss X>` with no later encounter → `Post-<boss X> trash N`;
+fall back to `Trash N` only when the log has no encounters at all. Not
+urgent — do it when the picker is next revisited.
 
 ## Shared state: the playhead
 

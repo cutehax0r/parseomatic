@@ -121,6 +121,31 @@
           </svg>
         </button>
         <div id="encounter-picker-menu" class="picker-menu" role="listbox" tabindex="-1" hidden></div>
+        <div id="encounter-range-popover" class="picker-popover" hidden>
+          <div class="picker-field">
+            <label class="picker-field-label" for="range-start">Start</label>
+            <div class="picker-field-row">
+              <input id="range-start" class="picker-datetime" type="datetime-local" step="0.001" />
+              <button type="button" class="picker-snap" data-snap="start" title="Snap to first event">
+                &#x21E4; Log start
+              </button>
+            </div>
+          </div>
+          <div class="picker-field">
+            <label class="picker-field-label" for="range-end">End</label>
+            <div class="picker-field-row">
+              <input id="range-end" class="picker-datetime" type="datetime-local" step="0.001" />
+              <button type="button" class="picker-snap" data-snap="end" title="Snap to last event">
+                Log end &#x21E5;
+              </button>
+            </div>
+          </div>
+          <p id="range-error" class="picker-error" hidden></p>
+          <div class="picker-popover-footer">
+            <button type="button" class="picker-ghost" data-act="cancel">Cancel</button>
+            <button type="button" class="picker-primary" data-act="apply">Apply</button>
+          </div>
+        </div>
       </div>
     </div>
     <main id="content" class="content">
