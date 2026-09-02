@@ -37,8 +37,11 @@ install:
 # Extra words after `run`/`dev` on the command line (e.g. the FILE in
 # `make run /path/to/log.txt`) show up in MAKECMDGOALS -- filtered against
 # known target names (not just $@) so this works the same whether invoked
-# as `run` or via the `dev` alias.
-RUN_ARGS := $(filter-out run dev build test clean install uninstall help release,$(MAKECMDGOALS))
+# as `run` or via the `dev` alias. `abspath` resolves it against the repo
+# root: `tauri dev` runs the binary via `cargo run`, whose cwd is
+# `src-tauri/`, so a bare relative path would otherwise be looked up one
+# level too deep and fail with "cannot open file".
+RUN_ARGS := $(abspath $(filter-out run dev build test clean install uninstall help release,$(MAKECMDGOALS)))
 
 run: install
 	@# Free the Vite dev port (vite.config.ts: port 1420, strictPort) in

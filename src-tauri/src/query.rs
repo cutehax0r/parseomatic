@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::parser::event::{EventStore, FLAG_AOE, FLAG_CRIT};
+use crate::parser::event::{EventStore, LineKind, FLAG_AOE, FLAG_CRIT};
 use crate::parser::intern::{InternTables, NO_UNIT};
 
 #[derive(Deserialize)]
@@ -215,6 +215,47 @@ fn cmp(v: &Val, j: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
+/// A `where` clause pre-processed for the scan. `Field::Kind` with
+/// `eq`/`in` is the hot case -- its string value(s) are resolved to
+/// `LineKind` once here, so the per-row check is a slice compare with no
+/// allocation or string parsing (see `performance-concerns.md` #9).
+/// Everything else stays on the generic `passes` path.
+enum Compiled<'a> {
+    KindIn(Vec<LineKind>),
+    Generic(&'a FilterClause),
+}
+
+fn compile(clauses: &[FilterClause]) -> Vec<Compiled<'_>> {
+    clauses
+        .iter()
+        .map(|c| match (c.field, c.op) {
+            (Field::Kind, Op::Eq) => match c.value.as_str().and_then(LineKind::from_label) {
+                Some(k) => Compiled::KindIn(vec![k]),
+                None => Compiled::Generic(c),
+            },
+            (Field::Kind, Op::In) => Compiled::KindIn(
+                c.value
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().and_then(LineKind::from_label)).collect())
+                    .unwrap_or_default(),
+            ),
+            _ => Compiled::Generic(c),
+        })
+        .collect()
+}
+
+fn compiled_all(
+    filters: &[Compiled<'_>],
+    row: usize,
+    events: &EventStore,
+    tables: &InternTables,
+) -> bool {
+    filters.iter().all(|c| match c {
+        Compiled::KindIn(ks) => ks.contains(&events.kind[row]),
+        Compiled::Generic(fc) => passes(fc, row, events, tables),
+    })
+}
+
 #[derive(Default, Clone)]
 struct Accum {
     n: u64,
@@ -271,17 +312,18 @@ fn window(events: &EventStore, start_ms: i64, end_ms: i64) -> (usize, usize) {
 }
 
 /// Folds one row into `accs` -- one entry per aggregate clause, skipping a
-/// clause whose per-clause `where` doesn't pass. The query-level `where`
-/// is the caller's responsibility.
+/// clause whose per-clause `where` (pre-`compile`d, one `Vec` per clause)
+/// doesn't pass. The query-level `where` is the caller's responsibility.
 fn accumulate_row(
     row: usize,
     aggregate: &[AggregateClause],
+    clause_filters: &[Vec<Compiled<'_>>],
     events: &EventStore,
     tables: &InternTables,
     accs: &mut [Accum],
 ) {
     for (i, clause) in aggregate.iter().enumerate() {
-        if !clause.where_.iter().all(|c| passes(c, row, events, tables)) {
+        if !compiled_all(&clause_filters[i], row, events, tables) {
             continue;
         }
         let x = clause
@@ -290,6 +332,11 @@ fn accumulate_row(
             .unwrap_or(0.0);
         accs[i].add(x);
     }
+}
+
+/// `compile` each aggregate clause's per-clause `where`, once per query.
+fn compile_clause_filters(aggregate: &[AggregateClause]) -> Vec<Vec<Compiled<'_>>> {
+    aggregate.iter().map(|c| compile(&c.where_)).collect()
 }
 
 fn agg_columns(aggregate: &[AggregateClause], accs: &[Accum], obj: &mut Map<String, Value>) {
@@ -309,12 +356,14 @@ pub fn run_aggregate(spec: &QuerySpec, events: &EventStore, tables: &InternTable
         return run_bucketed(spec, b.count, events, tables, lo, hi);
     }
 
+    let where_ = compile(&spec.where_);
+    let clause_filters = compile_clause_filters(&spec.aggregate);
     let mut groups: HashMap<Vec<Val>, Vec<Accum>> = HashMap::new();
     for row in lo..hi {
         if events.timestamp_ms[row] < spec.start_ms || events.timestamp_ms[row] > spec.end_ms {
             continue;
         }
-        if !spec.where_.iter().all(|c| passes(c, row, events, tables)) {
+        if !compiled_all(&where_, row, events, tables) {
             continue;
         }
         let key: Vec<Val> = spec
@@ -325,7 +374,7 @@ pub fn run_aggregate(spec: &QuerySpec, events: &EventStore, tables: &InternTable
         let accs = groups
             .entry(key)
             .or_insert_with(|| vec![Accum::default(); spec.aggregate.len()]);
-        accumulate_row(row, &spec.aggregate, events, tables, accs);
+        accumulate_row(row, &spec.aggregate, &clause_filters, events, tables, accs);
     }
 
     groups
@@ -357,6 +406,8 @@ fn run_bucketed(
         return Vec::new();
     }
     let width = ((spec.end_ms - spec.start_ms) / count as i64).max(1);
+    let where_ = compile(&spec.where_);
+    let clause_filters = compile_clause_filters(&spec.aggregate);
     let mut buckets: Vec<Vec<Accum>> =
         vec![vec![Accum::default(); spec.aggregate.len()]; count];
 
@@ -365,11 +416,11 @@ fn run_bucketed(
         if ts < spec.start_ms || ts > spec.end_ms {
             continue;
         }
-        if !spec.where_.iter().all(|c| passes(c, row, events, tables)) {
+        if !compiled_all(&where_, row, events, tables) {
             continue;
         }
         let idx = (((ts - spec.start_ms) / width) as usize).min(count - 1);
-        accumulate_row(row, &spec.aggregate, events, tables, &mut buckets[idx]);
+        accumulate_row(row, &spec.aggregate, &clause_filters, events, tables, &mut buckets[idx]);
     }
 
     buckets
@@ -394,10 +445,11 @@ pub fn raw_window<'a>(
     tables: &'a InternTables,
 ) -> (usize, usize, impl Fn(usize) -> bool + 'a) {
     let (lo, hi) = window(events, spec.start_ms, spec.end_ms);
+    let where_ = compile(&spec.where_);
     let keep = move |row: usize| {
         events.timestamp_ms[row] >= spec.start_ms
             && events.timestamp_ms[row] <= spec.end_ms
-            && spec.where_.iter().all(|c| passes(c, row, events, tables))
+            && compiled_all(&where_, row, events, tables)
     };
     (lo, hi, keep)
 }

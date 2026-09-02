@@ -13,7 +13,7 @@
 use super::intern::{self, InternRemap, InternTables};
 use super::tokenizer::{self, FieldSpan};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Prefix {
     Swing,
     Range,
@@ -38,7 +38,7 @@ impl Prefix {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Suffix {
     Damage,
     Missed,
@@ -121,7 +121,7 @@ impl Suffix {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StandaloneKind {
     EncounterStart,
     EncounterEnd,
@@ -178,7 +178,7 @@ impl StandaloneKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LineKind {
     Composed { prefix: Prefix, suffix: Suffix },
     Standalone(StandaloneKind),
@@ -191,6 +191,19 @@ pub const FLAG_AOE: u8 = 1 << 1; // spell-prefixed _DAMAGE with hitType == "AOE"
 pub const FLAG_OFFHAND: u8 = 1 << 2;
 
 impl LineKind {
+    /// Inverse of `label` -- resolves a subevent-shaped string
+    /// (`"SPELL_DAMAGE"`, `"UNIT_DIED"`) back to a `LineKind`. Round-trips
+    /// for every canonical label; a string that doesn't classify to
+    /// anything recognized returns `None`. Lets a query filter compare
+    /// kinds structurally instead of stringifying every row (see
+    /// `query.rs`).
+    pub fn from_label(s: &str) -> Option<LineKind> {
+        match classify(s) {
+            LineKind::Standalone(StandaloneKind::Unrecognized) => None,
+            kind => Some(kind),
+        }
+    }
+
     /// Human-readable subevent-shaped label for display (the raw view) --
     /// e.g. `"SPELL_DAMAGE"`, `"ENCOUNTER_START"`. Reconstructed from the
     /// classification, not the original line text (which isn't kept
@@ -401,7 +414,7 @@ fn match_suffix(name: &str) -> Suffix {
 
 /// Classifies a subevent name into its prefix+suffix shape or standalone
 /// kind (`docs/combat-log-format.md` §6-§8).
-fn classify(subevent: &str) -> LineKind {
+pub(crate) fn classify(subevent: &str) -> LineKind {
     match subevent {
         "ENCOUNTER_START" => return LineKind::Standalone(StandaloneKind::EncounterStart),
         "ENCOUNTER_END" => return LineKind::Standalone(StandaloneKind::EncounterEnd),
