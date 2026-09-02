@@ -374,6 +374,20 @@ fn register_drag_drop(window: &WebviewWindow) {
 /// called synchronously on the main thread (WebviewWindowBuilder::build()
 /// deadlocks there on Windows) -- callers are responsible for dispatching
 /// this off-thread.
+/// Sizes a log-viewer window to ~80% of its monitor and centers it.
+/// Best-effort -- a headless / odd monitor setup just keeps whatever size
+/// the builder (or `tauri.conf.json`, for `main`) gave it.
+fn size_to_screen(window: &WebviewWindow) {
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let s = monitor.size();
+        let _ = window.set_size(tauri::PhysicalSize::new(
+            (s.width as f64 * 0.8).round() as u32,
+            (s.height as f64 * 0.8).round() as u32,
+        ));
+        let _ = window.center();
+    }
+}
+
 fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
     let next_id = app.state::<NextWindowId>();
     let id = next_id.0.fetch_add(1, Ordering::Relaxed);
@@ -389,6 +403,7 @@ fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
     .build()
     .ok()?;
 
+    size_to_screen(&window);
     register_close_cleanup(&window);
     register_drag_drop(&window);
     register_focus_sync(&window);
@@ -996,6 +1011,7 @@ pub fn run() {
             // skips the dialog and opens directly -- also handy for
             // scripting/testing without driving the native file picker.
             if let Some(main_window) = app.get_webview_window("main") {
+                size_to_screen(&main_window);
                 register_close_cleanup(&main_window);
                 register_drag_drop(&main_window);
                 register_focus_sync(&main_window);

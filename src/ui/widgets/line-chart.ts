@@ -94,6 +94,9 @@ registerWidget<LineChartProps>("line-chart", (props) => {
 
   let current: LineChartProps = props;
   const hover: { crosshair: SVGLineElement | null } = { crosshair: null };
+  // Seconds per bucket -- the Y axis plots each bucket's sum / this (a
+  // rate: DPS / HPS), while the tooltip shows the raw sum for the slice.
+  let bucketSec = 1;
 
   // Hover is driven off pointermove but processed at most once per frame,
   // against a cached SVG rect (a ResizeObserver keeps it fresh -- reading
@@ -132,17 +135,22 @@ registerWidget<LineChartProps>("line-chart", (props) => {
 
   function render() {
     const { buckets, deaths, startMs } = current;
+    bucketSec = Math.max(0.001, (current.endMs - startMs) / (buckets.length || 1) / 1000);
+    const rateOf = (raw: number) => raw / bucketSec;
+
     let peak = 1;
     for (const b of buckets) {
-      if (b.damage > peak) peak = b.damage;
-      if (b.healing > peak) peak = b.healing;
+      const d = rateOf(b.damage);
+      const h = rateOf(b.healing);
+      if (d > peak) peak = d;
+      if (h > peak) peak = h;
     }
     peak *= 1.1;
-    const yOf = (v: number) => PAD.top + PLOT_H - (v / peak) * PLOT_H;
+    const yOf = (rate: number) => PAD.top + PLOT_H - (rate / peak) * PLOT_H;
 
     svg.replaceChildren();
 
-    // Horizontal gridlines + y labels (0, half, peak).
+    // Horizontal gridlines + y labels (rate: 0, half, peak).
     for (const frac of [0, 0.5, 1]) {
       const y = PAD.top + PLOT_H - frac * PLOT_H;
       svg.appendChild(el("line", { x1: PAD.left, y1: y, x2: PAD.left + PLOT_W, y2: y, class: "chart-grid" }));
@@ -150,6 +158,9 @@ registerWidget<LineChartProps>("line-chart", (props) => {
       label.textContent = formatCompact(frac * peak);
       svg.appendChild(label);
     }
+    const axisTitle = el("text", { x: 2, y: PAD.top - 5, class: "chart-axis-label", "text-anchor": "start" });
+    axisTitle.textContent = "DPS / HPS";
+    svg.appendChild(axisTitle);
 
     // Time-axis ticks, relative to the range start.
     for (const frac of [0, 0.25, 0.5, 0.75, 1]) {
@@ -172,7 +183,7 @@ registerWidget<LineChartProps>("line-chart", (props) => {
       { key: "healing", cls: "chart-line--healing" },
     ];
     for (const s of series) {
-      const pts = buckets.map((b) => [xOf(b.tMid), yOf(b[s.key])] as [number, number]);
+      const pts = buckets.map((b) => [xOf(b.tMid), yOf(rateOf(b[s.key]))] as [number, number]);
       if (pts.length === 0) continue;
       const line = smoothPath(pts);
       const baseY = PAD.top + PLOT_H;
@@ -229,10 +240,12 @@ registerWidget<LineChartProps>("line-chart", (props) => {
     // TODO: richer tooltip -- top 3 DPS contributors, boss HP at this
     // instant, and for a death hover the victim + their last 3 hits taken.
     // Needs real aggregation + a per-death detail query.
+    // Tooltip shows the raw totals for the hovered slice (not the plotted
+    // rate); the header notes the slice length.
     tooltip.innerHTML = near
       ? `<div class="chart-tooltip-time">${formatDuration(near.t - current.startMs)}</div>` +
         `<div class="chart-tooltip-row"><span>Death</span><b>${near.label ?? "—"}</b></div>`
-      : `<div class="chart-tooltip-time">${formatDuration(b.tMid - current.startMs)}</div>` +
+      : `<div class="chart-tooltip-time">${formatDuration(b.tMid - current.startMs)} · ${bucketSec.toFixed(bucketSec < 10 ? 1 : 0)}s</div>` +
         `<div class="chart-tooltip-row"><span>Damage</span><b>${formatCompact(b.damage)}</b></div>` +
         `<div class="chart-tooltip-row"><span>Healing</span><b>${formatCompact(b.healing)}</b></div>`;
     tooltip.hidden = false;
