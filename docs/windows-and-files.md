@@ -76,8 +76,20 @@ pick never spawns a new window with data). See `show_open_error`.
   *same* `Arc`. Zero re-parsing, just a refcount bump.
 - **Window creation** (`create_empty_window`) always goes through
   `WebviewWindowBuilder`, with a counter-based label (`log-1`, `log-2`,
-  ...), and always registers both `register_close_cleanup` and
-  `register_drag_drop` on the new window before handing it back.
+  ...), and always registers `register_close_cleanup`, `register_drag_drop`
+  and `register_focus_sync` on the new window before handing it back. It's
+  sized to ~80% of its monitor (`size_to_monitor`, which returns the size
+  it applied), then **placed**: the first window (`main`, and any
+  OS/dock-driven open) is centered via `center_in_work_area` — an explicit
+  `set_position` computed from the monitor work area and the size we just
+  set, *not* `window.center()`, which reads the live size and so races the
+  `set_size` (centering the old 800×600 and leaving the grown window low
+  and right). A window spawned off another
+  (`create_empty_window(app, Some(src))` from `spawn_sibling_window`) is
+  `cascade_from`'d one title-bar step (`CASCADE_STEP`, 28 logical px)
+  down-and-right of its source, wrapping back toward the work-area top-left
+  when a step would run it off-screen — same stagger the OS uses for its
+  own "New Window".
 
 Every window's capability permissions come from a single glob-scoped
 capability (`src-tauri/capabilities/default.json`, `"windows": ["*"]`)

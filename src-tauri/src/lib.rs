@@ -370,25 +370,96 @@ fn register_drag_drop(window: &WebviewWindow) {
     });
 }
 
-/// Creates a brand-new, unattached window (no file yet). Must not be
-/// called synchronously on the main thread (WebviewWindowBuilder::build()
-/// deadlocks there on Windows) -- callers are responsible for dispatching
-/// this off-thread.
-/// Sizes a log-viewer window to ~80% of its monitor and centers it.
-/// Best-effort -- a headless / odd monitor setup just keeps whatever size
-/// the builder (or `tauri.conf.json`, for `main`) gave it.
-fn size_to_screen(window: &WebviewWindow) {
+/// Cascade offset for each newly opened window, in logical pixels --
+/// roughly a title-bar height, so the stagger matches what the OS does for
+/// its own "New Window".
+const CASCADE_STEP: f64 = 28.0;
+
+/// The ~80% target size for a log window on `window`'s current monitor.
+fn target_size(window: &WebviewWindow) -> Option<tauri::PhysicalSize<u32>> {
+    let monitor = window.current_monitor().ok()??;
+    let s = monitor.size();
+    Some(tauri::PhysicalSize::new(
+        (s.width as f64 * 0.8).round() as u32,
+        (s.height as f64 * 0.8).round() as u32,
+    ))
+}
+
+/// Sizes a log-viewer window to ~80% of its monitor, returning the size it
+/// applied. Best-effort -- a headless / odd monitor setup just keeps
+/// whatever size the builder (or `tauri.conf.json`, for `main`) gave it.
+/// Must not run synchronously on the main thread (WebviewWindowBuilder::
+/// build() deadlocks there on Windows) -- callers dispatch off-thread.
+fn size_to_monitor(window: &WebviewWindow) -> Option<tauri::PhysicalSize<u32>> {
+    let size = target_size(window)?;
+    let _ = window.set_size(size);
+    Some(size)
+}
+
+/// Centers `window` (already `size`d) on its monitor. Positions explicitly
+/// -- `window.center()` reads the live size and so races the async
+/// `set_size` above, centering the *old* 800x600 and leaving the grown
+/// window low and to the right. Uses the full monitor rect (not
+/// `work_area()`, whose macOS backing on this tao/wry is unreliable); for
+/// an ~80% window the menu-bar strip we ignore is a ~1% offset.
+fn center_on_monitor(window: &WebviewWindow, size: tauri::PhysicalSize<u32>) {
     if let Ok(Some(monitor)) = window.current_monitor() {
-        let s = monitor.size();
-        let _ = window.set_size(tauri::PhysicalSize::new(
-            (s.width as f64 * 0.8).round() as u32,
-            (s.height as f64 * 0.8).round() as u32,
-        ));
-        let _ = window.center();
+        let mp = monitor.position();
+        let ms = monitor.size();
+        let x = mp.x + ((ms.width as i32 - size.width as i32) / 2).max(0);
+        let y = mp.y + ((ms.height as i32 - size.height as i32) / 2).max(0);
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     }
 }
 
-fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
+/// Sizes to ~80% and centers -- the first window opens dead center.
+fn size_to_screen(window: &WebviewWindow) {
+    match size_to_monitor(window) {
+        Some(size) => center_on_monitor(window, size),
+        None => {
+            let _ = window.center();
+        }
+    }
+}
+
+/// Places `new_window` one title-bar step down-and-right of `source`, the
+/// way the OS cascades successive windows. Wraps back toward the monitor's
+/// top-left once a step would push the window off-screen (`size` is the
+/// window's size, passed in to avoid racing `set_size`). Falls back to
+/// centering if the source's position can't be read.
+fn cascade_from(
+    new_window: &WebviewWindow,
+    source: &WebviewWindow,
+    size: Option<tauri::PhysicalSize<u32>>,
+) {
+    let Ok(src_pos) = source.outer_position() else {
+        let _ = new_window.center();
+        return;
+    };
+    let scale = new_window.scale_factor().unwrap_or(1.0);
+    let step = (CASCADE_STEP * scale).round() as i32;
+    let mut x = src_pos.x + step;
+    let mut y = src_pos.y + step;
+
+    let size = size.or_else(|| new_window.outer_size().ok());
+    if let (Ok(Some(monitor)), Some(size)) = (new_window.current_monitor(), size) {
+        let mp = monitor.position();
+        let ms = monitor.size();
+        if x + size.width as i32 > mp.x + ms.width as i32
+            || y + size.height as i32 > mp.y + ms.height as i32
+        {
+            x = mp.x + step;
+            y = mp.y + step;
+        }
+    }
+
+    let _ = new_window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+/// `from` is the window the new one was spawned off (its focused sibling):
+/// the new window cascades from it. `None` -- e.g. opening a file with no
+/// window focused -- centers instead.
+fn create_empty_window(app: &AppHandle, from: Option<&WebviewWindow>) -> Option<WebviewWindow> {
     let next_id = app.state::<NextWindowId>();
     let id = next_id.0.fetch_add(1, Ordering::Relaxed);
     let label = format!("log-{id}");
@@ -403,7 +474,16 @@ fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
     .build()
     .ok()?;
 
-    size_to_screen(&window);
+    let size = size_to_monitor(&window);
+    match from {
+        Some(src) => cascade_from(&window, src, size),
+        None => match size {
+            Some(size) => center_on_monitor(&window, size),
+            None => {
+                let _ = window.center();
+            }
+        },
+    }
     register_close_cleanup(&window);
     register_drag_drop(&window);
     register_focus_sync(&window);
@@ -441,7 +521,7 @@ fn spawn_sibling_window(window: &WebviewWindow) {
 
     let Some(log) = current_log(window) else { return };
 
-    if let Some(new_window) = create_empty_window(&app) {
+    if let Some(new_window) = create_empty_window(&app, Some(window)) {
         attach_window_to_log(&new_window, log.clone());
         apply_window_chrome(new_window, log);
     }
@@ -471,7 +551,9 @@ fn open_path_from_os(app: &AppHandle, path: &Path) {
         let _ = existing.set_focus();
         return;
     }
-    if let Some(window) = create_empty_window(app) {
+    // OS-driven open (Finder, dock drop) with no sibling to cascade from --
+    // center it.
+    if let Some(window) = create_empty_window(app, None) {
         open_path_in_window(&window, &canonical);
     }
 }
@@ -1011,16 +1093,36 @@ pub fn run() {
             // skips the dialog and opens directly -- also handy for
             // scripting/testing without driving the native file picker.
             if let Some(main_window) = app.get_webview_window("main") {
-                size_to_screen(&main_window);
                 register_close_cleanup(&main_window);
                 register_drag_drop(&main_window);
                 register_focus_sync(&main_window);
 
+                // Resize now, while the page is still empty -- the big
+                // 800x600 -> ~80% resize is cheap here; deferring it until
+                // the DOM is populating reflows a live page and adds a
+                // visible multi-second hitch to load.
+                size_to_screen(&main_window);
+
                 if let Some(path) = std::env::args().nth(1) {
                     open_path_in_window(&main_window, Path::new(&path));
                 } else {
-                    pick_and_open_log(main_window);
+                    pick_and_open_log(main_window.clone());
                 }
+
+                // Re-center a moment later. The setup-time center above
+                // races AppKit's own window placement and lands off-center
+                // ~1 launch in 2; re-asserting only the *position* (no
+                // resize) is cheap and doesn't reflow page content.
+                let mw = main_window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let inner = mw.clone();
+                    let _ = mw.run_on_main_thread(move || {
+                        if let Some(size) = target_size(&inner) {
+                            center_on_monitor(&inner, size);
+                        }
+                    });
+                });
             }
 
             Ok(())
@@ -1032,7 +1134,7 @@ pub fn run() {
                 let app = app.clone();
                 std::thread::spawn(move || {
                     let window =
-                        focused_webview_window(&app).or_else(|| create_empty_window(&app));
+                        focused_webview_window(&app).or_else(|| create_empty_window(&app, None));
                     if let Some(window) = window {
                         pick_and_open_log(window);
                     }
@@ -1110,7 +1212,7 @@ pub fn run() {
             if !has_visible_windows {
                 let app_handle = app_handle.clone();
                 std::thread::spawn(move || {
-                    if let Some(window) = create_empty_window(&app_handle) {
+                    if let Some(window) = create_empty_window(&app_handle, None) {
                         pick_and_open_log(window);
                     }
                 });
