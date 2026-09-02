@@ -792,8 +792,15 @@ body {
 .encounter-title {
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 12px 16px;
   flex-wrap: wrap;
+}
+
+.encounter-title-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
 }
 
 .encounter-title h1 {
@@ -802,17 +809,29 @@ body {
   font-weight: 600;
 }
 
-.encounter-title-meta {
+.encounter-title-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  background-color: var(--bg-hover);
+}
+
+.encounter-title[data-tone="kill"] .encounter-title-badge {
+  color: var(--ctp-base);
+  background-color: var(--success);
+}
+
+.encounter-title[data-tone="wipe"] .encounter-title-badge {
+  color: var(--ctp-base);
+  background-color: var(--danger);
+}
+
+.encounter-title-detail {
   font-size: 13px;
   color: var(--text-muted);
-}
-
-.encounter-title[data-tone="kill"] .encounter-title-meta {
-  color: var(--success);
-}
-
-.encounter-title[data-tone="wipe"] .encounter-title-meta {
-  color: var(--danger);
 }
 
 /* stat-tile -- label + big number + optional sub. */

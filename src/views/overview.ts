@@ -15,7 +15,7 @@ import { buildView, type BuiltView } from "../ui/panel";
 import { createViewContext, type ViewContext } from "../ui/context";
 import type { NodeSpec } from "../ui/spec";
 import type { EncounterRow } from "../types";
-import { formatCompact, formatDuration, formatEncounterResult } from "../format";
+import { formatCompact, formatDifficulty, formatDuration, formatEncounterResult } from "../format";
 import type { ChartDeath } from "../ui/widgets/line-chart";
 import type { PlayerRow } from "../ui/widgets/player-table";
 
@@ -32,7 +32,7 @@ const overviewSpec: NodeSpec = {
   kind: "panel",
   columns: 1,
   children: [
-    { kind: "widget", type: "encounter-title", id: "title", props: { name: "", meta: "" } },
+    { kind: "widget", type: "encounter-title", id: "title", props: { name: "", badge: "" } },
     { kind: "widget", type: "section-heading", id: "h-stats", props: { text: "Stats" } },
     {
       kind: "panel",
@@ -125,7 +125,7 @@ async function paint(): Promise<void> {
   }));
   const deaths = deathMarkers(e);
 
-  built.get("title")?.update({ name: e.name, meta: `${result || "In progress"} · ${durText}`, tone });
+  built.get("title")?.update({ name: e.name, badge: durText, tone, detail: formatDifficulty(e) });
   built.get("dmg")?.update({ label: "Damage done", value: formatCompact(playerDmg) });
   built.get("dps")?.update({ label: "DPS", value: formatCompact(playerDmg / seconds) });
   built.get("heal")?.update({ label: "Healing done", value: formatCompact(healing) });
