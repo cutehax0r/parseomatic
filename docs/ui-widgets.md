@@ -5,17 +5,18 @@ view. Debug and Raw (`docs/status.md`) are explicitly *not* migrated onto
 this — they stay hand-rolled as the quick "does the parser actually work"
 sanity check, and this doc doesn't change them.
 
-> **Implementation status.** A first cut is built: `src/ui/` (`spec.ts`,
-> `registry.ts`, `panel.ts` `buildView`, `context.ts`, `query.ts`),
-> `src/ui/widgets/` (`encounter-title`, `section-heading`, `stat-tile`,
-> `player-table`, `line-chart`), and `src/views/overview.ts` — the
-> Overview view, wired to the encounter picker. Deliberately minimal vs.
-> the design below: `ViewContext` carries `range` + the loaded log's
-> lists + `query` + `requestFrame` + `subscribe`, **no `filterChain` or
-> `playhead` yet**; `WidgetFactory` is `(props, ctx)` — the widget builds
-> its own `element`, no `root` mount param; `query.ts` throws (no
-> `query_events` backend yet, so Overview's damage/healing/player numbers
-> and chart series are mocked). Overview assumes a single selected
+> **Implementation status.** Built: `src/ui/` (`spec.ts`, `registry.ts`,
+> `panel.ts` `buildView`, `context.ts`, `query.ts`), `src/ui/widgets/`
+> (`encounter-title`, `section-heading`, `stat-tile`, `player-table`,
+> `line-chart`), `src/views/overview.ts` — the Overview view, wired to the
+> encounter picker — and the `query_events` aggregate DSL (`src-tauri/src/
+> query.rs`, "Data access" below). **Overview's numbers are all real now**
+> (one bucketed query drives the chart series + stat-tile totals, a
+> grouped query drives the player table). Deliberately minimal vs. the
+> design below: `ViewContext` carries `range` + the loaded log's lists +
+> `query` + `requestFrame` + `subscribe`, **no `filterChain` or `playhead`
+> yet**; `WidgetFactory` is `(props, ctx)` — the widget builds its own
+> `element`, no `root` mount param. Overview assumes a single selected
 > encounter and shows an empty state otherwise.
 
 Packaging/loading third-party widget code and the trust model around that
@@ -374,14 +375,16 @@ interface QuerySpec {
   startMs: number; endMs: number;   // time window (the picker's RangeSelection)
   where?: FilterClause[];            // AND clauses -- { field, op, value }
   groupBy?: Field[];                 // e.g. ["sourceOwner"] or ["sourceOwner", "spellId"]
-  aggregate?: AggregateClause[];     // present -> one row per groupBy tuple; absent -> raw rows
+  aggregate?: AggregateClause[];     // present -> one row per group / bucket; absent -> raw rows
+  bucket?: { count: number };        // split the window into N time slices; see below
   limit?: number; offset?: number;   // raw-row mode only
 }
 
 interface AggregateClause {
   op: "sum" | "count" | "avg" | "min" | "max" | "stddev";
-  field?: Field; // required except for `count`
-  as: string;    // output column name
+  field?: Field;          // required except for `count`
+  as: string;             // output column name
+  where?: FilterClause[]; // per-clause filter, ANDed on top of the query-level `where`
 }
 
 // Queryable columns (query::Field, Rust). `sourceOwner` resolves a
@@ -392,17 +395,27 @@ type Field =
   | "targetUnit" | "spellId" | "hitType" | "amount" | "crit";
 ```
 
-**Built (2026-09-02, `query.rs` + the `query_events` command).** With no
-`aggregate`, returns raw `RawEventRow`s for the window (honoring `where` +
+**Built (`query.rs` + the `query_events` command).** With no `aggregate`,
+returns raw `RawEventRow`s for the window (honoring `where` +
 `limit`/`offset`) — a drill-down path. With `aggregate`, one pass over the
 window (binary-searched from the timestamps), one accumulator per clause
 per distinct `groupBy` tuple; returns one JSON object per group — the
 group-key fields plus each `as` column. `stddev` is sample (n−1). The
-parser now promotes `amount` and a `flags` byte (crit / aoe / off-hand)
-to typed `EventStore` columns for this.
+parser promotes `amount` and a `flags` byte (crit / aoe / off-hand) to
+typed `EventStore` columns for this.
 
-**Still pending:** time-bucketed aggregation (`bucket: { field, width }`)
-for the Overview chart — its series is mocked until that lands.
+- **`bucket: { count }`** — mutually exclusive with `groupBy`. Splits the
+  window into `count` equal time slices; returns one **dense** row per
+  slice, `{ tMid, <as cols> }`, empty slices zero-filled, sorted — a
+  continuous series for a chart. Events past the last integer-width
+  boundary fold into the final slice. The Overview chart uses this
+  (~1 bucket/s, capped near the chart's pixel width).
+- **per-clause `where`** — lets one scan produce several conditionally
+  filtered aggregates. The Overview chart's damage and healing series
+  (`sum amount where kind in DAMAGE` / `... in HEAL`) come from one
+  bucketed query, and its stat-tile totals are the client-side sum of
+  those buckets — so the whole view is two `query_events` calls (series +
+  player table).
 
 Aggregation is in from the start, not deferred, because the common
 Overview/Statistics widgets — per-player Damage Done / Healing Done / Damage

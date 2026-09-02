@@ -2,10 +2,11 @@
 // encounter selector. Assumes a single selected encounter; anything else
 // (custom range, "Full log") shows an empty state.
 //
-// Real via query_events: damage/healing totals, DPS/HPS, the player table
+// All numbers are real via query_events: one bucketed query yields both
+// the chart's damage/healing time series and (summed client-side) the
+// stat-tile totals; a second grouped query yields the player table
 // (grouped by sourceOwner, so pet damage folds into the owning player).
-// Still MOCK: the chart's time series -- it needs time-bucketed sums, a
-// `bucket` extension to QuerySpec that isn't built yet.
+// Death markers come from the loaded deaths list.
 
 import "../ui/widgets"; // registers built-in widgets
 
@@ -14,7 +15,7 @@ import { createViewContext, type ViewContext } from "../ui/context";
 import type { NodeSpec } from "../ui/spec";
 import type { EncounterRow } from "../types";
 import { formatCompact, formatDuration, formatEncounterResult } from "../format";
-import type { ChartBucket, ChartDeath } from "../ui/widgets/line-chart";
+import type { ChartDeath } from "../ui/widgets/line-chart";
 import type { PlayerRow } from "../ui/widgets/player-table";
 
 const DAMAGE_KINDS = [
@@ -104,14 +105,18 @@ async function paint(): Promise<void> {
   ).length;
 
   const bounds = { startMs: e.startMs, endMs: e.endMs };
-  const [damage, healing, playerRows] = await Promise.all([
-    sumAmount(bounds, DAMAGE_KINDS),
-    sumAmount(bounds, HEAL_KINDS),
+  // ~1 bucket/second, capped near the chart's pixel width.
+  const bucketCount = Math.min(800, Math.max(60, Math.round(seconds)));
+  const [series, playerRows] = await Promise.all([
+    damageHealingSeries(bounds, bucketCount),
     playerDamageRows(bounds, seconds),
   ]);
   if (seq !== paintSeq) return; // a newer selection is painting
 
-  const chart = mockChartSeries(e);
+  const damage = series.reduce((s, r) => s + r.dmg, 0);
+  const healing = series.reduce((s, r) => s + r.heal, 0);
+  const buckets = series.map((r) => ({ tMid: r.tMid, damage: r.dmg, healing: r.heal }));
+  const deaths = deathMarkers(e);
 
   built.get("title")?.update({ name: e.name, meta: `${result || "In progress"} · ${durText}`, tone });
   built.get("dmg")?.update({ label: "Damage done", value: formatCompact(damage) });
@@ -120,20 +125,24 @@ async function paint(): Promise<void> {
   built.get("hps")?.update({ label: "HPS", value: formatCompact(healing / seconds) });
   built.get("deaths")?.update({ label: "Deaths", value: String(deathCount) });
   built.get("result")?.update({ label: result || "Result", value: durText, tone });
-  built.get("chart")?.update({ ...chart, startMs: e.startMs, endMs: e.endMs });
+  built.get("chart")?.update({ buckets, deaths, startMs: e.startMs, endMs: e.endMs });
   built.get("players")?.update({ rows: playerRows });
 }
 
-async function sumAmount(
+// One bucketed pass over the window -> per-slice damage and healing sums.
+// Grand totals are the client-side sum of these.
+function damageHealingSeries(
   bounds: { startMs: number; endMs: number },
-  kinds: string[],
-): Promise<number> {
-  const rows = await ctx!.query<{ total: number }>({
+  count: number,
+): Promise<Array<{ tMid: number; dmg: number; heal: number }>> {
+  return ctx!.query<{ tMid: number; dmg: number; heal: number }>({
     ...bounds,
-    where: [{ field: "kind", op: "in", value: kinds }],
-    aggregate: [{ op: "sum", field: "amount", as: "total" }],
+    bucket: { count },
+    aggregate: [
+      { op: "sum", field: "amount", as: "dmg", where: [{ field: "kind", op: "in", value: DAMAGE_KINDS }] },
+      { op: "sum", field: "amount", as: "heal", where: [{ field: "kind", op: "in", value: HEAL_KINDS }] },
+    ],
   });
-  return rows[0]?.total ?? 0;
 }
 
 async function playerDamageRows(
@@ -154,47 +163,8 @@ async function playerDamageRows(
     .sort((a, b) => b.damage - a.damage);
 }
 
-// ---- MOCK -- the chart series still needs time-bucketed sums ----------
-// TODO: a `bucket: { field: "time", width: N }` extension to QuerySpec so
-// the backend returns per-interval sums; then this goes away. Death marks
-// below are real.
-
-function seededRng(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function mockChartSeries(e: EncounterRow): { buckets: ChartBucket[]; deaths: ChartDeath[] } {
-  const rng = seededRng(e.startMs ^ (e.encounterId << 8));
-  const seconds = Math.max(1, e.durationMs / 1000);
-  const raidDps = 800_000 + rng() * 1_400_000;
-  const hps0 = raidDps * (0.45 + rng() * 0.25);
-
-  const n = Math.min(900, Math.max(40, Math.round(seconds)));
-  const buckets: ChartBucket[] = [];
-  let dmgLevel = raidDps;
-  let healLevel = hps0;
-  for (let i = 0; i < n; i++) {
-    const frac = (i + 0.5) / n;
-    dmgLevel += (rng() - 0.5) * raidDps * 0.25;
-    healLevel += (rng() - 0.5) * hps0 * 0.3;
-    const ramp = 0.7 + 0.5 * frac;
-    buckets.push({
-      tMid: e.startMs + frac * e.durationMs,
-      damage: Math.max(0, dmgLevel * ramp),
-      healing: Math.max(0, healLevel * ramp),
-    });
-  }
-
-  const deaths: ChartDeath[] = (ctx?.deaths ?? [])
+function deathMarkers(e: EncounterRow): ChartDeath[] {
+  return (ctx?.deaths ?? [])
     .filter((d) => d.timestampMs >= e.startMs && d.timestampMs <= e.endMs)
     .map((d) => ({ t: d.timestampMs, label: d.playerName }));
-
-  return { buckets, deaths };
 }

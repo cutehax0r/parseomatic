@@ -24,10 +24,22 @@ pub struct QuerySpec {
     pub group_by: Vec<Field>,
     #[serde(default)]
     pub aggregate: Vec<AggregateClause>,
+    /// When set, the window is split into `count` equal time slices and
+    /// the result is one row per slice (`{ tMid, <as cols> }`), dense and
+    /// sorted, empty slices zero-filled -- a continuous series for a
+    /// chart. Mutually exclusive with `group_by` (bucket wins).
+    #[serde(default)]
+    pub bucket: Option<Bucket>,
     #[serde(default)]
     pub limit: Option<usize>,
     #[serde(default)]
     pub offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bucket {
+    pub count: usize,
 }
 
 impl QuerySpec {
@@ -110,6 +122,11 @@ pub struct AggregateClause {
     pub field: Option<Field>,
     #[serde(rename = "as")]
     pub as_: String,
+    /// Per-clause filter, ANDed on top of the query-level `where`. Lets
+    /// one scan produce several conditionally-filtered aggregates -- e.g.
+    /// `sum amount where kind in DAMAGE` and `... in HEAL` in one pass.
+    #[serde(default, rename = "where")]
+    pub where_: Vec<FilterClause>,
 }
 
 /// A resolved column value for one row -- `Hash`/`Eq` so it can key a
@@ -253,14 +270,46 @@ fn window(events: &EventStore, start_ms: i64, end_ms: i64) -> (usize, usize) {
     (lo, hi.min(ts.len()))
 }
 
+/// Folds one row into `accs` -- one entry per aggregate clause, skipping a
+/// clause whose per-clause `where` doesn't pass. The query-level `where`
+/// is the caller's responsibility.
+fn accumulate_row(
+    row: usize,
+    aggregate: &[AggregateClause],
+    events: &EventStore,
+    tables: &InternTables,
+    accs: &mut [Accum],
+) {
+    for (i, clause) in aggregate.iter().enumerate() {
+        if !clause.where_.iter().all(|c| passes(c, row, events, tables)) {
+            continue;
+        }
+        let x = clause
+            .field
+            .map(|f| row_value(f, row, events, tables).as_f64())
+            .unwrap_or(0.0);
+        accs[i].add(x);
+    }
+}
+
+fn agg_columns(aggregate: &[AggregateClause], accs: &[Accum], obj: &mut Map<String, Value>) {
+    for (clause, acc) in aggregate.iter().zip(accs) {
+        obj.insert(clause.as_.clone(), Value::from(acc.result(clause.op)));
+    }
+}
+
 /// Runs an aggregated query -- one pass over the window, one `Accum` per
-/// aggregate clause per distinct `group_by` tuple. Returns one JSON
-/// object per group: the group-key fields (camelCase) plus each clause's
-/// `as` column.
+/// aggregate clause per distinct `group_by` tuple (or per time bucket, if
+/// `spec.bucket` is set). Returns one JSON object per group: the group-key
+/// fields (camelCase), or `tMid`, plus each clause's `as` column.
 pub fn run_aggregate(spec: &QuerySpec, events: &EventStore, tables: &InternTables) -> Vec<Value> {
     let (lo, hi) = window(events, spec.start_ms, spec.end_ms);
-    let mut groups: HashMap<Vec<Val>, Vec<Accum>> = HashMap::new();
 
+    if let Some(b) = &spec.bucket {
+        return run_bucketed(spec, b.count, events, tables, lo, hi);
+    }
+
+    let mut groups: HashMap<Vec<Val>, Vec<Accum>> = HashMap::new();
     for row in lo..hi {
         if events.timestamp_ms[row] < spec.start_ms || events.timestamp_ms[row] > spec.end_ms {
             continue;
@@ -276,13 +325,7 @@ pub fn run_aggregate(spec: &QuerySpec, events: &EventStore, tables: &InternTable
         let accs = groups
             .entry(key)
             .or_insert_with(|| vec![Accum::default(); spec.aggregate.len()]);
-        for (i, clause) in spec.aggregate.iter().enumerate() {
-            let x = clause
-                .field
-                .map(|f| row_value(f, row, events, tables).as_f64())
-                .unwrap_or(0.0);
-            accs[i].add(x);
-        }
+        accumulate_row(row, &spec.aggregate, events, tables, accs);
     }
 
     groups
@@ -292,9 +335,51 @@ pub fn run_aggregate(spec: &QuerySpec, events: &EventStore, tables: &InternTable
             for (f, v) in spec.group_by.iter().zip(&key) {
                 obj.insert(f.camel().to_string(), v.to_json());
             }
-            for (clause, acc) in spec.aggregate.iter().zip(&accs) {
-                obj.insert(clause.as_.clone(), Value::from(acc.result(clause.op)));
-            }
+            agg_columns(&spec.aggregate, &accs, &mut obj);
+            Value::Object(obj)
+        })
+        .collect()
+}
+
+/// `bucket` mode: `count` equal time slices over `[start_ms, end_ms]`, one
+/// dense row per slice (`{ tMid, <as cols> }`) so a chart gets a
+/// continuous series. Events past the last slice boundary (integer-width
+/// rounding) fold into the last slice.
+fn run_bucketed(
+    spec: &QuerySpec,
+    count: usize,
+    events: &EventStore,
+    tables: &InternTables,
+    lo: usize,
+    hi: usize,
+) -> Vec<Value> {
+    if count == 0 || spec.end_ms <= spec.start_ms {
+        return Vec::new();
+    }
+    let width = ((spec.end_ms - spec.start_ms) / count as i64).max(1);
+    let mut buckets: Vec<Vec<Accum>> =
+        vec![vec![Accum::default(); spec.aggregate.len()]; count];
+
+    for row in lo..hi {
+        let ts = events.timestamp_ms[row];
+        if ts < spec.start_ms || ts > spec.end_ms {
+            continue;
+        }
+        if !spec.where_.iter().all(|c| passes(c, row, events, tables)) {
+            continue;
+        }
+        let idx = (((ts - spec.start_ms) / width) as usize).min(count - 1);
+        accumulate_row(row, &spec.aggregate, events, tables, &mut buckets[idx]);
+    }
+
+    buckets
+        .into_iter()
+        .enumerate()
+        .map(|(idx, accs)| {
+            let mut obj = Map::new();
+            let t_mid = spec.start_ms as f64 + (idx as f64 + 0.5) * width as f64;
+            obj.insert("tMid".to_string(), Value::from(t_mid));
+            agg_columns(&spec.aggregate, &accs, &mut obj);
             Value::Object(obj)
         })
         .collect()
@@ -315,4 +400,95 @@ pub fn raw_window<'a>(
             && spec.where_.iter().all(|c| passes(c, row, events, tables))
     };
     (lo, hi, keep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::event::parse_line;
+
+    /// Builds an `EventStore` from `\n`-free lines, each already carrying a
+    /// timestamp prefix.
+    fn store_from(lines: &[&str]) -> (Vec<u8>, InternTables, EventStore) {
+        let data = lines.join("\n").into_bytes();
+        let mut tables = InternTables::default();
+        let mut store = EventStore::default();
+        let mut off = 0usize;
+        for line in data.split(|&b| b == b'\n') {
+            parse_line(&data, off, line, &mut tables, &mut store);
+            off += line.len() + 1;
+        }
+        (data, tables, store)
+    }
+
+    fn spell_damage(ts: &str, amount: i64) -> String {
+        format!(
+            "{ts}  SPELL_DAMAGE,Player-1-00000001,\"Mage-Realm-US\",0x511,0x0,\
+             Creature-0-0-0-0-1-0,\"Add\",0xa48,0x0,1449,\"Arcane Explosion\",0x40,\
+             Player-1-00000001,0000000000000000,100,100,0,0,0,0,0,0,0,0,100,0,0,0,0,0,0,\
+             {amount},0,64,0,0,0,0,nil,nil,nil,AOE"
+        )
+    }
+
+    fn sum_clause(as_: &str, where_: Vec<FilterClause>) -> AggregateClause {
+        AggregateClause { op: AggOp::Sum, field: Some(Field::Amount), as_: as_.into(), where_ }
+    }
+
+    fn kind_in(kinds: &[&str]) -> FilterClause {
+        FilterClause { field: Field::Kind, op: Op::In, value: serde_json::json!(kinds) }
+    }
+
+    #[test]
+    fn bucket_mode_returns_dense_zero_filled_slices() {
+        let l0 = spell_damage("4/14/2026 19:00:00.000-6", 100);
+        let l1 = spell_damage("4/14/2026 19:00:02.000-6", 200);
+        let l2 = spell_damage("4/14/2026 19:00:04.000-6", 400);
+        let (_, tables, store) = store_from(&[&l0, &l1, &l2]);
+        assert_eq!(store.len(), 3);
+
+        let spec = QuerySpec {
+            start_ms: store.timestamp_ms[0],
+            end_ms: store.timestamp_ms[2],
+            where_: vec![],
+            group_by: vec![],
+            aggregate: vec![sum_clause("dmg", vec![])],
+            bucket: Some(Bucket { count: 4 }),
+            limit: None,
+            offset: None,
+        };
+        let rows = run_aggregate(&spec, &store, &tables);
+        assert_eq!(rows.len(), 4);
+
+        let d = |i: usize| rows[i]["dmg"].as_f64().unwrap();
+        // width 1000ms: t=0 -> slice 0, t=2000 -> slice 2, t=4000 (== end)
+        // folds into the last slice; slice 1 is empty and still emitted.
+        assert_eq!([d(0), d(1), d(2), d(3)], [100.0, 0.0, 200.0, 400.0]);
+
+        let t: Vec<f64> = rows.iter().map(|r| r["tMid"].as_f64().unwrap()).collect();
+        assert!(t.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn per_clause_where_filters_independently() {
+        let l = spell_damage("4/14/2026 19:00:00.000-6", 500);
+        let (_, tables, store) = store_from(&[&l]);
+        let ts = store.timestamp_ms[0];
+        let spec = QuerySpec {
+            start_ms: ts,
+            end_ms: ts,
+            where_: vec![],
+            group_by: vec![],
+            aggregate: vec![
+                sum_clause("dmg", vec![kind_in(&["SPELL_DAMAGE"])]),
+                sum_clause("heal", vec![kind_in(&["SPELL_HEAL"])]),
+            ],
+            bucket: None,
+            limit: None,
+            offset: None,
+        };
+        let rows = run_aggregate(&spec, &store, &tables);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["dmg"].as_f64().unwrap(), 500.0);
+        assert_eq!(rows[0]["heal"].as_f64().unwrap(), 0.0);
+    }
 }

@@ -34,6 +34,7 @@ export interface AggregateClause {
   op: AggOp;
   field?: QueryField; // required except for `count`
   as: string; // output column name
+  where?: FilterClause[]; // per-clause filter, ANDed on top of the query-level `where`
 }
 
 export interface QuerySpec {
@@ -41,7 +42,11 @@ export interface QuerySpec {
   endMs: number;
   where?: FilterClause[]; // AND clauses
   groupBy?: QueryField[];
-  aggregate?: AggregateClause[]; // present -> one row per groupBy tuple; absent -> raw rows
+  aggregate?: AggregateClause[]; // present -> one row per groupBy tuple / bucket; absent -> raw rows
+  // Split the window into `count` equal time slices -> one dense row per
+  // slice `{ tMid, <as cols> }`, empty slices zero-filled. Mutually
+  // exclusive with `groupBy`.
+  bucket?: { count: number };
   limit?: number; // raw-row mode only
   offset?: number;
 }
