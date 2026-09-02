@@ -1160,6 +1160,9 @@ async function refreshStatus() {
   debugView.hidden = currentViewMode !== "debug";
   rawView.hidden = currentViewMode !== "raw";
   overviewView.hidden = currentViewMode !== "overview";
+  // The "X lines — Y players" line is parser-sanity-check context for
+  // Debug/Raw; on Overview it's just noise.
+  statusEl.hidden = currentViewMode === "overview";
   if (currentViewMode === "overview") {
     renderOverview();
   } else if (currentViewMode === "raw") {
