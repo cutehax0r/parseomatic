@@ -206,6 +206,47 @@ list so a long progression night isn't cluttered with them. Pure display
 filter, doesn't touch the range model. Thresholds (duration cap, death
 count) worth making configurable. Not urgent.
 
+## Selection history (built)
+
+`src/ui/history.ts` — a per-window stack of the ranges/encounters the user
+has picked. **Back / Forward** (toolbar buttons in the `[open | new] ·
+[back | forward | history▾] · [picker] · [overview | debug | raw]` layout,
+plus a native **History** menu with `⌘[` / `⌘]` and Clear History) walk it;
+the `history▾` popup lists the session's selections newest-first, current
+one marked, click to jump. Browser-history semantics — picking something
+new after Back discards the forward entries. Recording is driven from the
+encounter picker's `applySelection` (`history: "push" | "reset" | "none"`);
+Back/Forward route back through `applySelection` (via `configureHistory`)
+so the picker label/highlight stay in sync. The native menu is thin —
+Back/Forward/Clear only; `set_history_nav` enables/disables the two nav
+items per focused window (`register_focus_sync` re-asserts on focus, like
+the View menu). `HistoryEntry` is `{ range, label }`, deliberately open for
+the "view changes" note below.
+
+**TODO — view changes in the history.** Entries also capture the view mode
+and filter-chain state, so one reads e.g. `encounter 2 · overview
+(2 players)`; selecting it restores range **+ view + filters**. Needs the
+filter chain built and `HistoryEntry` extended with `view` / `filters`.
+Menu/label shape and how filter state is tracked: TBD.
+
+**TODO — show/hide debug features.** A Settings toggle that removes the Raw
+and Debug views entirely — their toolbar buttons and View-menu items — for
+users who don't want the parser-internals views. Overview (and future
+views) stay. `ViewKind::default()` would need to follow (fall to Overview
+when Debug is hidden).
+
+**TODO — linked windows / a global toolbar.** Let windows *link* so a
+filter/range/playhead change in one propagates to the others — e.g. "player
+1 details" beside "player 2 details" scrubbing together. Cycle-safe: model
+it as a link *group* (a shared `ViewContext`) rather than directed
+"A follows B". Likely delivery: a **single global toolbar** (a separate
+shared window, old-MS-Office style) holding the playhead, encounter
+selector, and a link dropdown next to New Window (default "Stand alone";
+picking an open window links the two; groups of >2 allowed). The playhead
+there drives the focused window + its link group. The **view selector
+stays per-window** (each window keeps Overview/Debug/Raw independently).
+See `docs/windows-and-files.md` for the multi-window model this extends.
+
 ## Shared state: the playhead
 
 ```ts

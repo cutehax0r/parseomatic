@@ -23,14 +23,15 @@ Sharing one generic recycling `VirtualList<T>` (`src/virtual-list.ts`) — row p
 - **Raw view** — the event stream in file order (time/kind/source/target/spell/details), paged from `raw_events`. Sends numeric unit/spell IDs rather than resolved strings; the frontend resolves them against the already-cached `debug_lists` arrays (dense, index-aligned IDs) instead of re-fetching/re-cloning the same handful of names on every scroll.
 
 ### Window chrome
-- **Toolbar** — grouped rounded-rect buttons (open / new window | Debug / Raw), `aria-pressed` for the active view.
-- **View menu** — Debug/Raw as a proper radio group, kept in sync with the toolbar and with per-window state (each window remembers its own view; switching focus re-syncs the menu).
+- **Toolbar** — grouped rounded-rect buttons: `[open | new window] · [back | forward | history▾] · [encounter picker] · [Overview | Debug | Raw]`, `aria-pressed` for the active view.
+- **View menu** — Overview/Debug/Raw as a proper radio group, kept in sync with the toolbar and with per-window state (each window remembers its own view; switching focus re-syncs the menu). Default is still Debug.
+- **History menu** — Back (`⌘[`) / Forward (`⌘]`) / Clear History over a per-window selection stack (`src/ui/history.ts`); the toolbar's `history▾` popup lists the session's picks. See `docs/ui-widgets.md` ("Selection history").
 - **Window menu** — standard-issue macOS: Minimize/Zoom/Toggle Full Screen/Bring All to Front explicit, plus the full native treatment (window list with checkmark, Move & Resize submenu, Fill/Center, Full Screen Tile) via registering the submenu as the app's official windows menu.
 - **Multi-window / file handling** — unchanged from `windows-and-files.md`'s design, now operating on the real `ParsedLog` (parsed data + retained mmap) instead of the placeholder it originally described.
 - Catppuccin Macchiato theme throughout.
 
 ### Performance
-Every high/medium-impact item tracked in `performance-concerns.md` is resolved (virtualized rows, shared arena, id-based lookups, throttled fetches, reduced lock hold time, skipped redundant refetches). Only "premature to fix" low-impact items remain open there, by design.
+The high/medium-impact items 1-7 in `performance-concerns.md` are resolved (virtualized rows, shared arena, id-based lookups, throttled fetches, reduced lock hold time, skipped redundant refetches). Item 8 (the ~50-100ms hitch switching to Overview) is open. Otherwise only "premature to fix" low-impact items remain.
 
 ## What's not built yet
 

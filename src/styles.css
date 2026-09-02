@@ -153,6 +153,12 @@ body {
   background-color: var(--accent-bg-hover);
 }
 
+.toolbar-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
 /* ---------------------------------------------------------------------------
    Encounter picker -- a custom popup listbox in the toolbar. A native
    <select>/<optgroup> can't express the mockup: an Encounters/Trash section
@@ -304,7 +310,8 @@ body {
 }
 
 .picker-option[aria-selected="true"],
-.picker-option[aria-selected="true"].is-active {
+.picker-option[aria-selected="true"].is-active,
+.picker-option[aria-current="true"] {
   background-color: var(--accent-bg);
   color: var(--accent);
 }

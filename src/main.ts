@@ -4,6 +4,18 @@ import { VirtualList } from "./virtual-list";
 import type { UnitRow, EncounterRow, DeathRow, RangeSource, RangeSelection } from "./types";
 import { formatDuration, formatEncounterResult } from "./format";
 import { setRange, setLogData } from "./ui/context";
+import {
+  configureHistory,
+  pushHistory,
+  resetHistory,
+  historyBack,
+  historyForward,
+  historyGoto,
+  clearHistory,
+  historyState,
+  subscribeHistory,
+  type HistoryState,
+} from "./ui/history";
 import { renderOverview } from "./views/overview";
 
 interface WindowInfo {
@@ -674,7 +686,14 @@ function refreshCustomRangeSubtitle(): void {
     : `(${formatRange(rangeSelection.startMs, rangeSelection.endMs)})`;
 }
 
-function applySelection(sel: RangeSelection, opts: { silent?: boolean } = {}): void {
+// `history`: "push" (default -- a user selection) records it on the
+// selection-history stack; "reset" reseeds the stack (new log); "none"
+// records nothing (teardown, and Back/Forward, which already move the
+// cursor themselves).
+function applySelection(
+  sel: RangeSelection,
+  opts: { silent?: boolean; history?: "push" | "reset" | "none" } = {},
+): void {
   rangeSelection = sel;
 
   const labelEl = document.querySelector<HTMLElement>("#encounter-picker-label");
@@ -696,6 +715,10 @@ function applySelection(sel: RangeSelection, opts: { silent?: boolean } = {}): v
   if (!opts.silent) {
     window.dispatchEvent(new CustomEvent("filter-changed", { detail: { range: rangeSelection } }));
   }
+
+  const mode = opts.history ?? "push";
+  if (mode === "push") pushHistory(sel, selectionLabel(sel));
+  else if (mode === "reset") resetHistory(sel, selectionLabel(sel));
 }
 
 function setActiveOption(el: HTMLElement | null): void {
@@ -908,6 +931,117 @@ function setupEncounterPicker(): void {
   });
 }
 
+// ---- Selection history (toolbar back/forward + the history popup) --------
+
+function historyPopupOpen(): boolean {
+  return document.querySelector<HTMLElement>("#history-picker")?.dataset.open === "true";
+}
+
+function setHistoryPopupOpen(open: boolean): void {
+  const picker = document.querySelector<HTMLElement>("#history-picker");
+  const btn = document.querySelector<HTMLButtonElement>("#history-menu-btn");
+  const popup = document.querySelector<HTMLElement>("#history-popup");
+  if (!picker || !btn || !popup) return;
+  picker.dataset.open = String(open);
+  btn.setAttribute("aria-expanded", String(open));
+  popup.hidden = !open;
+  if (open) popup.focus();
+}
+
+// Newest-first list; the current entry is marked; a "Clear history" row
+// sits under a divider at the bottom.
+function renderHistoryPopup(state: HistoryState): void {
+  const popup = document.querySelector<HTMLElement>("#history-popup");
+  if (!popup) return;
+  popup.replaceChildren();
+
+  for (let i = state.entries.length - 1; i >= 0; i--) {
+    const row = document.createElement("div");
+    row.className = "picker-option";
+    row.setAttribute("role", "menuitem");
+    row.dataset.index = String(i);
+    row.textContent = state.entries[i].label;
+    if (i === state.cursor) row.setAttribute("aria-current", "true");
+    popup.appendChild(row);
+  }
+
+  const sep = document.createElement("div");
+  sep.className = "picker-section";
+  sep.setAttribute("aria-hidden", "true");
+  popup.appendChild(sep);
+
+  const clear = document.createElement("div");
+  clear.className = "picker-option";
+  clear.setAttribute("role", "menuitem");
+  clear.dataset.act = "clear";
+  clear.textContent = "Clear history";
+  popup.appendChild(clear);
+}
+
+function syncHistoryUi(state: HistoryState): void {
+  const back = document.querySelector<HTMLButtonElement>("#history-back-btn");
+  const fwd = document.querySelector<HTMLButtonElement>("#history-forward-btn");
+  if (back) back.disabled = !state.canBack;
+  if (fwd) fwd.disabled = !state.canForward;
+  renderHistoryPopup(state);
+  void invoke("set_history_nav", {
+    canBack: state.canBack,
+    canForward: state.canForward,
+  }).catch(() => {});
+}
+
+function setupHistory(): void {
+  const back = document.querySelector<HTMLButtonElement>("#history-back-btn");
+  const fwd = document.querySelector<HTMLButtonElement>("#history-forward-btn");
+  const menuBtn = document.querySelector<HTMLButtonElement>("#history-menu-btn");
+  const popup = document.querySelector<HTMLElement>("#history-popup");
+  if (!back || !fwd || !menuBtn || !popup) return;
+
+  // Back/Forward navigate; they don't re-record (history "none").
+  configureHistory((sel) => applySelection(sel, { history: "none" }));
+
+  back.addEventListener("click", () => historyBack());
+  fwd.addEventListener("click", () => historyForward());
+
+  menuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setHistoryPopupOpen(!historyPopupOpen());
+  });
+
+  popup.addEventListener("click", (e) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>(".picker-option");
+    if (!row) return;
+    if (row.dataset.act === "clear") clearHistory();
+    else if (row.dataset.index !== undefined) historyGoto(Number(row.dataset.index));
+    setHistoryPopupOpen(false);
+    menuBtn.focus();
+  });
+
+  popup.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setHistoryPopupOpen(false);
+      menuBtn.focus();
+    }
+  });
+
+  document.addEventListener("click", (e) => {
+    const picker = document.querySelector<HTMLElement>("#history-picker");
+    if (picker && historyPopupOpen() && !picker.contains(e.target as Node)) setHistoryPopupOpen(false);
+  });
+
+  subscribeHistory(syncHistoryUi);
+  syncHistoryUi(historyState());
+
+  listen<string>("history-command", (ev) => {
+    if (ev.payload === "back") historyBack();
+    else if (ev.payload === "forward") historyForward();
+    else if (ev.payload === "clear") clearHistory();
+  });
+  // The menu bar is app-level; on focus, re-assert this window's nav state.
+  listen("window-focused", () => syncHistoryUi(historyState()));
+}
+
 async function refreshStatus() {
   const content = document.querySelector<HTMLElement>("#content");
   const statusEl = document.querySelector<HTMLElement>("#log-status");
@@ -959,7 +1093,10 @@ async function refreshStatus() {
     encounterOptionLabels.clear();
     logStartMs = 0;
     logEndMs = 0;
-    applySelection({ startMs: 0, endMs: 0, source: { kind: "custom" } }, { silent: true });
+    applySelection(
+      { startMs: 0, endMs: 0, source: { kind: "custom" } },
+      { silent: true, history: "none" },
+    );
     setEncounterPickerVisible(false);
     return;
   }
@@ -1014,7 +1151,7 @@ async function refreshStatus() {
     encounterRows = lists.encounters;
     computeLogExtent();
     buildEncounterMenu();
-    applySelection(fullLogSelection());
+    applySelection(fullLogSelection(), { history: "reset" });
   }
   updateSummaryText();
 
@@ -1056,6 +1193,7 @@ function setupTabs() {
 window.addEventListener("DOMContentLoaded", () => {
   setupTabs();
   setupEncounterPicker();
+  setupHistory();
   refreshStatus();
 
   document.querySelector("#open-file-btn")?.addEventListener("click", () => {

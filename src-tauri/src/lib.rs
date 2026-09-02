@@ -34,9 +34,10 @@ enum ViewKind {
     Overview,
 }
 
-// Every view in the radio group -- the single source of truth for
-// `sync_view_menu`'s loop and anywhere else that has to touch them all.
-const ALL_VIEWS: [ViewKind; 3] = [ViewKind::Debug, ViewKind::Raw, ViewKind::Overview];
+// Every view in the radio group, in toolbar/menu display order -- the
+// single source of truth for `sync_view_menu`'s loop and anywhere else
+// that has to touch them all. (`ViewKind::default()` is still Debug.)
+const ALL_VIEWS: [ViewKind; 3] = [ViewKind::Overview, ViewKind::Debug, ViewKind::Raw];
 
 impl ViewKind {
     fn from_id(s: &str) -> Option<ViewKind> {
@@ -75,6 +76,14 @@ struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 // recursing into a submenu's children, so looking up "view_debug"/
 // "view_raw" through the top-level Menu silently finds nothing.
 struct ViewMenu(Submenu<tauri::Wry>);
+
+// Handles to the History menu's Back / Forward items so `set_history_nav`
+// can enable/disable them for the focused window (the stack itself lives
+// in the frontend -- see src/ui/history.ts).
+struct HistoryMenu {
+    back: MenuItem<tauri::Wry>,
+    forward: MenuItem<tauri::Wry>,
+}
 
 #[derive(Default)]
 struct NextWindowId(AtomicU32);
@@ -330,6 +339,9 @@ fn register_focus_sync(window: &WebviewWindow) {
         if let tauri::WindowEvent::Focused(true) = event {
             let view = current_view_for(handle.app_handle(), handle.label());
             sync_view_menu(&handle, view);
+            // Let the now-frontmost window re-assert its History menu
+            // enable state (the stack is per-window; see src/ui/history.ts).
+            let _ = handle.emit("window-focused", ());
         }
     });
 }
@@ -478,6 +490,18 @@ fn set_current_view(window: WebviewWindow, view: String) {
     if let Some(view) = ViewKind::from_id(&view) {
         apply_view_change(&window, view);
     }
+}
+
+/// Enables/disables the History menu's Back / Forward items for the
+/// focused window. The one menu bar is app-level but each window has its
+/// own selection stack (src/ui/history.ts), so the frontend calls this
+/// whenever its stack changes and on `window-focused` (see
+/// `register_focus_sync`).
+#[tauri::command]
+fn set_history_nav(app: AppHandle, can_back: bool, can_forward: bool) {
+    let history = app.state::<HistoryMenu>();
+    let _ = history.back.set_enabled(can_back);
+    let _ = history.forward.set_enabled(can_forward);
 }
 
 #[derive(serde::Serialize)]
@@ -813,7 +837,14 @@ fn new_window_from(window: WebviewWindow) {
     spawn_sibling_window(&window);
 }
 
-fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri::Wry>, Submenu<tauri::Wry>)> {
+struct BuiltMenu {
+    menu: Menu<tauri::Wry>,
+    window_menu: Submenu<tauri::Wry>,
+    view_menu: Submenu<tauri::Wry>,
+    history: HistoryMenu,
+}
+
+fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let open_item = MenuItem::with_id(app, "open_file", "Open...", true, Some("CmdOrCtrl+O"))?;
     let new_window_item = MenuItem::with_id(
         app,
@@ -856,9 +887,24 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri
         None::<&str>,
     )?;
     let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&overview_view_item)
         .item(&debug_view_item)
         .item(&raw_view_item)
-        .item(&overview_view_item)
+        .build()?;
+
+    // History: Back / Forward navigate the focused window's selection
+    // stack (the stack lives in the frontend -- src/ui/history.ts). Both
+    // start disabled; `set_history_nav` enables them per window.
+    let history_back = MenuItem::with_id(app, "history_back", "Back", false, Some("CmdOrCtrl+["))?;
+    let history_forward =
+        MenuItem::with_id(app, "history_forward", "Forward", false, Some("CmdOrCtrl+]"))?;
+    let history_clear =
+        MenuItem::with_id(app, "history_clear", "Clear History", true, None::<&str>)?;
+    let history_menu = SubmenuBuilder::new(app, "History")
+        .item(&history_back)
+        .item(&history_forward)
+        .separator()
+        .item(&history_clear)
         .build()?;
 
     // Standard-issue macOS Window menu: Minimize/Zoom/Fullscreen and
@@ -904,9 +950,18 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri
         .item(&file_menu)
         .item(&edit_menu)
         .item(&view_menu)
+        .item(&history_menu)
         .item(&window_menu)
         .build()?;
-    Ok((menu, window_menu, view_menu))
+    Ok(BuiltMenu {
+        menu,
+        window_menu,
+        view_menu,
+        history: HistoryMenu {
+            back: history_back,
+            forward: history_forward,
+        },
+    })
 }
 
 fn focused_webview_window(app: &AppHandle) -> Option<WebviewWindow> {
@@ -925,7 +980,7 @@ pub fn run() {
         .manage(WindowViewState::default())
         .manage(NextWindowId::default())
         .setup(|app| {
-            let (menu, window_menu, view_menu) = build_menu(app.handle())?;
+            let BuiltMenu { menu, window_menu, view_menu, history } = build_menu(app.handle())?;
             app.set_menu(menu)?;
             // Must run after set_menu -- muda resolves the submenu through
             // the *installed* main menu's delegate, so calling this any
@@ -933,6 +988,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             window_menu.set_as_windows_menu_for_nsapp()?;
             app.manage(ViewMenu(view_menu));
+            app.manage(history);
 
             // This is a file viewer -- a window with nothing open is only
             // useful for picking a file, so go straight to that. A path
@@ -979,6 +1035,17 @@ pub fn run() {
                 if let Some(window) = focused_webview_window(app) {
                     apply_view_change(&window, view);
                 }
+            } else if let Some(cmd) = match event.id().as_ref() {
+                "history_back" => Some("back"),
+                "history_forward" => Some("forward"),
+                "history_clear" => Some("clear"),
+                _ => None,
+            } {
+                // The selection stack lives in the frontend -- just relay
+                // the command to the focused window (src/ui/history.ts).
+                if let Some(window) = focused_webview_window(app) {
+                    let _ = window.emit("history-command", cmd);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -988,6 +1055,7 @@ pub fn run() {
             debug_lists,
             current_view,
             set_current_view,
+            set_history_nav,
             raw_event_count,
             raw_events,
             query_events
