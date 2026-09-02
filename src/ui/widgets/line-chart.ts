@@ -8,20 +8,28 @@
 // `query_events` will return (server-side bucket sums), so the widget
 // won't change when real data lands.
 //
-// Colors: damage = --accent, healing = --success, deaths = --danger.
-// The blue/green pair passed the dataviz CVD check (ΔE ~20); both series
-// are direct-labeled so identity is never color-alone. The Catppuccin
-// palette sits above the ideal dark-mode lightness band -- a known,
-// accepted consequence of matching the app's existing tokens.
+// Three series, all plotted as a rate (sum / bucket seconds):
+//   player = --accent (blue)  -- players + their pets
+//   npc    = --danger (red)   -- creature (boss / add) damage
+//   healing = --success (green)
+// Deaths are neutral --text-faint rules so they don't blur with the red
+// npc line. All three series are direct-labeled, so identity is never
+// color-alone. dataviz validator (dark, surface #1e2030, --pairs all):
+// CVD separation ΔE 9.9, normal-vision floor 19.0 -- both pass; the
+// lightness-band FAIL is the known, accepted cost of matching the app's
+// existing Catppuccin tokens.
 
 import { registerWidget } from "../registry";
 import { formatCompact, formatDuration } from "../../format";
 
 export interface ChartBucket {
   tMid: number;
-  damage: number;
+  player: number; // player + player-owned pet damage
+  npc: number; // creature (boss / add) damage
   healing: number;
 }
+
+type SeriesKey = "player" | "npc" | "healing";
 
 export interface ChartDeath {
   t: number;
@@ -36,8 +44,8 @@ export interface LineChartProps {
 }
 
 const VB_W = 900;
-const VB_H = 260;
-const PAD = { top: 16, right: 52, bottom: 22, left: 44 };
+const VB_H = 268;
+const PAD = { top: 26, right: 52, bottom: 22, left: 44 };
 const PLOT_W = VB_W - PAD.left - PAD.right;
 const PLOT_H = VB_H - PAD.top - PAD.bottom;
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -79,7 +87,8 @@ registerWidget<LineChartProps>("line-chart", (props) => {
   const legend = document.createElement("div");
   legend.className = "chart-legend";
   legend.innerHTML =
-    '<span class="chart-legend-item" data-series="damage"><i></i>Damage</span>' +
+    '<span class="chart-legend-item" data-series="player"><i></i>Players</span>' +
+    '<span class="chart-legend-item" data-series="npc"><i></i>Enemies</span>' +
     '<span class="chart-legend-item" data-series="healing"><i></i>Healing</span>' +
     '<span class="chart-legend-item" data-series="death"><i></i>Death</span>';
 
@@ -140,10 +149,8 @@ registerWidget<LineChartProps>("line-chart", (props) => {
 
     let peak = 1;
     for (const b of buckets) {
-      const d = rateOf(b.damage);
-      const h = rateOf(b.healing);
-      if (d > peak) peak = d;
-      if (h > peak) peak = h;
+      const m = Math.max(rateOf(b.player), rateOf(b.npc), rateOf(b.healing));
+      if (m > peak) peak = m;
     }
     peak *= 1.1;
     const yOf = (rate: number) => PAD.top + PLOT_H - (rate / peak) * PLOT_H;
@@ -158,7 +165,7 @@ registerWidget<LineChartProps>("line-chart", (props) => {
       label.textContent = formatCompact(frac * peak);
       svg.appendChild(label);
     }
-    const axisTitle = el("text", { x: 2, y: PAD.top - 5, class: "chart-axis-label", "text-anchor": "start" });
+    const axisTitle = el("text", { x: 4, y: 12, class: "chart-axis-label", "text-anchor": "start" });
     axisTitle.textContent = "DPS / HPS";
     svg.appendChild(axisTitle);
 
@@ -178,9 +185,10 @@ registerWidget<LineChartProps>("line-chart", (props) => {
     }
 
     // Series: area fill + line + end dot + direct label.
-    const series: Array<{ key: "damage" | "healing"; cls: string }> = [
-      { key: "damage", cls: "chart-line--damage" },
-      { key: "healing", cls: "chart-line--healing" },
+    const series: Array<{ key: SeriesKey; cls: string; label: string }> = [
+      { key: "player", cls: "chart-line--player", label: "Players" },
+      { key: "npc", cls: "chart-line--npc", label: "Enemies" },
+      { key: "healing", cls: "chart-line--healing", label: "Healing" },
     ];
     for (const s of series) {
       const pts = buckets.map((b) => [xOf(b.tMid), yOf(rateOf(b[s.key]))] as [number, number]);
@@ -194,7 +202,7 @@ registerWidget<LineChartProps>("line-chart", (props) => {
       const last = pts[pts.length - 1];
       svg.appendChild(el("circle", { cx: last[0], cy: last[1], r: 3.5, class: `chart-dot ${s.cls}` }));
       const label = el("text", { x: last[0] + 6, y: last[1] + 4, class: `chart-series-label ${s.cls}` });
-      label.textContent = s.key === "damage" ? "Damage" : "Healing";
+      label.textContent = s.label;
       svg.appendChild(label);
     }
 
@@ -246,7 +254,8 @@ registerWidget<LineChartProps>("line-chart", (props) => {
       ? `<div class="chart-tooltip-time">${formatDuration(near.t - current.startMs)}</div>` +
         `<div class="chart-tooltip-row"><span>Death</span><b>${near.label ?? "—"}</b></div>`
       : `<div class="chart-tooltip-time">${formatDuration(b.tMid - current.startMs)} · ${bucketSec.toFixed(bucketSec < 10 ? 1 : 0)}s</div>` +
-        `<div class="chart-tooltip-row"><span>Damage</span><b>${formatCompact(b.damage)}</b></div>` +
+        `<div class="chart-tooltip-row"><span>Players</span><b>${formatCompact(b.player)}</b></div>` +
+        `<div class="chart-tooltip-row"><span>Enemies</span><b>${formatCompact(b.npc)}</b></div>` +
         `<div class="chart-tooltip-row"><span>Healing</span><b>${formatCompact(b.healing)}</b></div>`;
     tooltip.hidden = false;
     // x is in viewBox units; the SVG fills .chart-plot, so this maps

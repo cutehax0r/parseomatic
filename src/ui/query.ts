@@ -14,6 +14,7 @@ export type QueryField =
   | "kind"
   | "sourceUnit"
   | "sourceOwner"
+  | "sourceOwnerKind" // "Player" (incl. player-owned pets) / "Creature" / …
   | "targetUnit"
   | "spellId"
   | "hitType"

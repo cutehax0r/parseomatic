@@ -45,6 +45,47 @@ pub enum UnitKind {
 }
 
 impl UnitKind {
+    /// The `Debug`-name string (`"Player"`, `"Creature"`, …). Matches what
+    /// `lib.rs` serializes for `UnitRow.kind` and what the query DSL
+    /// compares against -- as a `&'static str` so neither path allocates
+    /// per row.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            UnitKind::Player => "Player",
+            UnitKind::Creature => "Creature",
+            UnitKind::Pet => "Pet",
+            UnitKind::Vehicle => "Vehicle",
+            UnitKind::GameObject => "GameObject",
+            UnitKind::Item => "Item",
+            UnitKind::BattlePet => "BattlePet",
+            UnitKind::Vignette => "Vignette",
+            UnitKind::BnetAccount => "BnetAccount",
+            UnitKind::ClientActor => "ClientActor",
+            UnitKind::Cast => "Cast",
+            UnitKind::None => "None",
+            UnitKind::Other => "Other",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<UnitKind> {
+        match s {
+            "Player" => Some(UnitKind::Player),
+            "Creature" => Some(UnitKind::Creature),
+            "Pet" => Some(UnitKind::Pet),
+            "Vehicle" => Some(UnitKind::Vehicle),
+            "GameObject" => Some(UnitKind::GameObject),
+            "Item" => Some(UnitKind::Item),
+            "BattlePet" => Some(UnitKind::BattlePet),
+            "Vignette" => Some(UnitKind::Vignette),
+            "BnetAccount" => Some(UnitKind::BnetAccount),
+            "ClientActor" => Some(UnitKind::ClientActor),
+            "Cast" => Some(UnitKind::Cast),
+            "None" => Some(UnitKind::None),
+            "Other" => Some(UnitKind::Other),
+            _ => None,
+        }
+    }
+
     pub fn from_guid(guid: &str) -> UnitKind {
         if guid.bytes().all(|b| b == b'0') {
             return UnitKind::None;

@@ -917,8 +917,12 @@ body {
   background-color: var(--text-faint);
 }
 
-.chart-legend-item[data-series="damage"] i {
+.chart-legend-item[data-series="player"] i {
   background-color: var(--accent);
+}
+
+.chart-legend-item[data-series="npc"] i {
+  background-color: var(--danger);
 }
 
 .chart-legend-item[data-series="healing"] i {
@@ -929,7 +933,7 @@ body {
   width: 2px;
   height: 11px;
   border-radius: 0;
-  background-color: var(--danger);
+  background-color: var(--text-faint);
 }
 
 .chart-plot {
@@ -953,9 +957,9 @@ body {
 }
 
 .chart-death {
-  stroke: var(--danger);
+  stroke: var(--text-faint);
   stroke-width: 1;
-  opacity: 0.45;
+  opacity: 0.5;
 }
 
 .chart-line {
@@ -965,8 +969,12 @@ body {
   stroke-linejoin: round;
 }
 
-.chart-line--damage {
+.chart-line--player {
   stroke: var(--accent);
+}
+
+.chart-line--npc {
+  stroke: var(--danger);
 }
 
 .chart-line--healing {
@@ -978,8 +986,12 @@ body {
   opacity: 0.12;
 }
 
-.chart-area.chart-line--damage {
+.chart-area.chart-line--player {
   fill: var(--accent);
+}
+
+.chart-area.chart-line--npc {
+  fill: var(--danger);
 }
 
 .chart-area.chart-line--healing {
@@ -991,8 +1003,12 @@ body {
   stroke-width: 1.5;
 }
 
-.chart-dot.chart-line--damage {
+.chart-dot.chart-line--player {
   fill: var(--accent);
+}
+
+.chart-dot.chart-line--npc {
+  fill: var(--danger);
 }
 
 .chart-dot.chart-line--healing {

@@ -113,14 +113,19 @@ async function paint(): Promise<void> {
   ]);
   if (seq !== paintSeq) return; // a newer selection is painting
 
-  const damage = series.reduce((s, r) => s + r.dmg, 0);
+  const playerDmg = series.reduce((s, r) => s + r.player, 0);
   const healing = series.reduce((s, r) => s + r.heal, 0);
-  const buckets = series.map((r) => ({ tMid: r.tMid, damage: r.dmg, healing: r.heal }));
+  const buckets = series.map((r) => ({
+    tMid: r.tMid,
+    player: r.player,
+    npc: r.npc,
+    healing: r.heal,
+  }));
   const deaths = deathMarkers(e);
 
   built.get("title")?.update({ name: e.name, meta: `${result || "In progress"} · ${durText}`, tone });
-  built.get("dmg")?.update({ label: "Damage done", value: formatCompact(damage) });
-  built.get("dps")?.update({ label: "DPS", value: formatCompact(damage / seconds) });
+  built.get("dmg")?.update({ label: "Damage done", value: formatCompact(playerDmg) });
+  built.get("dps")?.update({ label: "DPS", value: formatCompact(playerDmg / seconds) });
   built.get("heal")?.update({ label: "Healing done", value: formatCompact(healing) });
   built.get("hps")?.update({ label: "HPS", value: formatCompact(healing / seconds) });
   built.get("deaths")?.update({ label: "Deaths", value: String(deathCount) });
@@ -129,17 +134,35 @@ async function paint(): Promise<void> {
   built.get("players")?.update({ rows: playerRows });
 }
 
-// One bucketed pass over the window -> per-slice damage and healing sums.
-// Grand totals are the client-side sum of these.
+// One bucketed pass -> per-slice sums: player-side damage (players +
+// their pets), NPC damage (bosses/adds), and healing. Grand totals are
+// the client-side sum of these.
 function damageHealingSeries(
   bounds: { startMs: number; endMs: number },
   count: number,
-): Promise<Array<{ tMid: number; dmg: number; heal: number }>> {
-  return ctx!.query<{ tMid: number; dmg: number; heal: number }>({
+): Promise<Array<{ tMid: number; player: number; npc: number; heal: number }>> {
+  return ctx!.query<{ tMid: number; player: number; npc: number; heal: number }>({
     ...bounds,
     bucket: { count },
     aggregate: [
-      { op: "sum", field: "amount", as: "dmg", where: [{ field: "kind", op: "in", value: DAMAGE_KINDS }] },
+      {
+        op: "sum",
+        field: "amount",
+        as: "player",
+        where: [
+          { field: "kind", op: "in", value: DAMAGE_KINDS },
+          { field: "sourceOwnerKind", op: "eq", value: "Player" },
+        ],
+      },
+      {
+        op: "sum",
+        field: "amount",
+        as: "npc",
+        where: [
+          { field: "kind", op: "in", value: DAMAGE_KINDS },
+          { field: "sourceOwnerKind", op: "eq", value: "Creature" },
+        ],
+      },
       { op: "sum", field: "amount", as: "heal", where: [{ field: "kind", op: "in", value: HEAL_KINDS }] },
     ],
   });

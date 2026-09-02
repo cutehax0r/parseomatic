@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::parser::event::{EventStore, LineKind, FLAG_AOE, FLAG_CRIT};
-use crate::parser::intern::{InternTables, NO_UNIT};
+use crate::parser::intern::{InternTables, UnitKind, NO_UNIT};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,8 +51,11 @@ impl QuerySpec {
 /// The queryable columns. `SourceOwner` resolves a player's pet/guardian
 /// to its owner (`guids.get(src).owner_id.unwrap_or(src)`) so pet damage
 /// folds into the owning player -- see `docs/ui-widgets.md`,
-/// "Per-encounter player rows". `SpellId` is the intern-table index, not
-/// the WoW spell id (frontend maps via the index-aligned `debug_lists`).
+/// "Per-encounter player rows". `SourceOwnerKind` is that resolved unit's
+/// kind (`"Player"` for players and player-owned pets, `"Creature"` for
+/// bosses/adds) -- the player-side vs enemy-side split. `SpellId` is the
+/// intern-table index, not the WoW spell id (frontend maps via the
+/// index-aligned `debug_lists`).
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum Field {
@@ -60,6 +63,7 @@ pub enum Field {
     Kind,
     SourceUnit,
     SourceOwner,
+    SourceOwnerKind,
     TargetUnit,
     SpellId,
     HitType,
@@ -74,6 +78,7 @@ impl Field {
             Field::Kind => "kind",
             Field::SourceUnit => "sourceUnit",
             Field::SourceOwner => "sourceOwner",
+            Field::SourceOwnerKind => "sourceOwnerKind",
             Field::TargetUnit => "targetUnit",
             Field::SpellId => "spellId",
             Field::HitType => "hitType",
@@ -158,14 +163,12 @@ fn row_value(field: Field, row: usize, events: &EventStore, tables: &InternTable
         Field::Time => Val::Int(events.timestamp_ms[row]),
         Field::Kind => Val::Str(events.kind[row].label()),
         Field::SourceUnit => Val::Int(unit_id(events.source_unit[row])),
-        Field::SourceOwner => {
-            let src = events.source_unit[row];
-            if src == NO_UNIT {
-                Val::Int(-1)
-            } else {
-                Val::Int(tables.guids.get(src).owner_id.unwrap_or(src) as i64)
-            }
-        }
+        Field::SourceOwner => Val::Int(
+            effective_source(events.source_unit[row], tables)
+                .map(|id| id as i64)
+                .unwrap_or(-1),
+        ),
+        Field::SourceOwnerKind => Val::Str(effective_source_kind(row, events, tables).as_str().to_string()),
         Field::TargetUnit => Val::Int(unit_id(events.dest_unit[row])),
         Field::SpellId => Val::Int(events.spell[row] as i64),
         Field::HitType => Val::Str(
@@ -181,6 +184,23 @@ fn unit_id(id: u32) -> i64 {
         -1
     } else {
         id as i64
+    }
+}
+
+/// A source unit resolved to its owner (`unwrap_or(self)`), or `None` for
+/// `NO_UNIT` -- so a player's pet folds into the player.
+fn effective_source(src: u32, tables: &InternTables) -> Option<u32> {
+    if src == NO_UNIT {
+        None
+    } else {
+        Some(tables.guids.get(src).owner_id.unwrap_or(src))
+    }
+}
+
+fn effective_source_kind(row: usize, events: &EventStore, tables: &InternTables) -> UnitKind {
+    match effective_source(events.source_unit[row], tables) {
+        Some(id) => tables.guids.get(id).kind,
+        None => UnitKind::None,
     }
 }
 
@@ -215,14 +235,22 @@ fn cmp(v: &Val, j: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
-/// A `where` clause pre-processed for the scan. `Field::Kind` with
-/// `eq`/`in` is the hot case -- its string value(s) are resolved to
-/// `LineKind` once here, so the per-row check is a slice compare with no
-/// allocation or string parsing (see `performance-concerns.md` #9).
-/// Everything else stays on the generic `passes` path.
+/// A `where` clause pre-processed for the scan. `Field::Kind` and
+/// `Field::SourceOwnerKind` with `eq`/`in` are the hot cases -- their
+/// string value(s) are resolved to enums once here, so the per-row check
+/// is a slice compare with no allocation or string parsing (see
+/// `performance-concerns.md` #9). Everything else stays on the generic
+/// `passes` path.
 enum Compiled<'a> {
     KindIn(Vec<LineKind>),
+    SourceKindIn(Vec<UnitKind>),
     Generic(&'a FilterClause),
+}
+
+fn as_str_list<T>(v: &Value, parse: impl Fn(&str) -> Option<T>) -> Vec<T> {
+    v.as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().and_then(&parse)).collect())
+        .unwrap_or_default()
 }
 
 fn compile(clauses: &[FilterClause]) -> Vec<Compiled<'_>> {
@@ -233,12 +261,14 @@ fn compile(clauses: &[FilterClause]) -> Vec<Compiled<'_>> {
                 Some(k) => Compiled::KindIn(vec![k]),
                 None => Compiled::Generic(c),
             },
-            (Field::Kind, Op::In) => Compiled::KindIn(
-                c.value
-                    .as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().and_then(LineKind::from_label)).collect())
-                    .unwrap_or_default(),
-            ),
+            (Field::Kind, Op::In) => Compiled::KindIn(as_str_list(&c.value, LineKind::from_label)),
+            (Field::SourceOwnerKind, Op::Eq) => match c.value.as_str().and_then(UnitKind::from_str) {
+                Some(k) => Compiled::SourceKindIn(vec![k]),
+                None => Compiled::Generic(c),
+            },
+            (Field::SourceOwnerKind, Op::In) => {
+                Compiled::SourceKindIn(as_str_list(&c.value, UnitKind::from_str))
+            }
             _ => Compiled::Generic(c),
         })
         .collect()
@@ -252,6 +282,7 @@ fn compiled_all(
 ) -> bool {
     filters.iter().all(|c| match c {
         Compiled::KindIn(ks) => ks.contains(&events.kind[row]),
+        Compiled::SourceKindIn(ks) => ks.contains(&effective_source_kind(row, events, tables)),
         Compiled::Generic(fc) => passes(fc, row, events, tables),
     })
 }
