@@ -41,6 +41,9 @@ install:
 RUN_ARGS := $(filter-out run dev build test clean install uninstall help release,$(MAKECMDGOALS))
 
 run: install
+	@# Free the Vite dev port (vite.config.ts: port 1420, strictPort) in
+	@# case a previous `make run` was backgrounded and never cleaned up.
+	-@lsof -ti tcp:1420 | xargs kill 2>/dev/null || true
 	bun run tauri dev -- -- $(RUN_ARGS)
 
 dev: run
