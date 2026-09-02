@@ -472,6 +472,15 @@ Table-shaped data (a future `data-table` widget) can wrap the existing
 `VirtualList` internally once a widget actually needs it — that's the
 intended reuse path, not a second virtualization mechanism.
 
+**Pattern reference for future widgets:
+[reui.io blocks](https://reui.io/blocks/application/kanban-board).** Its
+**stats**, **timeline**, and **kanban** blocks are worth mining for
+encounter-visualization ideas — stats for the tile row, timeline for the
+fight/raid-night axis, and a **kanban** board as a way to arrange pulls
+into columns (by boss, by outcome, by night). Reference for the shape/
+interaction, not the code (React/Tailwind); reproduce in the vanilla +
+CSS-variables setup like everything else.
+
 ## Example composition (Overview)
 
 Sanity check for the design above, not a committed layout:
