@@ -284,14 +284,15 @@ that's internal to the widget, not an architecture decision.
 
 **TODO — optional log-scale Y axis.** Per-second damage/healing is very
 spiky (big burst-window peaks over a low baseline); a linear axis squashes
-the baseline flat. A **log scale** keeps both readable — but `log₁₀`
-collapses too hard at these magnitudes, so `log₂` or `logₑ`. A **Settings
-toggle** (linear ↔ log), since linear reads magnitude and log reads
-shape/consistency. Implementation gotchas: use `log1p` (or clamp to a
-floor) so zero buckets don't blow up; y-tick labels then sit at
-non-linear positions and must show the real values; the area fill under a
-log curve is misleading — drop it in log mode; and label the axis "log₂"
-so the scale isn't mistaken for linear.
+the baseline flat. The ~`displaySeconds` draw-bucket rollup (currently 8s)
+already tames some of this, but bursts still dominate. A **log scale**
+keeps both readable — but `log₁₀` collapses too hard at these magnitudes,
+so `log₂` or `logₑ`. A **Settings toggle** (linear ↔ log), since linear
+reads magnitude and log reads shape/consistency. Implementation gotchas:
+use `log1p` (or clamp to a floor) so zero buckets don't blow up; y-tick
+labels then sit at non-linear positions and must show the real values;
+and label the axis "log₂" so the scale isn't mistaken for linear. (The
+chart is lines-only now — no area fills to worry about in log mode.)
 
 **Table widgets ("auto-scroll to now"):** since the data's already sorted by
 timestamp (columnar `EventStore` is file-ordered; filtering never
@@ -425,12 +426,16 @@ typed `EventStore` columns for this.
   boundary fold into the final slice. The Overview chart uses this
   (~1 bucket/s, capped near the chart's pixel width).
 - **per-clause `where`** — lets one scan produce several conditionally
-  filtered aggregates. The Overview chart's three series — player-side
-  damage (`kind in DAMAGE` + `sourceOwnerKind eq "Player"`), enemy damage
-  (`... + sourceOwnerKind eq "Creature"`), and healing (`kind in HEAL`) —
-  all come from one bucketed query, and its stat-tile totals are the
-  client-side sum of those buckets, so the whole view is two
-  `query_events` calls (series + player table).
+  filtered aggregates. The Overview chart's four series — player and enemy,
+  each split damage (`kind in DAMAGE`) vs healing (`kind in HEAL`), keyed
+  off `sourceOwnerKind eq "Player" | "Creature"` — all come from one
+  bucketed query, and its stat-tile totals are the client-side sum of the
+  player-side buckets, so the whole view is two `query_events` calls
+  (series + player table). `line-chart` then rolls the ~1s query buckets
+  up to ~`displaySeconds`-wide draw buckets for a smooth line while the
+  hover tooltip still resolves the fine ones; player series read against a
+  left y axis, enemy series against a right one (boss numbers dwarf raid
+  numbers, so a shared scale is useless).
 
 Aggregation is in from the start, not deferred, because the common
 Overview/Statistics widgets — per-player Damage Done / Healing Done / Damage
