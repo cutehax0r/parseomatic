@@ -282,6 +282,17 @@ layered element rather than a full repaint. Canvas is the likely right
 choice for the curve itself given the redraw-at-60fps requirement, but
 that's internal to the widget, not an architecture decision.
 
+**TODO — optional log-scale Y axis.** Per-second damage/healing is very
+spiky (big burst-window peaks over a low baseline); a linear axis squashes
+the baseline flat. A **log scale** keeps both readable — but `log₁₀`
+collapses too hard at these magnitudes, so `log₂` or `logₑ`. A **Settings
+toggle** (linear ↔ log), since linear reads magnitude and log reads
+shape/consistency. Implementation gotchas: use `log1p` (or clamp to a
+floor) so zero buckets don't blow up; y-tick labels then sit at
+non-linear positions and must show the real values; the area fill under a
+log curve is misleading — drop it in log mode; and label the axis "log₂"
+so the scale isn't mistaken for linear.
+
 **Table widgets ("auto-scroll to now"):** since the data's already sorted by
 timestamp (columnar `EventStore` is file-ordered; filtering never
 reorders), `setPlayhead` binary-searches for the current row and scrolls
