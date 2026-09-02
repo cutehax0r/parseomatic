@@ -45,6 +45,14 @@
   --accent: var(--ctp-blue);
   --accent-bg: rgba(138, 173, 244, 0.18); /* --ctp-blue at 18% */
   --accent-bg-hover: rgba(138, 173, 244, 0.28); /* --ctp-blue at 28% */
+  --success: var(--ctp-green); /* kills, passing states */
+  --danger: var(--ctp-red); /* wipes, failing states */
+
+  /* Shape/elevation tokens -- kept semantic so the shadcn-ish widget look
+     (see docs/ui-widgets.md "Styling") stays a one-block change. */
+  --radius: 8px;
+  --ring: rgba(138, 173, 244, 0.5); /* --ctp-blue at 50% -- keyboard focus ring */
+  --shadow-popover: 0 8px 24px -6px rgba(0, 0, 0, 0.45), 0 2px 8px -2px rgba(0, 0, 0, 0.3);
 
   --font-ui: Inter, Avenir, Helvetica, Arial, sans-serif;
 
@@ -143,6 +151,166 @@ body {
 
 .toolbar-btn[aria-pressed="true"]:hover {
   background-color: var(--accent-bg-hover);
+}
+
+/* ---------------------------------------------------------------------------
+   Encounter picker -- a custom popup listbox in the toolbar. A native
+   <select>/<optgroup> can't express the mockup: an Encounters/Trash section
+   split, a per-boss group header, and indented pulls under it. UI only for
+   now -- selecting an option updates the button label and dispatches a
+   `filter-changed` CustomEvent on window; nothing consumes it yet (the
+   planned "Log" page's table widget will). See src/main.ts.
+   --------------------------------------------------------------------------- */
+.picker {
+  position: relative;
+}
+
+.picker[hidden] {
+  display: none;
+}
+
+.picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  max-width: 280px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.picker-btn:hover {
+  background-color: var(--bg-hover);
+}
+
+.picker-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-caret {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.12s ease;
+}
+
+.picker[data-open="true"] .picker-caret {
+  transform: rotate(180deg);
+}
+
+.picker-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 260px;
+  max-width: 380px;
+  max-height: min(60vh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-elevated);
+  box-shadow: var(--shadow-popover);
+}
+
+.picker-menu[hidden] {
+  display: none;
+}
+
+.picker-section {
+  padding: 8px 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+/* Divider above any section that follows real content. */
+.picker-option + .picker-section,
+.picker-group + .picker-section {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.picker-group {
+  padding: 6px 8px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.picker-option {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Pulls sit indented under their boss's .picker-group header. */
+.picker-option--pull {
+  padding-left: 20px;
+}
+
+.picker-option-meta {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* Kill/wipe outcome word inside .picker-option-meta. Trash rows have no
+   outcome and stay fully faint. Catppuccin's green/red are already
+   desaturated, so this reads as a calm accent, not a stoplight. */
+.picker-option-outcome {
+  font-weight: 600;
+}
+
+.picker-option-outcome--kill {
+  color: var(--success);
+}
+
+.picker-option-outcome--wipe {
+  color: var(--danger);
+}
+
+/* On the selected row the whole option is accent-colored -- let the
+   outcome word ride along rather than fighting it. */
+.picker-option[aria-selected="true"] .picker-option-outcome {
+  color: inherit;
+}
+
+.picker-option:hover,
+.picker-option.is-active {
+  background-color: var(--bg-hover);
+}
+
+.picker-option[aria-selected="true"],
+.picker-option[aria-selected="true"].is-active {
+  background-color: var(--accent-bg);
+  color: var(--accent);
+}
+
+.picker-option[aria-selected="true"] .picker-option-meta {
+  color: var(--accent);
 }
 
 .content {

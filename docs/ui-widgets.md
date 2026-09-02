@@ -147,6 +147,26 @@ player, spell, and target all come from the shared chain.
   `Encounter` (`reports.rs`), not a `timestamp_ms` comparison — cheaper, and
   unambiguous at the boundary since it's exactly the range the encounter was
   built from in the first place.
+- A **free time range** (`[startMs, endMs]`) is the other way to set the
+  view's time scope — a subset of one encounter, or a span crossing
+  several. Unlike `encounter` it *is* a `timestamp_ms BETWEEN` compare
+  (there's no prebuilt row range). Its bounds come from a timeline brush on
+  the Log page. Model it as its own clause shape, not an `encounter` clause.
+
+**Encounter picker (built ahead of the filter chain, hand-wired in
+`main.ts` like Debug/Raw).** A toolbar popup listbox: `Everything`,
+`Custom range` (the free time range above), then the encounter list. What
+it writes today is a `filter-changed` `CustomEvent` on `window`
+(`{ kind: "all" | "custom" | "encounter" }`); it folds into
+`ctx.setFilterChain` as an `encounter-picker` widget once ViewContext
+exists. The list's **layout is a display preference, not part of the
+filter model**: default is grouped (one header per boss by `encounterId`,
+pulls numbered within it, a separate Trash section); a planned Settings
+toggle ("Sort pulls chronologically / trash separately") switches it to
+one flat file-ordered list interleaving trash and pulls by time
+(`trash 1, trash 2, boss1 wipe 1, boss1 wipe 2, boss1 kill, trash 3,
+boss2 kill, …`). Kill/wipe outcomes are colored (`--success`/`--danger`);
+trash and synthesized ("unknown") ends are not.
 
 ## Shared state: the playhead
 
@@ -393,6 +413,27 @@ semantic `--bg`/`--border`/`--text`/... aliases already defined there)
 rather than introducing per-component stylesheets or CSS-in-JS, matching
 current practice. A clearly delimited section holds `.panel`/`.panel-cell`
 grid rules, plus one block per starter widget's classes.
+
+**Visual reference: [shadcn-svelte](https://www.shadcn-svelte.com/docs/components/sidebar).**
+The look there (restrained neutral surfaces, 1px low-contrast borders,
+`--radius` ≈ 0.5rem, `shadow-sm`-scale elevation not glows, 14px base UI
+text, muted-foreground for secondary text, a 4/6/8/12/16px spacing
+rhythm, a 2px offset focus ring) is worth matching for the widget set. It
+is reproducible in the current vanilla + CSS-variables setup *without
+adopting the library*, because that setup is already the same
+architecture — token-driven, one theme, every rule referencing semantic
+aliases. Doing so means adding a few tokens (`--radius`, `--ring`,
+`--card`/`--popover` surfaces, `--muted`/`--muted-foreground`) and
+following those conventions; the Catppuccin palette stays. shadcn-svelte
+distributes component *source* (a CLI copies files into the repo), not a
+runtime package, so there is nothing to import and no Tailwind/Svelte
+dependency incurred by treating it as a style target. The project's
+no-framework stance holds for now (noted under "The spec tree" re: Rete.js);
+if that is ever revisited, shadcn-svelte's copy-in model — and Svelte or
+Solid over React, for the playhead-redraw reasons in "Shared state: the
+playhead" — is the concrete direction. Component *behavior* (e.g. the
+sidebar's collapse/persist/off-canvas plumbing) is the part that needs
+reimplementing by hand as long as the stance holds; the look does not.
 
 ## Explicit non-goals for v1
 

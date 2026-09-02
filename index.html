@@ -94,6 +94,34 @@
           </svg>
         </button>
       </div>
+      <div id="encounter-picker-slot" class="toolbar-divider" hidden></div>
+      <div id="encounter-picker" class="picker" data-open="false" hidden>
+        <button
+          id="encounter-picker-btn"
+          class="picker-btn"
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded="false"
+          title="Filter by encounter"
+        >
+          <span id="encounter-picker-label" class="picker-label">Everything</span>
+          <svg
+            class="picker-caret"
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M6 9l6 6 6-6"></path>
+          </svg>
+        </button>
+        <div id="encounter-picker-menu" class="picker-menu" role="listbox" tabindex="-1" hidden></div>
+      </div>
     </div>
     <main id="content" class="content">
       <p id="log-status" class="placeholder">No combat log open</p>

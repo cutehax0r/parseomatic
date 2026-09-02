@@ -420,6 +420,338 @@ async function loadRawView() {
   getRawList()?.setTotal(total);
 }
 
+// ---- Encounter picker -----------------------------------------------------
+//
+// A custom popup listbox in the toolbar (index.html #encounter-picker).
+// UI only for now: it populates from the loaded log's encounter list and
+// broadcasts the current selection as a `filter-changed` CustomEvent on
+// `window`. Nothing consumes that event yet -- the planned "Log" page's
+// table widget will. Raw/Debug views are deliberately untouched.
+//
+// When the ViewContext/filter-chain from docs/ui-widgets.md lands, this
+// becomes one `encounter-picker` widget writing to `ctx.setFilterChain`;
+// the window CustomEvent is the stand-in until then.
+
+// `custom` is a free time range -- a subset of one encounter, or a span
+// crossing several. Its bounds come from a future timeline brush on the
+// Log page; picking "Custom range" from the menu just switches into that
+// mode (null bounds) until then.
+type EncounterFilter =
+  | { kind: "all" }
+  | { kind: "custom"; startMs: number | null; endMs: number | null }
+  | { kind: "encounter"; index: number };
+
+// Menu layout mode. "grouped" = bosses grouped by name with a separate
+// Trash section (below). "chronological" (planned, gated on a Settings
+// toggle "Sort pulls chronologically / trash separately") = one flat
+// file-ordered list interleaving trash and pulls by time. Only "grouped"
+// is implemented; see docs/ui-widgets.md.
+const pickerSortMode: "grouped" | "chronological" = "grouped";
+
+let encounterRows: EncounterRow[] = [];
+let encounterFilter: EncounterFilter = { kind: "all" };
+// Original-array index -> the collapsed button's label for that option
+// ("Boss Name — Pull 2", "Trash 3"). Built alongside the menu.
+const encounterOptionLabels = new Map<number, string>();
+let activeOption: HTMLElement | null = null;
+
+function filtersEqual(a: EncounterFilter, b: EncounterFilter): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "encounter" && b.kind === "encounter") return a.index === b.index;
+  return true; // "all"==="all"; any "custom" maps to the single Custom range row
+}
+
+function encounterFilterLabel(filter: EncounterFilter): string {
+  switch (filter.kind) {
+    case "all":
+      return "Everything";
+    case "custom":
+      return filter.startMs !== null && filter.endMs !== null
+        ? `Custom range (${formatClockTime(filter.startMs)}–${formatClockTime(filter.endMs)})`
+        : "Custom range";
+    case "encounter":
+      return encounterOptionLabels.get(filter.index) ?? "Everything";
+  }
+}
+
+function formatDurationWords(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function formatClockTime(ms: number): string {
+  const d = new Date(ms);
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const meridiem = d.getHours() >= 12 ? "pm" : "am";
+  const hours = d.getHours() % 12 || 12;
+  return `${hours}:${minutes}${meridiem}`;
+}
+
+type EncounterOutcome = "kill" | "wipe" | "unknown";
+
+function encounterOutcomeWord(e: EncounterRow): EncounterOutcome {
+  if (e.success === true) return "kill";
+  if (e.success === false) return "wipe";
+  return "unknown"; // synthesized end -- malformed log / EOF while open
+}
+
+interface PickerOptionOpts {
+  filter: EncounterFilter;
+  pull?: boolean;
+  // Trailing detail rendered as "(meta)", or "(outcome: meta)" when
+  // `outcome` is set (kill/wipe get a colored word; trash passes no
+  // outcome and stays fully faint).
+  meta?: string;
+  outcome?: EncounterOutcome;
+}
+
+function makePickerOption(label: string, opts: PickerOptionOpts): HTMLElement {
+  const { filter, pull = false, meta, outcome } = opts;
+
+  const opt = document.createElement("div");
+  opt.className = pull ? "picker-option picker-option--pull" : "picker-option";
+  opt.setAttribute("role", "option");
+  opt.dataset.filter = JSON.stringify(filter);
+
+  const name = document.createElement("span");
+  name.textContent = label;
+  opt.appendChild(name);
+
+  if (meta || outcome) {
+    const metaEl = document.createElement("span");
+    metaEl.className = "picker-option-meta";
+    if (outcome) {
+      const word = document.createElement("span");
+      word.className =
+        outcome === "unknown"
+          ? "picker-option-outcome"
+          : `picker-option-outcome picker-option-outcome--${outcome}`;
+      word.textContent = outcome;
+      metaEl.append("(", word, `: ${meta ?? ""})`);
+    } else {
+      metaEl.textContent = `(${meta ?? ""})`;
+    }
+    opt.appendChild(metaEl);
+  }
+
+  if (filtersEqual(filter, encounterFilter)) opt.setAttribute("aria-selected", "true");
+  return opt;
+}
+
+function makePickerSection(text: string): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "picker-section";
+  el.textContent = text;
+  return el;
+}
+
+// "grouped" layout: an Encounters section with one .picker-group header
+// per boss (grouped by encounterId, falling back to name; first-seen
+// order kept, pulls numbered chronologically within the group), then a
+// separate Trash section as a flat numbered list.
+function appendGroupedEncounters(menu: HTMLElement): void {
+  const groups = new Map<string, number[]>(); // group key -> original indices
+  encounterRows.forEach((e, i) => {
+    if (e.isTrash) return;
+    const key = String(e.encounterId || e.name);
+    const list = groups.get(key);
+    if (list) list.push(i);
+    else groups.set(key, [i]);
+  });
+
+  if (groups.size > 0) {
+    menu.appendChild(makePickerSection("Encounters"));
+    for (const indices of groups.values()) {
+      const bossName = encounterRows[indices[0]].name || "(unnamed encounter)";
+      const header = document.createElement("div");
+      header.className = "picker-group";
+      header.textContent = bossName;
+      menu.appendChild(header);
+
+      indices
+        .slice()
+        .sort((a, b) => encounterRows[a].startMs - encounterRows[b].startMs)
+        .forEach((idx, n) => {
+          const e = encounterRows[idx];
+          const label = `Pull ${n + 1}`;
+          menu.appendChild(
+            makePickerOption(label, {
+              filter: { kind: "encounter", index: idx },
+              pull: true,
+              meta: formatDurationWords(e.durationMs),
+              outcome: encounterOutcomeWord(e),
+            }),
+          );
+          encounterOptionLabels.set(idx, `${bossName} — ${label}`);
+        });
+    }
+  }
+
+  const trashIndices = encounterRows.map((e, i) => (e.isTrash ? i : -1)).filter((i) => i >= 0);
+  if (trashIndices.length > 0) {
+    menu.appendChild(makePickerSection("Trash"));
+    trashIndices.forEach((idx, n) => {
+      const e = encounterRows[idx];
+      const label = `Trash ${n + 1}`;
+      menu.appendChild(
+        makePickerOption(label, {
+          filter: { kind: "encounter", index: idx },
+          meta: `${formatClockTime(e.startMs)}: ${formatDurationWords(e.durationMs)}`,
+        }),
+      );
+      encounterOptionLabels.set(idx, label);
+    });
+  }
+}
+
+// Rebuilds the popup from `encounterRows`. Fixed leading options
+// ("Everything", "Custom range"), then the encounter list in whichever
+// layout `pickerSortMode` selects. Called once per loaded log.
+function buildEncounterMenu(): void {
+  const menu = document.querySelector<HTMLElement>("#encounter-picker-menu");
+  if (!menu) return;
+  menu.replaceChildren();
+  encounterOptionLabels.clear();
+
+  menu.appendChild(makePickerOption("Everything", { filter: { kind: "all" } }));
+  menu.appendChild(
+    makePickerOption("Custom range", { filter: { kind: "custom", startMs: null, endMs: null } }),
+  );
+
+  if (pickerSortMode === "grouped") {
+    appendGroupedEncounters(menu);
+  } else {
+    // TODO(settings): chronological -- one flat file-ordered list
+    // interleaving trash and pulls by time. See docs/ui-widgets.md.
+    appendGroupedEncounters(menu);
+  }
+}
+
+function setEncounterFilter(filter: EncounterFilter, opts: { silent?: boolean } = {}): void {
+  encounterFilter = filter;
+
+  const labelEl = document.querySelector<HTMLElement>("#encounter-picker-label");
+  if (labelEl) labelEl.textContent = encounterFilterLabel(filter);
+
+  document.querySelectorAll<HTMLElement>("#encounter-picker-menu .picker-option").forEach((opt) => {
+    const raw = opt.dataset.filter;
+    if (raw && filtersEqual(JSON.parse(raw) as EncounterFilter, filter)) {
+      opt.setAttribute("aria-selected", "true");
+    } else {
+      opt.removeAttribute("aria-selected");
+    }
+  });
+
+  if (!opts.silent) {
+    window.dispatchEvent(new CustomEvent("filter-changed", { detail: { encounter: encounterFilter } }));
+  }
+}
+
+function setActiveOption(el: HTMLElement | null): void {
+  activeOption?.classList.remove("is-active");
+  activeOption = el;
+  if (el) {
+    el.classList.add("is-active");
+    el.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function moveActiveOption(delta: number): void {
+  const opts = Array.from(
+    document.querySelectorAll<HTMLElement>("#encounter-picker-menu .picker-option"),
+  );
+  if (opts.length === 0) return;
+  const cur = activeOption ? opts.indexOf(activeOption) : -1;
+  setActiveOption(opts[(cur + delta + opts.length) % opts.length]);
+}
+
+function setPickerOpen(open: boolean): void {
+  const picker = document.querySelector<HTMLElement>("#encounter-picker");
+  const btn = document.querySelector<HTMLButtonElement>("#encounter-picker-btn");
+  const menu = document.querySelector<HTMLElement>("#encounter-picker-menu");
+  if (!picker || !btn || !menu) return;
+
+  picker.dataset.open = String(open);
+  btn.setAttribute("aria-expanded", String(open));
+  menu.hidden = !open;
+
+  if (open) {
+    const selected = menu.querySelector<HTMLElement>('.picker-option[aria-selected="true"]');
+    setActiveOption(selected ?? menu.querySelector<HTMLElement>(".picker-option"));
+    menu.focus();
+  } else {
+    setActiveOption(null);
+  }
+}
+
+function isPickerOpen(): boolean {
+  return document.querySelector<HTMLElement>("#encounter-picker")?.dataset.open === "true";
+}
+
+// Toolbar slot + button visibility -- shown only once a log has finished
+// parsing (same gate as the debug/raw views).
+function setEncounterPickerVisible(visible: boolean): void {
+  const slot = document.querySelector<HTMLElement>("#encounter-picker-slot");
+  const picker = document.querySelector<HTMLElement>("#encounter-picker");
+  if (slot) slot.hidden = !visible;
+  if (picker) picker.hidden = !visible;
+  if (!visible) setPickerOpen(false);
+}
+
+function setupEncounterPicker(): void {
+  const btn = document.querySelector<HTMLButtonElement>("#encounter-picker-btn");
+  const menu = document.querySelector<HTMLElement>("#encounter-picker-menu");
+  if (!btn || !menu) return;
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setPickerOpen(!isPickerOpen());
+  });
+
+  menu.addEventListener("click", (e) => {
+    const opt = (e.target as HTMLElement).closest<HTMLElement>(".picker-option");
+    if (!opt?.dataset.filter) return;
+    setEncounterFilter(JSON.parse(opt.dataset.filter) as EncounterFilter);
+    setPickerOpen(false);
+    btn.focus();
+  });
+
+  menu.addEventListener("keydown", (e) => {
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        moveActiveOption(1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        moveActiveOption(-1);
+        break;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        if (activeOption?.dataset.filter) {
+          setEncounterFilter(JSON.parse(activeOption.dataset.filter) as EncounterFilter);
+          setPickerOpen(false);
+          btn.focus();
+        }
+        break;
+      case "Escape":
+        e.preventDefault();
+        setPickerOpen(false);
+        btn.focus();
+        break;
+    }
+  });
+
+  // Click anywhere outside an open picker closes it.
+  document.addEventListener("click", (e) => {
+    const picker = document.querySelector<HTMLElement>("#encounter-picker");
+    if (picker && isPickerOpen() && !picker.contains(e.target as Node)) setPickerOpen(false);
+  });
+}
+
 async function refreshStatus() {
   const content = document.querySelector<HTMLElement>("#content");
   const statusEl = document.querySelector<HTMLElement>("#log-status");
@@ -461,6 +793,10 @@ async function refreshStatus() {
     lastLineCount = null;
     lastCounts = null;
     lastListsLineCount = null;
+    encounterRows = [];
+    encounterOptionLabels.clear();
+    setEncounterFilter({ kind: "all" }, { silent: true });
+    setEncounterPickerVisible(false);
     return;
   }
 
@@ -471,6 +807,7 @@ async function refreshStatus() {
     content.classList.remove("has-data");
     debugView.hidden = true;
     rawView.hidden = true;
+    setEncounterPickerVisible(false);
 
     statusBar.hidden = false;
     const percent = Math.round(info.percent);
@@ -497,14 +834,22 @@ async function refreshStatus() {
       content.classList.remove("has-data");
       debugView.hidden = true;
       rawView.hidden = true;
+      setEncounterPickerVisible(false);
       return;
     }
     lastCounts = renderDebugLists(lists);
     lastListsLineCount = info.lineCount;
+
+    // New log -> repopulate the encounter picker and reset its selection
+    // to "Everything" (notifying any listener that the filter cleared).
+    encounterRows = lists.encounters;
+    buildEncounterMenu();
+    setEncounterFilter({ kind: "all" });
   }
   updateSummaryText();
 
   content.classList.add("has-data");
+  setEncounterPickerVisible(true);
   debugView.hidden = currentViewMode !== "debug";
   rawView.hidden = currentViewMode !== "raw";
   if (currentViewMode === "raw") {
@@ -537,6 +882,7 @@ function setupTabs() {
 
 window.addEventListener("DOMContentLoaded", () => {
   setupTabs();
+  setupEncounterPicker();
   refreshStatus();
 
   document.querySelector("#open-file-btn")?.addEventListener("click", () => {
