@@ -19,6 +19,7 @@ Development happens natively on macOS for now. Install:
 
 - Xcode Command Line Tools: `xcode-select --install`
 - Rust, via rustup: `brew install rustup && rustup default stable`
+- The `llvm-tools` rustup component: `rustup component add llvm-tools` — supplies a working `rust-objcopy`, which `make build` uses to strip release binaries. Without it, `make build` still succeeds but warns and ships an unstripped (larger) binary.
 - Bun: `brew install bun` (used instead of npm/node for the frontend — install, dev, and build scripts)
 - [GitHub CLI](https://cli.github.com) (`gh`) — required for the `make release` workflow
 
