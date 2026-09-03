@@ -17,7 +17,10 @@ use crate::parser::event::{EventStore, LineKind, StandaloneKind, Suffix};
 use crate::parser::intern::{InternTables, UnitKind, NO_UNIT};
 use crate::parser::reports::Encounter;
 
-const BIN_MS: i64 = 1000;
+/// Width of one activity slot. 1.5 s ~= one global cooldown -- a lone
+/// instant cast (or an unresolvable channel start) then fills its whole
+/// slot rather than reading as mostly-idle, which 1 s slots did.
+const BIN_MS: i64 = 1500;
 /// Ignore a position delta spanning a bigger time gap than this -- a gap
 /// in the log, a teleport, or a phase transition, not real running.
 const MOVE_GAP_MS: i64 = 5000;
@@ -53,34 +56,34 @@ pub struct CastEvent {
 }
 
 pub trait ActivityModel: Sync {
-    /// Per-second active bitmap over `[start_ms, end_ms]` (length =
-    /// seconds in the window, rounded up), given the player's cast
-    /// timeline. Bucket i covers `[start_ms + i*1000, +1000)`. The caller
-    /// derives the scalar active-ms (and the per-decile profile) from it.
-    fn active_seconds(&self, casts: &[CastEvent], start_ms: i64, end_ms: i64) -> Vec<bool>;
+    /// Active/idle bitmap over `[start_ms, end_ms]`, one entry per
+    /// `BIN_MS` slot (rounded up), given the player's cast timeline. Slot
+    /// i covers `[start_ms + i*BIN_MS, +BIN_MS)`. The caller derives the
+    /// scalar active-ms and the per-decile profile from it.
+    fn active_slots(&self, casts: &[CastEvent], start_ms: i64, end_ms: i64) -> Vec<bool>;
 }
 
-/// Milliseconds of `true` in a per-second active bitmap.
-fn active_ms(secs: &[bool]) -> i64 {
-    secs.iter().filter(|&&on| on).count() as i64 * BIN_MS
+/// Milliseconds of `true` in an `active_slots` bitmap.
+fn active_ms(slots: &[bool]) -> i64 {
+    slots.iter().filter(|&&on| on).count() as i64 * BIN_MS
 }
 
-/// "Actions per second"-style: a 1 s bin is active if the player started a
-/// cast in it, finished one in it, was mid-cast (between a `CAST_START`
-/// and its `CAST_SUCCESS`), or was inside an empower span. No external
-/// data needed.
+/// "Actions per second"-style: a `BIN_MS` (1.5 s, ~one GCD) slot is active
+/// if the player started a cast in it, finished one in it, was mid-cast
+/// (between a `CAST_START` and its `CAST_SUCCESS`), or was inside an
+/// empower span. No external data needed.
 ///
 /// Deliberate v1 limitations, to be lifted by the future `GcdActivityModel`
 /// + a bundled spell-data table:
 /// - **Channels under-count.** A channelled spell fires one `CAST_SUCCESS`
 ///   and no end event; without per-spell channel durations we can't tell
-///   it from an instant cast, so it counts as a single bin.
+///   it from an instant cast, so it counts as a single slot.
 /// - **HoT/DoT classes read low** -- ticks aren't button presses. Same
 ///   limitation World of Logs' metric has.
 pub struct ApsActivityModel;
 
 impl ActivityModel for ApsActivityModel {
-    fn active_seconds(&self, casts: &[CastEvent], start_ms: i64, end_ms: i64) -> Vec<bool> {
+    fn active_slots(&self, casts: &[CastEvent], start_ms: i64, end_ms: i64) -> Vec<bool> {
         if end_ms <= start_ms {
             return Vec::new();
         }
@@ -329,12 +332,12 @@ fn build_one(
             }
             let alive_ms = (dur - dead).max(0);
 
-            // Per-second active bitmap -> total + per-decile fractions.
-            let secs = model.active_seconds(&a.casts, start_ms, end_ms);
-            let active_ms = active_ms(&secs).clamp(0, alive_ms);
+            // Active/idle slot bitmap -> total + per-decile fractions.
+            let slots = model.active_slots(&a.casts, start_ms, end_ms);
+            let active_ms = active_ms(&slots).clamp(0, alive_ms);
             let mut active_bins = [0f64; DECILES];
             let mut bin_secs = [0f64; DECILES];
-            for (i, &on) in secs.iter().enumerate() {
+            for (i, &on) in slots.iter().enumerate() {
                 let t = start_ms + i as i64 * BIN_MS;
                 let d = (((t - start_ms) * DECILES as i64) / dur).clamp(0, DECILES as i64 - 1) as usize;
                 bin_secs[d] += 1.0;
@@ -379,40 +382,38 @@ mod tests {
     }
 
     fn aps_ms(casts: &[CastEvent], start: i64, end: i64) -> i64 {
-        active_ms(&ApsActivityModel.active_seconds(casts, start, end))
+        active_ms(&ApsActivityModel.active_slots(casts, start, end))
     }
 
     #[test]
-    fn aps_counts_cast_bins_not_gaps() {
-        // window 0..10s. START 1.0 + SUCCESS 1.4 -> bin 1. A lone SUCCESS
-        // (instant, or an unresolvable channel start) at 4.0 -> bin 4.
-        // START 7.0 + SUCCESS 7.5 -> bin 7. The idle gaps 2-3 and 5-6
-        // don't count. Active: bins {1,4,7} = 3s.
+    fn aps_counts_cast_slots_not_gaps() {
+        // 1.5s slots. window 0..12s. START 0.5 + SUCCESS 1.0 -> slot 0.
+        // A lone SUCCESS (instant, or an unresolvable channel start) at
+        // 6.0 -> slot 4 [6.0-7.5). The idle slots in between don't count.
+        // Active: slots {0,4} = 2 * 1.5s = 3s.
         let casts = [
-            ev(1_000, CastEventKind::Start),
-            ev(1_400, CastEventKind::Success),
-            ev(4_000, CastEventKind::Success),
-            ev(7_000, CastEventKind::Start),
-            ev(7_500, CastEventKind::Success),
+            ev(500, CastEventKind::Start),
+            ev(1_000, CastEventKind::Success),
+            ev(6_000, CastEventKind::Success),
         ];
-        assert_eq!(aps_ms(&casts, 0, 10_000), 3_000);
+        assert_eq!(aps_ms(&casts, 0, 12_000), 3_000);
     }
 
     #[test]
     fn aps_marks_the_span_between_start_and_success() {
-        // A 2.5s cast: START 1.0 -> SUCCESS 3.5 marks bins 1,2,3 = 3s.
-        let casts = [ev(1_000, CastEventKind::Start), ev(3_500, CastEventKind::Success)];
-        assert_eq!(aps_ms(&casts, 0, 10_000), 3_000);
+        // A 3.5s cast: START 0.5 -> SUCCESS 4.0 spans slots 0,1,2 = 4.5s.
+        let casts = [ev(500, CastEventKind::Start), ev(4_000, CastEventKind::Success)];
+        assert_eq!(aps_ms(&casts, 0, 12_000), 4_500);
     }
 
     #[test]
     fn aps_empower_span_is_active() {
+        // EMPOWER 2.0 -> 5.0 spans slots 1,2,3 = 4.5s.
         let casts = [
             ev(2_000, CastEventKind::EmpowerStart),
-            ev(4_500, CastEventKind::EmpowerEnd),
+            ev(5_000, CastEventKind::EmpowerEnd),
         ];
-        // bins 2,3,4 -> 3s
-        assert_eq!(aps_ms(&casts, 0, 10_000), 3_000);
+        assert_eq!(aps_ms(&casts, 0, 12_000), 4_500);
     }
 
     #[test]

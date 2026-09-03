@@ -109,8 +109,10 @@ implementation later. Two planned:
 Closer to StarCraft "actions per second" than to a GCD model, and it
 needs no external data.
 
-- Step the window in 1 s bins.
-- A bin is **active** if the player, in that bin:
+- Step the window in **1.5 s slots** (`BIN_MS` — roughly one global
+  cooldown, so a lone instant cast fills its slot instead of reading as
+  mostly idle, which 1 s slots did).
+- A slot is **active** if the player, in that slot:
   - started a cast (`SPELL_CAST_START`), or
   - had a `SPELL_CAST_SUCCESS` (instant cast, or the start of a channel),
     or
@@ -197,7 +199,7 @@ A metric-cell column matching the damage/healing cells:
 
 **Built.** `PlayerEncounterStats` / `PlayerStatsRow` carry
 `active_bins[10]` and `dead_bins[10]`: `ActivityModel::active_seconds`
-returns a per-second bitmap, `build_one` rolls it into per-decile active
+returns a 1.5 s-slot bitmap, `build_one` rolls it into per-decile active
 fractions and spreads `dead_spans` into `dead_bins` (like
 `movement_bins`). The cell is `src/ui/widgets/active-cell.ts`;
 `overview.ts` fetches `encounter_stats` for a real encounter and joins by
