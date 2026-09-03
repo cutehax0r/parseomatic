@@ -96,7 +96,10 @@ async function paint(): Promise<void> {
 
   const src = ctx.range.source;
   const e = src.kind === "encounter" ? ctx.encounters[src.index] : undefined;
-  const ready = !!e && !e.isTrash;
+  // Trash spans are a legit time window -- render the overview for them
+  // too (the queries don't care that it's not a boss). Only a
+  // no-encounter selection (full log / custom range) shows the chooser.
+  const ready = !!e;
 
   if (emptyEl) emptyEl.hidden = ready;
   if (mount) mount.hidden = !ready;
