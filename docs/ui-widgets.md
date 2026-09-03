@@ -6,13 +6,16 @@ this — they stay hand-rolled as the quick "does the parser actually work"
 sanity check, and this doc doesn't change them.
 
 > **Implementation status.** Built: `src/ui/` (`spec.ts`, `registry.ts`,
-> `panel.ts` `buildView`, `context.ts`, `query.ts`), `src/ui/widgets/`
-> (`encounter-title`, `section-heading`, `stat-tile`, `player-table`,
-> `line-chart`), `src/views/overview.ts` — the Overview view, wired to the
+> `panel.ts` `buildView`, `context.ts`, `query.ts` — the last now
+> memoizing aggregated results per spec for the loaded log), `src/ui/
+> widgets/` (`encounter-title`, `section-heading`, `stat-tile`,
+> `player-table`, `line-chart`, plus the non-widget DOM helpers
+> `metric-cell.ts` and `role-icon.ts` the player table composes),
+> `src/views/overview.ts` — the Overview view, wired to the
 > encounter picker — and the `query_events` aggregate DSL (`src-tauri/src/
 > query.rs`, "Data access" below). **Overview's numbers are all real now**
-> (one bucketed query drives the chart series + stat-tile totals, a
-> grouped query drives the player table). Deliberately minimal vs. the
+> (one bucketed query drives the chart series + stat-tile totals, two
+> grouped queries drive the players table). Deliberately minimal vs. the
 > design below: `ViewContext` carries `range` + the loaded log's lists +
 > `query` + `requestFrame` + `subscribe`, **no `filterChain` or `playhead`
 > yet**; `WidgetFactory` is `(props, ctx)` — the widget builds its own
@@ -459,15 +462,32 @@ tracked per event for the planned 3D replay) — not a backend feature.
 Conditional aggregates (crit rate = crits ÷ hits) are two queries, or a
 client-side pass over raw rows — not a new clause type.
 
-**Per-encounter player rows (the Overview "Players" table).** Now real:
-`query_events` grouped by `sourceOwner` (which resolves a player's pet to
-its owner, so pet damage folds into the owning player's row — pets are not
-their own rows) with `where kind in [<damage kinds>]`, scoped to the
-encounter's `[startMs, endMs]`. The frontend drops groups whose owner
-isn't a `Player`. The roster is thus whoever actually dealt damage in the
-window — inherently per-encounter, since players come and go across a
-night. Surfacing a pet-vs-player split visually is a later question; for
-now it's summed in.
+**Per-encounter player rows (the Overview "Players" table).** Now real,
+and grown past the original one-query shape:
+
+- **Damage + Healing** come from one `query_events` grouped by
+  `(sourceOwner, sourceUnit)` (owner resolves a pet to its player, so pet
+  contribution folds into that player's row; the extra `sourceUnit` key
+  lets the frontend split own vs pet), `sum(amount)` with a per-clause
+  `where kind in [...]` for each of damage / heal in the same pass.
+- **Damage taken** comes from a second pass grouped by `targetUnit`
+  (`sum(amount) where kind in [<damage kinds>]`) — the player unit only,
+  no pets.
+- Both scoped to `[startMs, endMs]`; fired together in one `Promise.all`.
+  The frontend drops groups whose owner/target isn't a `Player`, joins
+  them by unit id, and computes per-second rates + shares client-side.
+- The roster is whoever dealt/took damage or healed in the window —
+  inherently per-encounter (players come and go across a night).
+- Rendered as three grouped **metric cells** (bar + amount + rate + %):
+  Damage, Healing, Damage taken. Damage/Healing show an own/pet bar split
+  and a hover popover with the own-vs-pet breakdown; Damage taken is a
+  bare bar + amount. Sort (name / role / damage / healing / taken) is
+  local to the widget — the rows are already in hand, so a header click
+  re-sorts and rebuilds ~30 rows with no query. Role shows as an icon,
+  the player name in its class colour (`format.ts` `classColorVar`).
+- Aggregated `query_events` results are memoized by spec for the loaded
+  log's lifetime (`src/ui/query.ts`), so re-selecting a seen encounter
+  runs no query at all.
 
 **Multi-target cast grouping — not built.** The log flags AoE hits (a
 spell-prefixed `_DAMAGE` line's trailing `hitType`, `ST`/`AOE` —
