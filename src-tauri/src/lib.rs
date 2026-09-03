@@ -137,6 +137,11 @@ struct HistoryMenu {
     forward: MenuItem<tauri::Wry>,
 }
 
+// The File > "Open Recent" submenu -- its items are rebuilt by
+// `refresh_recent_menu` from `recent_logs.json` at startup and after every
+// open; each item's id is `recent::<full path>`.
+struct RecentMenu(Submenu<tauri::Wry>);
+
 #[derive(Default)]
 struct NextWindowId(AtomicU32);
 
@@ -321,6 +326,8 @@ fn open_path_in_window(window: &WebviewWindow, path: &Path) {
     match get_or_parse(&app, path) {
         Ok(log) => {
             push_recent(&app, path);
+            let for_menu = app.clone();
+            let _ = app.run_on_main_thread(move || refresh_recent_menu(&for_menu));
             attach_window_to_log(window, log.clone());
             apply_window_chrome(window.clone(), log);
         }
@@ -357,6 +364,46 @@ fn push_recent(app: &AppHandle, path: &Path) {
             let _ = std::fs::create_dir_all(dir);
         }
         let _ = std::fs::write(f, json);
+    }
+}
+
+/// The number of recent files to list in the File > Open Recent menu (the
+/// on-disk MRU keeps more -- see `push_recent`).
+const RECENT_MENU_LIMIT: usize = 12;
+
+/// Rebuilds the File > Open Recent submenu from `recent_logs.json`,
+/// dropping entries whose file no longer exists. Must run on the main
+/// thread (menu mutation); callers off it go via `run_on_main_thread`.
+fn refresh_recent_menu(app: &AppHandle) {
+    let Some(recent) = app.try_state::<RecentMenu>() else {
+        return;
+    };
+    let submenu = &recent.0;
+    while matches!(submenu.remove_at(0), Ok(Some(_))) {}
+
+    let files: Vec<String> = read_recent(app)
+        .into_iter()
+        .filter(|p| Path::new(p).is_file())
+        .take(RECENT_MENU_LIMIT)
+        .collect();
+
+    if files.is_empty() {
+        if let Ok(item) =
+            MenuItem::with_id(app, "recent_none", "No Recent Files", false, None::<&str>)
+        {
+            let _ = submenu.append(&item);
+        }
+        return;
+    }
+
+    for path in &files {
+        let label = Path::new(path)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone());
+        if let Ok(item) = MenuItem::with_id(app, format!("recent::{path}"), label, true, None::<&str>) {
+            let _ = submenu.append(&item);
+        }
     }
 }
 
@@ -1064,6 +1111,7 @@ struct BuiltMenu {
     window_menu: Submenu<tauri::Wry>,
     view: ViewMenu,
     history: HistoryMenu,
+    recent: RecentMenu,
 }
 
 fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
@@ -1076,8 +1124,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         Some("CmdOrCtrl+Shift+N"),
     )?;
 
+    // Populated at startup and after every open by `refresh_recent_menu`
+    // (each item's id is `recent::<full path>`).
+    let recent_menu = SubmenuBuilder::new(app, "Open Recent").build()?;
+
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&open_item)
+        .item(&recent_menu)
         .item(&new_window_item)
         .separator()
         .close_window()
@@ -1216,6 +1269,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             back: history_back,
             forward: history_forward,
         },
+        recent: RecentMenu(recent_menu),
     })
 }
 
@@ -1236,7 +1290,7 @@ pub fn run() {
         .manage(NextWindowId::default())
         .manage(Zoom::default())
         .setup(|app| {
-            let BuiltMenu { menu, window_menu, view, history } = build_menu(app.handle())?;
+            let BuiltMenu { menu, window_menu, view, history, recent } = build_menu(app.handle())?;
             app.set_menu(menu)?;
             // Must run after set_menu -- muda resolves the submenu through
             // the *installed* main menu's delegate, so calling this any
@@ -1245,6 +1299,8 @@ pub fn run() {
             window_menu.set_as_windows_menu_for_nsapp()?;
             app.manage(view);
             app.manage(history);
+            app.manage(recent);
+            refresh_recent_menu(app.handle());
 
             // A window with nothing open shows the launch screen (recent
             // logs + an Open button) -- the frontend renders it whenever
@@ -1276,6 +1332,18 @@ pub fn run() {
                         focused_webview_window(&app).or_else(|| create_empty_window(&app));
                     if let Some(window) = window {
                         pick_and_open_log(window);
+                    }
+                });
+            } else if let Some(path) = event.id().as_ref().strip_prefix("recent::") {
+                // File > Open Recent -> open in the focused window (or a new
+                // one). The id carries the full path.
+                let path = path.to_string();
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    let window =
+                        focused_webview_window(&app).or_else(|| create_empty_window(&app));
+                    if let Some(window) = window {
+                        open_path_in_window(&window, Path::new(&path));
                     }
                 });
             } else if event.id() == "new_window" {
