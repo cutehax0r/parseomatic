@@ -20,6 +20,7 @@ import {
   formatDifficulty,
   formatDuration,
   formatEncounterResult,
+  formatRole,
   formatSpec,
 } from "../format";
 import type { ChartDeath } from "../ui/widgets/line-chart";
@@ -210,15 +211,19 @@ async function playerDamageRows(
   }
 
   return list
-    .map((r) => ({
-      name: r.name,
-      spec: formatSpec(specByName.get(r.name) ?? 0),
-      own: r.own,
-      pet: r.pet,
-      damage: r.own + r.pet,
-      dps: (r.own + r.pet) / seconds,
-      share: total > 0 ? (r.own + r.pet) / total : 0,
-    }))
+    .map((r) => {
+      const specId = specByName.get(r.name) ?? 0;
+      return {
+        name: r.name,
+        spec: formatSpec(specId),
+        role: formatRole(specId),
+        own: r.own,
+        pet: r.pet,
+        damage: r.own + r.pet,
+        dps: (r.own + r.pet) / seconds,
+        share: total > 0 ? (r.own + r.pet) / total : 0,
+      };
+    })
     .sort((a, b) => b.damage - a.damage);
 }
 

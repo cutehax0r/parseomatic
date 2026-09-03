@@ -88,6 +88,44 @@ export function formatSpec(specId: number): string {
   return SPECS[specId] ?? "";
 }
 
+// Combat role for a spec. Tanks / healers / ranged are enumerated; every
+// other known spec is melee DPS.
+const TANK_SPECS = new Set([
+  73, // Protection Warrior
+  66, // Protection Paladin
+  581, // Vengeance Demon Hunter
+  104, // Guardian Druid
+  250, // Blood Death Knight
+  268, // Brewmaster Monk
+]);
+const HEALER_SPECS = new Set([
+  257, // Holy Priest
+  256, // Discipline Priest
+  105, // Restoration Druid
+  270, // Mistweaver Monk
+  65, // Holy Paladin
+  264, // Restoration Shaman
+  1468, // Preservation Evoker
+]);
+const RANGED_DPS_SPECS = new Set([
+  62, 63, 64, // Mage (all)
+  265, 266, 267, // Warlock (all)
+  258, // Shadow Priest
+  102, // Balance Druid
+  1467, 1473, // Devastation / Augmentation Evoker
+  253, 254, // Beast Mastery / Marksmanship Hunter (Survival is melee)
+  262, // Elemental Shaman
+]);
+
+// "" for an unknown / missing spec id.
+export function formatRole(specId: number): string {
+  if (!SPECS[specId]) return "";
+  if (TANK_SPECS.has(specId)) return "Tank";
+  if (HEALER_SPECS.has(specId)) return "Healer";
+  if (RANGED_DPS_SPECS.has(specId)) return "DPS (ranged)";
+  return "DPS (melee)";
+}
+
 // WoW `ENCOUNTER_START` difficultyID -> name. `flex` difficulties vary in
 // raid size, so the group size adds information there; legacy 10/25 carry
 // it in the name and Mythic raids are always 20, so it's noise for those.

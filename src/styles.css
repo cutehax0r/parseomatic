@@ -897,8 +897,8 @@ body {
 
 .player-table-row {
   display: grid;
-  /* name | class/spec | % | bar (~a stat-tile wide) | damage | DPS */
-  grid-template-columns: 1fr 150px 64px 200px 110px 90px;
+  /* name | class/spec | role | % | bar (~a stat-tile wide) | damage | DPS */
+  grid-template-columns: 1fr 150px 116px 64px 200px 110px 90px;
   gap: 10px;
   padding: 6px 14px;
   align-items: center;
@@ -910,11 +910,15 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* class/spec is text, not a figure -- keep it left-aligned and let it
-   ellipsis rather than widen the column. */
-.player-table-row > span.pt-spec {
+/* class/spec + role are text columns (header and body) -- left-aligned,
+   not tabular; overrides the right-align rule above. */
+.player-table-row > span.pt-text {
   text-align: left;
   font-variant-numeric: normal;
+}
+
+/* body text cells: dim + ellipsis rather than widening the column. */
+.pt-dim {
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
