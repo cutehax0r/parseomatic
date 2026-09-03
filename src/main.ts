@@ -450,6 +450,23 @@ function renderEncGrid(): void {
 let logStartMs = 0;
 let logEndMs = 0;
 let rangeSelection: RangeSelection = { startMs: 0, endMs: 0, source: { kind: "custom" } };
+// A window created by "Duplicate Window" gets its inherited state from the
+// backend once, on first load (see refreshStatus).
+let pendingInitChecked = false;
+
+interface PendingInit {
+  selection: RangeSelection;
+  view: ViewMode;
+}
+
+// Opens a new window sharing this one's parsed log, carrying the current
+// encounter selection + view (zoom is global). No-op with no log open.
+function duplicateWindow(): void {
+  if (!currentLogPath) return;
+  void invoke("duplicate_window", {
+    init: { selection: rangeSelection, view: currentViewMode } satisfies PendingInit,
+  });
+}
 // Original-array index -> the collapsed button's label for that encounter
 // ("Boss Name — Pull 2", "Trash 3"). Built alongside the menu.
 const encounterOptionLabels = new Map<number, string>();
@@ -1082,6 +1099,7 @@ async function refreshStatus() {
   const overviewView = document.querySelector<HTMLElement>("#overview-view");
   const encountersBtn = document.querySelector<HTMLButtonElement>("#view-encounters-btn");
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
+  const newWindowBtn = document.querySelector<HTMLButtonElement>("#new-window-btn");
   const statusBar = document.querySelector<HTMLElement>("#status-bar");
   const statusBarFill = document.querySelector<HTMLElement>("#statusbar-fill");
   const statusBarText = document.querySelector("#statusbar-text");
@@ -1114,6 +1132,8 @@ async function refreshStatus() {
   // under View > Developer).
   encountersBtn.setAttribute("aria-pressed", String(currentViewMode === "encounters"));
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
+  // "Duplicate window" needs a loaded log to copy from.
+  if (newWindowBtn) newWindowBtn.disabled = !info || !info.done;
 
   if (!info) {
     // No log: the Encounters view shows the open-a-file / recent-logs UI.
@@ -1209,6 +1229,19 @@ async function refreshStatus() {
   }
   updateSummaryText();
 
+  // If this window was made by "Duplicate Window", adopt the source
+  // window's selection + view (once). Its `set_current_view` re-triggers
+  // refreshStatus, by which point `pendingInitChecked` is set.
+  if (!pendingInitChecked) {
+    pendingInitChecked = true;
+    const init = await invoke<PendingInit | null>("take_pending_init");
+    if (init) {
+      applySelection(init.selection, { history: "reset" });
+      currentViewMode = init.view;
+      if (init.view !== "encounters") void invoke("set_current_view", { view: init.view });
+    }
+  }
+
   content.classList.add("has-data");
   setEncounterPickerVisible(true);
   encountersView.hidden = currentViewMode !== "encounters";
@@ -1263,8 +1296,11 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   document.querySelector("#new-window-btn")?.addEventListener("click", () => {
-    invoke("new_window_from");
+    duplicateWindow();
   });
+  // ⌘⇧N / File > Duplicate Window fires this event on the focused window;
+  // we call back with the selection + view the new window should inherit.
+  listen("duplicate-window", () => duplicateWindow());
 
   document.querySelector("#view-encounters-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "encounters" });

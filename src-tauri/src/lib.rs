@@ -142,6 +142,29 @@ struct HistoryMenu {
 // open; each item's id is `recent::<full path>`.
 struct RecentMenu(Submenu<tauri::Wry>);
 
+// Handle to File > "Duplicate Window", so it can be greyed out when the
+// focused window has no log to copy from.
+struct FileMenu {
+    duplicate: MenuItem<tauri::Wry>,
+}
+
+// A blob of frontend init state (selection + view) stashed for a window
+// created by `duplicate_window`, keyed by the new window's label. The new
+// window's frontend claims it once via `take_pending_init`.
+#[derive(Default)]
+struct PendingInit(Mutex<HashMap<String, serde_json::Value>>);
+
+/// Greys File > Duplicate Window in/out based on whether the focused
+/// window currently shows a log.
+fn sync_duplicate_menu(app: &AppHandle) {
+    let has_log = focused_webview_window(app)
+        .map(|w| current_log(&w).is_some())
+        .unwrap_or(false);
+    if let Some(fm) = app.try_state::<FileMenu>() {
+        let _ = fm.duplicate.set_enabled(has_log);
+    }
+}
+
 #[derive(Default)]
 struct NextWindowId(AtomicU32);
 
@@ -326,10 +349,13 @@ fn open_path_in_window(window: &WebviewWindow, path: &Path) {
     match get_or_parse(&app, path) {
         Ok(log) => {
             push_recent(&app, path);
-            let for_menu = app.clone();
-            let _ = app.run_on_main_thread(move || refresh_recent_menu(&for_menu));
             attach_window_to_log(window, log.clone());
             apply_window_chrome(window.clone(), log);
+            let for_menu = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                refresh_recent_menu(&for_menu);
+                sync_duplicate_menu(&for_menu);
+            });
         }
         Err(err) => show_open_error(window, path, &err),
     }
@@ -462,10 +488,9 @@ fn register_close_cleanup(window: &WebviewWindow) {
     let label = window.label().to_string();
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
-            let window_logs = app.state::<WindowLogs>();
-            window_logs.0.lock().unwrap().remove(&label);
-            let view_state = app.state::<WindowViewState>();
-            view_state.0.lock().unwrap().remove(&label);
+            app.state::<WindowLogs>().0.lock().unwrap().remove(&label);
+            app.state::<WindowViewState>().0.lock().unwrap().remove(&label);
+            app.state::<PendingInit>().0.lock().unwrap().remove(&label);
         }
     });
 }
@@ -480,6 +505,7 @@ fn register_focus_sync(window: &WebviewWindow) {
         if let tauri::WindowEvent::Focused(true) = event {
             let view = current_view_for(handle.app_handle(), handle.label());
             sync_view_menu(&handle, view);
+            sync_duplicate_menu(handle.app_handle());
             // Let the now-frontmost window re-assert its History menu
             // enable state (the stack is per-window; see src/ui/history.ts).
             let _ = handle.emit("window-focused", ());
@@ -567,20 +593,6 @@ fn open_settings_window(app: &AppHandle) {
     .title("Settings")
     .inner_size(420.0, 320.0)
     .build();
-}
-
-/// "New Window": opens another window. If `window` has a log open, the new
-/// one shares the same `Arc<ParsedLog>` (zero re-parsing, just a refcount
-/// bump); otherwise it's a blank window on the launch screen. Must not be
-/// called synchronously on the main thread, same caveat as
-/// create_empty_window.
-fn spawn_sibling_window(window: &WebviewWindow) {
-    let app = window.app_handle().clone();
-    let Some(new_window) = create_empty_window(&app) else { return };
-    if let Some(log) = current_log(window) {
-        attach_window_to_log(&new_window, log.clone());
-        apply_window_chrome(new_window, log);
-    }
 }
 
 /// Finds a window (if any) already showing the file at `canonical_path`.
@@ -1099,11 +1111,37 @@ fn pick_log_in(window: WebviewWindow, dir: String) {
     pick_and_open_log_in(window, Some(PathBuf::from(dir)));
 }
 
+/// File > Duplicate Window (and the toolbar button): opens a new window
+/// sharing `window`'s `Arc<ParsedLog>` (no re-parse) and carrying its view
+/// + encounter selection over. `init` is an opaque blob from the frontend
+/// (`{ selection, view }`), stashed for the new window's frontend to claim
+/// via `take_pending_init`. Plain (non-`sync`) commands run off the main
+/// thread, so `create_empty_window`'s `build()` is safe here.
 #[tauri::command]
-fn new_window_from(window: WebviewWindow) {
-    // Plain (non-`sync`) commands already run off the main thread by
-    // default, so calling into spawn_sibling_window directly here is safe.
-    spawn_sibling_window(&window);
+fn duplicate_window(window: WebviewWindow, init: serde_json::Value) {
+    let Some(log) = current_log(&window) else { return };
+    let app = window.app_handle().clone();
+    let Some(new_window) = create_empty_window(&app) else { return };
+    app.state::<PendingInit>()
+        .0
+        .lock()
+        .unwrap()
+        .insert(new_window.label().to_string(), init);
+    attach_window_to_log(&new_window, log.clone());
+    apply_window_chrome(new_window, log);
+}
+
+/// Claims (and clears) the init blob stashed for this window by
+/// `duplicate_window`. `None` for a normally-opened window.
+#[tauri::command]
+fn take_pending_init(window: WebviewWindow) -> Option<serde_json::Value> {
+    window
+        .app_handle()
+        .state::<PendingInit>()
+        .0
+        .lock()
+        .unwrap()
+        .remove(window.label())
 }
 
 struct BuiltMenu {
@@ -1112,15 +1150,22 @@ struct BuiltMenu {
     view: ViewMenu,
     history: HistoryMenu,
     recent: RecentMenu,
+    file: FileMenu,
 }
 
 fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let open_item = MenuItem::with_id(app, "open_file", "Open...", true, Some("CmdOrCtrl+O"))?;
-    let new_window_item = MenuItem::with_id(
+    // New Window: a fresh empty window (file picker). Duplicate Window: a
+    // copy of the foreground window's file + encounter + view (zoom is
+    // already global) -- starts disabled, `sync_duplicate_menu` toggles it
+    // on whether the focused window has a log.
+    let new_window_item =
+        MenuItem::with_id(app, "new_window", "New Window", true, Some("CmdOrCtrl+N"))?;
+    let duplicate_item = MenuItem::with_id(
         app,
-        "new_window",
-        "New Window",
-        true,
+        "duplicate_window",
+        "Duplicate Window",
+        false,
         Some("CmdOrCtrl+Shift+N"),
     )?;
 
@@ -1131,7 +1176,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&open_item)
         .item(&recent_menu)
+        .separator()
         .item(&new_window_item)
+        .item(&duplicate_item)
         .separator()
         .close_window()
         .build()?;
@@ -1270,6 +1317,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             forward: history_forward,
         },
         recent: RecentMenu(recent_menu),
+        file: FileMenu { duplicate: duplicate_item },
     })
 }
 
@@ -1290,7 +1338,7 @@ pub fn run() {
         .manage(NextWindowId::default())
         .manage(Zoom::default())
         .setup(|app| {
-            let BuiltMenu { menu, window_menu, view, history, recent } = build_menu(app.handle())?;
+            let BuiltMenu { menu, window_menu, view, history, recent, file } = build_menu(app.handle())?;
             app.set_menu(menu)?;
             // Must run after set_menu -- muda resolves the submenu through
             // the *installed* main menu's delegate, so calling this any
@@ -1300,6 +1348,8 @@ pub fn run() {
             app.manage(view);
             app.manage(history);
             app.manage(recent);
+            app.manage(file);
+            app.manage(PendingInit::default());
             refresh_recent_menu(app.handle());
 
             // A window with nothing open shows the launch screen (recent
@@ -1347,8 +1397,16 @@ pub fn run() {
                     }
                 });
             } else if event.id() == "new_window" {
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    create_empty_window(&app);
+                });
+            } else if event.id() == "duplicate_window" {
+                // The frontend owns the selection to copy, so bounce it
+                // there -- it calls back into `duplicate_window` with the
+                // full init blob.
                 if let Some(window) = focused_webview_window(app) {
-                    std::thread::spawn(move || spawn_sibling_window(&window));
+                    let _ = window.emit("duplicate-window", ());
                 }
             } else if event.id() == "open_settings" {
                 let app = app.clone();
@@ -1385,7 +1443,8 @@ pub fn run() {
             recent_logs,
             open_recent,
             pick_log_in,
-            new_window_from,
+            duplicate_window,
+            take_pending_init,
             window_info,
             debug_lists,
             current_view,
