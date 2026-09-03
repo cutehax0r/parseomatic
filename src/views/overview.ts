@@ -173,23 +173,33 @@ async function playerDamageRows(
   bounds: { startMs: number; endMs: number },
   seconds: number,
 ): Promise<PlayerRow[]> {
-  const rows = await ctx!.query<{ sourceOwner: number; dmg: number }>({
+  // Group by (owner, unit) so we can split each player's rolled-up total
+  // into their own damage (unit === owner) vs their pets' (unit !== owner).
+  const rows = await ctx!.query<{ sourceOwner: number; sourceUnit: number; dmg: number }>({
     ...bounds,
     where: [{ field: "kind", op: "in", value: DAMAGE_KINDS }],
-    groupBy: ["sourceOwner"],
+    groupBy: ["sourceOwner", "sourceUnit"],
     aggregate: [{ op: "sum", field: "amount", as: "dmg" }],
   });
   const units = ctx!.units;
-  const players = rows
-    .map((r) => ({ unit: units[r.sourceOwner], dmg: r.dmg }))
-    .filter((r) => r.unit?.kind === "Player");
-  const total = players.reduce((s, r) => s + r.dmg, 0);
-  return players
+  const byOwner = new Map<number, { own: number; pet: number }>();
+  for (const r of rows) {
+    if (units[r.sourceOwner]?.kind !== "Player") continue;
+    const acc = byOwner.get(r.sourceOwner) ?? { own: 0, pet: 0 };
+    if (r.sourceUnit === r.sourceOwner) acc.own += r.dmg;
+    else acc.pet += r.dmg;
+    byOwner.set(r.sourceOwner, acc);
+  }
+  const list = [...byOwner].map(([id, v]) => ({ name: units[id]!.name, own: v.own, pet: v.pet }));
+  const total = list.reduce((s, r) => s + r.own + r.pet, 0);
+  return list
     .map((r) => ({
-      name: r.unit!.name,
-      damage: r.dmg,
-      dps: r.dmg / seconds,
-      share: total > 0 ? r.dmg / total : 0,
+      name: r.name,
+      own: r.own,
+      pet: r.pet,
+      damage: r.own + r.pet,
+      dps: (r.own + r.pet) / seconds,
+      share: total > 0 ? (r.own + r.pet) / total : 0,
     }))
     .sort((a, b) => b.damage - a.damage);
 }

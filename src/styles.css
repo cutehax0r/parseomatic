@@ -52,6 +52,8 @@
     dataviz validator (dark, surface #1e2030, --pairs all): contrast 3:1 PASS,
     CVD separation ΔE 9.9 / normal-vision floor 18.3 PASS. */
   --chart-death: var(--ctp-pink); /* death markers -- bright, distinct from the four series */
+  --bar-own: var(--accent); /* players-table damage bar: the player's own damage */
+  --bar-pet: #52689e; /* ...continued in a darker shade for their pets */
 
   /* Shape/elevation tokens -- kept semantic so the shadcn-ish widget look
      (see docs/ui-widgets.md "Styling") stays a one-block change. */
@@ -895,7 +897,8 @@ body {
 
 .player-table-row {
   display: grid;
-  grid-template-columns: 1fr 90px 110px 64px;
+  /* last col ~= a stat-tile wide -- the 0..100 damage bar */
+  grid-template-columns: 1fr 90px 110px 64px 200px;
   gap: 10px;
   padding: 6px 14px;
   align-items: center;
@@ -905,6 +908,29 @@ body {
 .player-table-row > span:nth-child(n + 2) {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* inline damage bar: light = player, darker = pets, filling left to right */
+.pt-bar {
+  display: flex;
+  align-items: stretch;
+  height: 1em;
+  border-radius: 2px;
+  overflow: hidden;
+  background-color: var(--bg-hover);
+}
+
+.pt-bar-seg {
+  display: block;
+  min-width: 0;
+}
+
+.pt-bar-own {
+  background-color: var(--bar-own);
+}
+
+.pt-bar-pet {
+  background-color: var(--bar-pet);
 }
 
 .player-table-head {
