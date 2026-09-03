@@ -4,9 +4,10 @@
 //
 // All numbers are real via query_events: one bucketed query yields the
 // chart's four time series (damage and healing, each split player-side vs
-// creature) and, summed client-side, the stat-tile totals; a second
-// grouped query yields the player table (grouped by sourceOwner, so pet
-// damage folds into the owning player). Death markers come from the
+// creature) and, summed client-side, the stat-tile totals; two more
+// grouped queries yield the player table -- one by sourceOwner (pet damage
+// / healing folds into the owning player, split own vs pet) and one by
+// targetUnit (damage taken, players only). Death markers come from the
 // loaded deaths list.
 
 import "../ui/widgets"; // registers built-in widgets
@@ -22,6 +23,7 @@ import {
   formatEncounterResult,
   formatRole,
   formatSpec,
+  roleRank,
 } from "../format";
 import type { ChartDeath } from "../ui/widgets/line-chart";
 import type { PlayerRow } from "../ui/widgets/player-table";
@@ -138,7 +140,7 @@ async function paint(): Promise<void> {
   const bucketCount = Math.min(800, Math.max(60, Math.round(seconds)));
   const [series, playerRows] = await Promise.all([
     damageHealingSeries(bounds, bucketCount),
-    playerDamageRows(bounds, seconds, win.name),
+    buildPlayerRows(bounds, seconds, win.name),
   ]);
   if (seq !== paintSeq) return; // a newer selection is painting
 
@@ -199,41 +201,63 @@ function damageHealingSeries(
   });
 }
 
-async function playerDamageRows(
+async function buildPlayerRows(
   bounds: { startMs: number; endMs: number },
   seconds: number,
   encounterName: string,
 ): Promise<PlayerRow[]> {
-  // One grouped pass over the window: damage (split own vs pet via the
-  // (owner, unit) key) and healing per owner. A player who only healed
-  // (common on trash spans / between pulls) still gets a row.
-  const rows = await ctx!.query<{
-    sourceOwner: number;
-    sourceUnit: number;
-    dmg: number;
-    heal: number;
-  }>({
-    ...bounds,
-    groupBy: ["sourceOwner", "sourceUnit"],
-    aggregate: [
-      { op: "sum", field: "amount", as: "dmg", where: [{ field: "kind", op: "in", value: DAMAGE_KINDS }] },
-      { op: "sum", field: "amount", as: "heal", where: [{ field: "kind", op: "in", value: HEAL_KINDS }] },
-    ],
-  });
+  // Two parallel passes over the window:
+  //  - grouped by (owner, unit): damage and healing, each split own vs pet
+  //    via `sourceUnit === sourceOwner`. A player who only healed (common
+  //    on trash spans / between pulls) still gets a row.
+  //  - grouped by target unit: damage taken. Keyed by unit id, which for a
+  //    player equals their owner id, so it joins straight onto the rows;
+  //    pets are dropped by the Player-kind filter below.
+  const [grouped, takenRows] = await Promise.all([
+    ctx!.query<{ sourceOwner: number; sourceUnit: number; dmg: number; heal: number }>({
+      ...bounds,
+      groupBy: ["sourceOwner", "sourceUnit"],
+      aggregate: [
+        { op: "sum", field: "amount", as: "dmg", where: [{ field: "kind", op: "in", value: DAMAGE_KINDS }] },
+        { op: "sum", field: "amount", as: "heal", where: [{ field: "kind", op: "in", value: HEAL_KINDS }] },
+      ],
+    }),
+    ctx!.query<{ targetUnit: number; taken: number }>({
+      ...bounds,
+      groupBy: ["targetUnit"],
+      aggregate: [
+        { op: "sum", field: "amount", as: "taken", where: [{ field: "kind", op: "in", value: DAMAGE_KINDS }] },
+      ],
+    }),
+  ]);
+
   const units = ctx!.units;
-  const byOwner = new Map<number, { own: number; pet: number; heal: number }>();
-  for (const r of rows) {
+  const takenByUnit = new Map<number, number>();
+  for (const r of takenRows) takenByUnit.set(r.targetUnit, r.taken);
+
+  type Acc = { dmgOwn: number; dmgPet: number; healOwn: number; healPet: number };
+  const byOwner = new Map<number, Acc>();
+  for (const r of grouped) {
     if (units[r.sourceOwner]?.kind !== "Player") continue;
-    const acc = byOwner.get(r.sourceOwner) ?? { own: 0, pet: 0, heal: 0 };
-    if (r.sourceUnit === r.sourceOwner) acc.own += r.dmg;
-    else acc.pet += r.dmg;
-    acc.heal += r.heal;
+    const acc = byOwner.get(r.sourceOwner) ?? { dmgOwn: 0, dmgPet: 0, healOwn: 0, healPet: 0 };
+    if (r.sourceUnit === r.sourceOwner) {
+      acc.dmgOwn += r.dmg;
+      acc.healOwn += r.heal;
+    } else {
+      acc.dmgPet += r.dmg;
+      acc.healPet += r.heal;
+    }
     byOwner.set(r.sourceOwner, acc);
   }
+
   const list = [...byOwner]
-    .map(([id, v]) => ({ name: units[id]!.name, own: v.own, pet: v.pet, heal: v.heal }))
-    .filter((r) => r.own + r.pet + r.heal > 0);
-  const total = list.reduce((s, r) => s + r.own + r.pet, 0);
+    .map(([id, v]) => ({ id, name: units[id]!.name, ...v, taken: takenByUnit.get(id) ?? 0 }))
+    .filter((r) => r.dmgOwn + r.dmgPet + r.healOwn + r.healPet + r.taken > 0);
+
+  const totalDmg = list.reduce((s, r) => s + r.dmgOwn + r.dmgPet, 0);
+  const totalHeal = list.reduce((s, r) => s + r.healOwn + r.healPet, 0);
+  const totalTaken = list.reduce((s, r) => s + r.taken, 0);
+  const share = (n: number, total: number) => (total > 0 ? n / total : 0);
 
   // player name -> spec, from this encounter's COMBATANT_INFO (falling back
   // to any snapshot for that player). Empty for logs without COMBATANT_INFO.
@@ -247,19 +271,38 @@ async function playerDamageRows(
   return list
     .map((r) => {
       const specId = specByName.get(r.name) ?? 0;
+      const damage = r.dmgOwn + r.dmgPet;
+      const healing = r.healOwn + r.healPet;
       return {
         name: r.name,
         spec: formatSpec(specId),
         role: formatRole(specId),
-        own: r.own,
-        pet: r.pet,
-        damage: r.own + r.pet,
-        dps: (r.own + r.pet) / seconds,
-        healing: r.heal,
-        share: total > 0 ? (r.own + r.pet) / total : 0,
+        roleRank: roleRank(specId),
+        dmgOwn: r.dmgOwn,
+        dmgPet: r.dmgPet,
+        damage,
+        dps: damage / seconds,
+        dmgOwnDps: r.dmgOwn / seconds,
+        dmgPetDps: r.dmgPet / seconds,
+        dmgShare: share(damage, totalDmg),
+        healOwn: r.healOwn,
+        healPet: r.healPet,
+        healing,
+        hps: healing / seconds,
+        healOwnHps: r.healOwn / seconds,
+        healPetHps: r.healPet / seconds,
+        healShare: share(healing, totalHeal),
+        taken: r.taken,
+        takenShare: share(r.taken, totalTaken),
       };
     })
-    .sort((a, b) => b.damage - a.damage || b.healing - a.healing);
+    // Pre-sorted to the widget's default (role-grouped); the widget owns
+    // sorting from here -- header clicks re-sort locally, no re-query.
+    .sort((a, b) => {
+      if (a.roleRank !== b.roleRank) return a.roleRank - b.roleRank;
+      const m = (r: PlayerRow) => (r.roleRank === 1 ? r.healing : r.damage);
+      return m(b) - m(a);
+    });
 }
 
 function deathMarkers(e: EncounterRow): ChartDeath[] {

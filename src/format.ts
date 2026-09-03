@@ -126,6 +126,17 @@ export function formatRole(specId: number): string {
   return "DPS (melee)";
 }
 
+// Sort rank for role-grouped tables: tanks, then healers, then melee DPS,
+// then ranged DPS, then anything without a known spec. Mirrors
+// formatRole's buckets.
+export function roleRank(specId: number): number {
+  if (!SPECS[specId]) return 4;
+  if (TANK_SPECS.has(specId)) return 0;
+  if (HEALER_SPECS.has(specId)) return 1;
+  if (RANGED_DPS_SPECS.has(specId)) return 3;
+  return 2; // DPS (melee)
+}
+
 // WoW `ENCOUNTER_START` difficultyID -> name. `flex` difficulties vary in
 // raid size, so the group size adds information there; legacy 10/25 carry
 // it in the name and Mythic raids are always 20, so it's noise for those.

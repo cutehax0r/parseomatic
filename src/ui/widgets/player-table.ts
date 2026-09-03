@@ -1,101 +1,264 @@
-// name | class/spec | role | % of raid (player+pet) damage | bar | damage
-// done | DPS | healing done. Rows arrive already sorted (Overview sorts by
-// damage desc). Plain grid, not virtualized -- a raid is <= ~30 players. A
-// future `data-table` widget wraps VirtualList when something needs it
+// name | class/spec | role | Damage | Healing | Damage taken. The last
+// three are `buildMetricCell` cells (bar + amount + rate/%); see
+// metric-cell.ts. Plain grid, not virtualized -- a raid is <= ~30 players.
+// A future `data-table` widget wraps VirtualList when something needs it
 // (docs/ui-widgets.md). `spec`/`role` are "" for logs without
 // COMBATANT_INFO (or an unmapped spec id).
 //
-// The bar is scaled 0..max where max is the top row's total damage. Two
-// segments from the left: a light one for the player's own damage, then a
-// darker one for their pets', so the pair reaches (own+pet)/max wide.
+// Sorting lives here, not in the view: every column's data is already in
+// the row, so a header click is a local array re-sort + body rebuild (~30
+// rows) -- no query, no IPC. Default sort is role-grouped (tanks, healers,
+// melee, ranged), each role by healing (healers) or damage (everyone
+// else). Clicking the active header flips direction.
+//
+// The damage and healing bars split player-own vs pet as two segments and
+// carry a hover popover (own vs aggregated-pet amount + rate), served by
+// one delegated pointer listener on the table. Damage taken is the player
+// unit only -- one segment, no rate, no %, no hover.
 
 import { registerWidget } from "../registry";
 import type { Widget } from "../spec";
 import { formatCompact } from "../../format";
+import { buildMetricCell } from "./metric-cell";
 
 export interface PlayerRow {
   name: string;
   spec: string; // "Frost Mage" etc., or "" if unknown
   role: string; // "Tank" / "Healer" / "DPS (ranged)" / "DPS (melee)" / ""
-  dps: number;
-  damage: number; // own + pet
-  own: number; // damage by the player unit itself
-  pet: number; // damage by the player's pets
-  healing: number; // healing done (player + pets) in the window
-  share: number; // 0..1, this row's damage / the table's total damage
+  roleRank: number; // 0 tank / 1 healer / 2 melee / 3 ranged / 4 unknown
+
+  // Damage -- own is the player unit, pet is all their pets folded together.
+  dmgOwn: number;
+  dmgPet: number;
+  damage: number; // dmgOwn + dmgPet
+  dps: number; // damage / window seconds
+  dmgOwnDps: number;
+  dmgPetDps: number;
+  dmgShare: number; // 0..1, this row's damage / the table's total
+
+  // Healing -- same own/pet split.
+  healOwn: number;
+  healPet: number;
+  healing: number; // healOwn + healPet
+  hps: number;
+  healOwnHps: number;
+  healPetHps: number;
+  healShare: number; // 0..1, this row's healing / the table's total
+
+  // Damage taken -- the player unit only (no pets).
+  taken: number;
+  takenShare: number; // 0..1, this row's damage taken / the table's total
 }
 
 export interface PlayerTableProps {
   rows: PlayerRow[];
 }
 
-// `left` columns hold text, not figures -- left-aligned, not tabular.
-const COLUMNS: Array<{ label: string; left?: boolean }> = [
-  { label: "Player" },
-  { label: "Class / Spec", left: true },
-  { label: "Role", left: true },
-  { label: "%" },
-  { label: "" },
-  { label: "Damage" },
-  { label: "DPS" },
-  { label: "Healing" },
+type SortKey = "name" | "role" | "damage" | "healing" | "taken";
+
+// `sortable` columns get a header button; the rest are plain labels.
+const COLUMNS: Array<{ label: string; sort?: SortKey }> = [
+  { label: "Player", sort: "name" },
+  { label: "Class / Spec" },
+  { label: "Role", sort: "role" },
+  { label: "Damage", sort: "damage" },
+  { label: "Healing", sort: "healing" },
+  { label: "Damage taken", sort: "taken" },
 ];
+
+// Natural ("as written") order for a key: names A->Z, everything else
+// biggest first. Re-clicking the active header multiplies this by -1.
+function compare(a: PlayerRow, b: PlayerRow, key: SortKey): number {
+  switch (key) {
+    case "name":
+      return a.name.localeCompare(b.name);
+    case "role": {
+      if (a.roleRank !== b.roleRank) return a.roleRank - b.roleRank;
+      const m = (r: PlayerRow) => (r.roleRank === 1 ? r.healing : r.damage);
+      return m(b) - m(a);
+    }
+    case "damage":
+      return b.damage - a.damage;
+    case "healing":
+      return b.healing - a.healing;
+    case "taken":
+      return b.taken - a.taken;
+  }
+}
+
+function sortRows(rows: PlayerRow[], key: SortKey, dir: 1 | -1): PlayerRow[] {
+  return [...rows].sort((a, b) => dir * (compare(a, b, key) || a.name.localeCompare(b.name)));
+}
 
 registerWidget<PlayerTableProps>("player-table", (props) => {
   const element = document.createElement("div");
   element.className = "player-table";
 
+  let rows: PlayerRow[] = [];
+  let view: PlayerRow[] = []; // `rows` in current sort order -- indexes match body rows
+  let sortKey: SortKey = "role";
+  let sortDir: 1 | -1 = 1;
+  const max = { dmg: 1, heal: 1, taken: 1 };
+
+  // --- header (sort controls) ---
   const header = document.createElement("div");
   header.className = "player-table-row player-table-head";
+  const headBtns = new Map<SortKey, { btn: HTMLButtonElement; caret: HTMLSpanElement }>();
   for (const c of COLUMNS) {
     const cell = document.createElement("span");
-    cell.textContent = c.label;
-    if (c.left) cell.className = "pt-text";
+    if (c.sort) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = c.label;
+      const caret = document.createElement("span");
+      caret.className = "pt-sort-caret";
+      btn.appendChild(caret);
+      const key = c.sort;
+      btn.addEventListener("click", () => {
+        if (sortKey === key) sortDir = sortDir === 1 ? -1 : 1;
+        else {
+          sortKey = key;
+          sortDir = 1;
+        }
+        renderBody();
+      });
+      headBtns.set(key, { btn, caret });
+      cell.appendChild(btn);
+    } else {
+      cell.textContent = c.label;
+    }
     header.appendChild(cell);
   }
+
   const body = document.createElement("div");
   body.className = "player-table-body";
-  element.append(header, body);
+
+  // --- hover popover (one element, one pair of delegated listeners) ---
+  const tip = document.createElement("div");
+  tip.className = "pt-tooltip";
+  tip.hidden = true;
+  element.append(header, body, tip);
+
+  function showTip(cell: HTMLElement) {
+    const rowEl = cell.closest<HTMLElement>(".player-table-row");
+    const metric = cell.dataset.metric;
+    if (!rowEl || !metric) return;
+    const r = view[Number(rowEl.dataset.i)];
+    if (!r) return;
+
+    const isHeal = metric === "healing";
+    const own = isHeal ? r.healOwn : r.dmgOwn;
+    const pet = isHeal ? r.healPet : r.dmgPet;
+    const ownRate = isHeal ? r.healOwnHps : r.dmgOwnDps;
+    const petRate = isHeal ? r.healPetHps : r.dmgPetDps;
+    const unit = isHeal ? "HPS" : "DPS";
+    const line = (amount: number, rate: number) =>
+      `${formatCompact(amount)} · ${formatCompact(rate)} ${unit}`;
+
+    let html =
+      `<div class="pt-tooltip-head">${isHeal ? "Healing" : "Damage"}</div>` +
+      `<div class="pt-tooltip-row"><span>${r.name}</span><b>${line(own, ownRate)}</b></div>`;
+    if (pet > 0) {
+      html += `<div class="pt-tooltip-row"><span>Pets</span><b>${line(pet, petRate)}</b></div>`;
+    }
+    tip.innerHTML = html;
+
+    const box = cell.getBoundingClientRect();
+    tip.style.left = `${box.left + box.width / 2}px`;
+    tip.style.top = `${box.top - 8}px`;
+    tip.hidden = false;
+  }
+
+  element.addEventListener("pointerover", (ev) => {
+    const cell = (ev.target as HTMLElement).closest<HTMLElement>(".pt-metric--hover");
+    if (cell) showTip(cell);
+  });
+  element.addEventListener("pointerout", (ev) => {
+    const cell = (ev.target as HTMLElement).closest<HTMLElement>(".pt-metric--hover");
+    if (!cell) return;
+    // Ignore moves between children of the same cell.
+    if (cell.contains(ev.relatedTarget as Node | null)) return;
+    tip.hidden = true;
+  });
+
+  function renderBody() {
+    for (const [key, { btn, caret }] of headBtns) {
+      const active = key === sortKey;
+      caret.textContent = active ? (sortDir === 1 ? " ▾" : " ▴") : "";
+      if (active) btn.setAttribute("aria-sort", sortDir === 1 ? "descending" : "ascending");
+      else btn.removeAttribute("aria-sort");
+    }
+
+    view = sortRows(rows, sortKey, sortDir);
+    tip.hidden = true;
+    body.replaceChildren(
+      ...view.map((r, i) => {
+        const row = document.createElement("div");
+        row.className = "player-table-row";
+        row.dataset.i = String(i);
+
+        const name = document.createElement("span");
+        name.textContent = r.name;
+        const spec = document.createElement("span");
+        spec.className = "pt-dim";
+        spec.textContent = r.spec;
+        const role = document.createElement("span");
+        role.className = "pt-dim";
+        role.textContent = r.role;
+
+        const dmg = buildMetricCell(
+          {
+            segs: [
+              { cls: "pt-bar-own", value: r.dmgOwn },
+              { cls: "pt-bar-pet", value: r.dmgPet },
+            ],
+            max: max.dmg,
+            amount: r.damage,
+            rate: r.dps,
+            rateUnit: "DPS",
+            share: r.dmgShare,
+            hover: true,
+          },
+          "damage",
+        );
+        const heal = buildMetricCell(
+          {
+            segs: [
+              { cls: "pt-bar-heal-own", value: r.healOwn },
+              { cls: "pt-bar-heal-pet", value: r.healPet },
+            ],
+            max: max.heal,
+            amount: r.healing,
+            rate: r.hps,
+            rateUnit: "HPS",
+            share: r.healShare,
+            hover: true,
+          },
+          "healing",
+        );
+        const taken = buildMetricCell(
+          {
+            segs: [{ cls: "pt-bar-taken", value: r.taken }],
+            max: max.taken,
+            amount: r.taken,
+          },
+          "taken",
+        );
+
+        row.append(name, spec, role, dmg, heal, taken);
+        return row;
+      }),
+    );
+  }
 
   const widget: Widget<PlayerTableProps> = {
     element,
     update(next) {
-      const max = next.rows.reduce((m, r) => Math.max(m, r.own + r.pet), 1);
-      body.replaceChildren(
-        ...next.rows.map((r) => {
-          const row = document.createElement("div");
-          row.className = "player-table-row";
-          const name = document.createElement("span");
-          name.textContent = r.name;
-          const spec = document.createElement("span");
-          spec.className = "pt-text pt-dim";
-          spec.textContent = r.spec;
-          const role = document.createElement("span");
-          role.className = "pt-text pt-dim";
-          role.textContent = r.role;
-          const pct = document.createElement("span");
-          pct.textContent = `${(r.share * 100).toFixed(1)}%`;
-          const dmg = document.createElement("span");
-          dmg.textContent = formatCompact(r.damage);
-          const dps = document.createElement("span");
-          dps.textContent = formatCompact(r.dps);
-          const heal = document.createElement("span");
-          heal.textContent = r.healing > 0 ? formatCompact(r.healing) : "—";
-
-          const bar = document.createElement("span");
-          bar.className = "pt-bar";
-          const own = document.createElement("span");
-          own.className = "pt-bar-seg pt-bar-own";
-          own.style.width = `${(r.own / max) * 100}%`;
-          const pet = document.createElement("span");
-          pet.className = "pt-bar-seg pt-bar-pet";
-          pet.style.width = `${(r.pet / max) * 100}%`;
-          bar.append(own, pet);
-
-          row.append(name, spec, role, pct, bar, dmg, dps, heal);
-          return row;
-        }),
-      );
+      rows = next.rows;
+      max.dmg = rows.reduce((m, r) => Math.max(m, r.damage), 1);
+      max.heal = rows.reduce((m, r) => Math.max(m, r.healing), 1);
+      max.taken = rows.reduce((m, r) => Math.max(m, r.taken), 1);
+      renderBody();
     },
   };
   widget.update(props);

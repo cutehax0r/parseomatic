@@ -54,6 +54,9 @@
   --chart-death: var(--ctp-pink); /* death markers -- bright, distinct from the four series */
   --bar-own: var(--accent); /* players-table damage bar: the player's own damage */
   --bar-pet: #52689e; /* ...continued in a darker shade for their pets */
+  --bar-heal-own: var(--success); /* players-table healing bar: the player's own healing */
+  --bar-heal-pet: #6a9e7f; /* ...continued in a darker shade for their pets */
+  --bar-taken: var(--chart-deep-red); /* players-table damage-taken bar (single segment) */
 
   /* Shape/elevation tokens -- kept semantic so the shadcn-ish widget look
      (see docs/ui-widgets.md "Styling") stays a one-block change. */
@@ -1100,7 +1103,9 @@ body {
   color: var(--danger);
 }
 
-/* player-table -- plain grid, not virtualized (<= ~30 players). */
+/* player-table -- plain grid, not virtualized (<= ~30 players). The last
+   three columns are `buildMetricCell` cells (bar over amount + rate/%);
+   see src/ui/widgets/metric-cell.ts. */
 .player-table {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1110,39 +1115,43 @@ body {
 
 .player-table-row {
   display: grid;
-  /* name | class/spec | role | % | bar (~a stat-tile wide) | damage | DPS | healing */
-  grid-template-columns: 1fr 150px 116px 64px 200px 110px 90px 90px;
-  gap: 10px;
-  padding: 6px 14px;
+  /* name | class/spec | role | damage | healing | damage taken */
+  grid-template-columns: 1fr 140px 92px minmax(150px, 1fr) minmax(150px, 1fr) minmax(116px, 0.72fr);
+  gap: 14px;
+  padding: 7px 14px;
   align-items: center;
   font-size: 13px;
 }
 
-.player-table-row > span:nth-child(n + 2) {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-/* class/spec + role are text columns (header and body) -- left-aligned,
-   not tabular; overrides the right-align rule above. */
-.player-table-row > span.pt-text {
-  text-align: left;
-  font-variant-numeric: normal;
-}
-
-/* body text cells: dim + ellipsis rather than widening the column. */
-.pt-dim {
-  color: var(--text-muted);
+/* text columns (name / class-spec / role): left-aligned, clipped rather
+   than widening the column. */
+.player-table-row > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* inline damage bar: light = player, darker = pets, filling left to right */
+.pt-dim {
+  color: var(--text-muted);
+}
+
+/* metric cell: a bar stacked over a line of numbers. */
+.pt-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pt-metric--hover {
+  cursor: help;
+}
+
+/* inline bar: segments fill left to right over a track. */
 .pt-bar {
   display: flex;
   align-items: stretch;
-  height: 1em;
+  height: 0.9em;
   border-radius: 2px;
   overflow: hidden;
   background-color: var(--bg-hover);
@@ -1161,6 +1170,38 @@ body {
   background-color: var(--bar-pet);
 }
 
+.pt-bar-heal-own {
+  background-color: var(--bar-heal-own);
+}
+
+.pt-bar-heal-pet {
+  background-color: var(--bar-heal-pet);
+}
+
+.pt-bar-taken {
+  background-color: var(--bar-taken);
+}
+
+.pt-metric-nums {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.pt-metric-nums b {
+  font-weight: 600;
+}
+
+.pt-metric-sub {
+  color: var(--text-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .player-table-head {
   font-size: 11px;
   font-weight: 600;
@@ -1170,8 +1211,72 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.player-table-head button {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.player-table-head button:hover {
+  color: var(--text-muted);
+}
+
+.player-table-head button[aria-sort] {
+  color: var(--text);
+}
+
+.pt-sort-caret {
+  font-size: 9px;
+}
+
 .player-table-body .player-table-row + .player-table-row {
   border-top: 1px solid var(--border);
+}
+
+/* metric hover popover -- mirrors the line-chart tooltip's look. */
+.pt-tooltip {
+  position: fixed;
+  z-index: 20;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg);
+  box-shadow: var(--shadow-popover);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.pt-tooltip[hidden] {
+  display: none;
+}
+
+.pt-tooltip-head {
+  margin-bottom: 4px;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.pt-tooltip-row {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.pt-tooltip-row span {
+  color: var(--text-faint);
+}
+
+.pt-tooltip-row b {
+  font-variant-numeric: tabular-nums;
 }
 
 /* line-chart -- inline SVG. player dmg=accent / player heal=success /
