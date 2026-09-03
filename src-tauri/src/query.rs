@@ -143,6 +143,39 @@ enum Val {
     Str(String),
 }
 
+/// The group-by key for one row. Inlined for the 0/1/2-field cases (every
+/// real query so far) so the grouped scan doesn't heap-allocate a `Vec`
+/// per row -- only per *group* (at emit time), which is bounded by the
+/// group count, not the row count. Falls back to `Vec` for 3+ fields.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum GroupKey {
+    K0,
+    K1(Val),
+    K2(Val, Val),
+    KN(Vec<Val>),
+}
+
+impl GroupKey {
+    fn build(group_by: &[Field], row: usize, events: &EventStore, tables: &InternTables) -> Self {
+        let v = |f: Field| row_value(f, row, events, tables);
+        match group_by {
+            [] => GroupKey::K0,
+            [a] => GroupKey::K1(v(*a)),
+            [a, b] => GroupKey::K2(v(*a), v(*b)),
+            _ => GroupKey::KN(group_by.iter().map(|f| v(*f)).collect()),
+        }
+    }
+
+    fn values(&self) -> Vec<&Val> {
+        match self {
+            GroupKey::K0 => Vec::new(),
+            GroupKey::K1(a) => vec![a],
+            GroupKey::K2(a, b) => vec![a, b],
+            GroupKey::KN(v) => v.iter().collect(),
+        }
+    }
+}
+
 impl Val {
     fn to_json(&self) -> Value {
         match self {
@@ -389,7 +422,7 @@ pub fn run_aggregate(spec: &QuerySpec, events: &EventStore, tables: &InternTable
 
     let where_ = compile(&spec.where_);
     let clause_filters = compile_clause_filters(&spec.aggregate);
-    let mut groups: HashMap<Vec<Val>, Vec<Accum>> = HashMap::new();
+    let mut groups: HashMap<GroupKey, Vec<Accum>> = HashMap::new();
     for row in lo..hi {
         if events.timestamp_ms[row] < spec.start_ms || events.timestamp_ms[row] > spec.end_ms {
             continue;
@@ -397,11 +430,7 @@ pub fn run_aggregate(spec: &QuerySpec, events: &EventStore, tables: &InternTable
         if !compiled_all(&where_, row, events, tables) {
             continue;
         }
-        let key: Vec<Val> = spec
-            .group_by
-            .iter()
-            .map(|f| row_value(*f, row, events, tables))
-            .collect();
+        let key = GroupKey::build(&spec.group_by, row, events, tables);
         let accs = groups
             .entry(key)
             .or_insert_with(|| vec![Accum::default(); spec.aggregate.len()]);
@@ -412,7 +441,7 @@ pub fn run_aggregate(spec: &QuerySpec, events: &EventStore, tables: &InternTable
         .into_iter()
         .map(|(key, accs)| {
             let mut obj = Map::new();
-            for (f, v) in spec.group_by.iter().zip(&key) {
+            for (f, v) in spec.group_by.iter().zip(key.values()) {
                 obj.insert(f.camel().to_string(), v.to_json());
             }
             agg_columns(&spec.aggregate, &accs, &mut obj);
@@ -573,5 +602,32 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["dmg"].as_f64().unwrap(), 500.0);
         assert_eq!(rows[0]["heal"].as_f64().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn multi_field_group_by_emits_every_key_field() {
+        // Two hits from the same player (source unit == its own owner):
+        // one group, keyed by (sourceOwner, sourceUnit), summed.
+        let l0 = spell_damage("4/14/2026 19:00:00.000-6", 100);
+        let l1 = spell_damage("4/14/2026 19:00:01.000-6", 250);
+        let (_, tables, store) = store_from(&[&l0, &l1]);
+        let spec = QuerySpec {
+            start_ms: store.timestamp_ms[0],
+            end_ms: store.timestamp_ms[1],
+            where_: vec![],
+            group_by: vec![Field::SourceOwner, Field::SourceUnit],
+            aggregate: vec![sum_clause("dmg", vec![])],
+            bucket: None,
+            limit: None,
+            offset: None,
+        };
+        let rows = run_aggregate(&spec, &store, &tables);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r["dmg"].as_f64().unwrap(), 350.0);
+        // Both group-key fields present, and equal (a player unfolded to
+        // its own owner).
+        assert!(r["sourceOwner"].is_i64());
+        assert_eq!(r["sourceOwner"], r["sourceUnit"]);
     }
 }

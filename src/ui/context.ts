@@ -7,7 +7,7 @@
 // no `playhead` yet; they join when a view needs them.
 
 import type { EncounterRow, DeathRow, UnitRow, CombatantRow, RangeSelection } from "../types";
-import { query, type QuerySpec } from "./query";
+import { query, invalidateQueryCache, type QuerySpec } from "./query";
 
 // ---- Shared stores -----------------------------------------------------
 //
@@ -47,6 +47,7 @@ export function getLogData(): LogData {
 
 export function setLogData(next: LogData): void {
   currentLogData = next;
+  invalidateQueryCache(); // parsed data changed -- memoized query rows are stale
   for (const fn of logDataSubs) fn(next);
 }
 

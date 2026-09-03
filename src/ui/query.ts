@@ -52,7 +52,46 @@ export interface QuerySpec {
   offset?: number;
 }
 
+// Aggregated results are memoized by exact spec for the life of the
+// loaded log: the parsed event store is immutable (Rust `OnceLock`), so
+// the same `(log, spec)` always reduces to the same rows. Re-selecting an
+// encounter already seen -- or switching away from Overview and back --
+// then costs zero IPC and zero window scans instead of re-running the
+// reduce. `invalidateQueryCache()` (called from `setLogData`) drops it
+// when the log changes.
+//
+// Raw-row mode (no `aggregate`) is never cached: those results are
+// unbounded in size and the raw view uses its own `raw_events` path
+// anyway, not this one.
+const CACHE_MAX = 48;
+const cache = new Map<string, unknown[]>();
+
+export function invalidateQueryCache(): void {
+  cache.clear();
+}
+
 export async function query<T>(spec: QuerySpec): Promise<T[]> {
-  const rows = await invoke<T[] | null>("query_events", { spec });
-  return rows ?? [];
+  const cacheable = (spec.aggregate?.length ?? 0) > 0;
+  const key = cacheable ? JSON.stringify(spec) : "";
+
+  if (cacheable) {
+    const hit = cache.get(key);
+    if (hit) {
+      // Re-insert to mark most-recently-used; hand back a copy so a
+      // caller that sorts/mutates the array can't corrupt the entry
+      // (elements are still shared -- callers only ever read those).
+      cache.delete(key);
+      cache.set(key, hit);
+      return (hit as T[]).slice();
+    }
+  }
+
+  const rows = (await invoke<T[] | null>("query_events", { spec })) ?? [];
+
+  if (cacheable) {
+    cache.set(key, rows);
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
+    return rows.slice();
+  }
+  return rows;
 }
