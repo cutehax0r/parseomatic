@@ -180,10 +180,17 @@ async function playerDamageRows(
     aggregate: [{ op: "sum", field: "amount", as: "dmg" }],
   });
   const units = ctx!.units;
-  return rows
+  const players = rows
     .map((r) => ({ unit: units[r.sourceOwner], dmg: r.dmg }))
-    .filter((r) => r.unit?.kind === "Player")
-    .map((r) => ({ name: r.unit!.name, damage: r.dmg, dps: r.dmg / seconds }))
+    .filter((r) => r.unit?.kind === "Player");
+  const total = players.reduce((s, r) => s + r.dmg, 0);
+  return players
+    .map((r) => ({
+      name: r.unit!.name,
+      damage: r.dmg,
+      dps: r.dmg / seconds,
+      share: total > 0 ? r.dmg / total : 0,
+    }))
     .sort((a, b) => b.damage - a.damage);
 }
 

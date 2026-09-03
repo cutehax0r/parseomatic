@@ -1,7 +1,7 @@
-// name | DPS | damage done. Rows arrive already sorted (Overview sorts by
-// damage desc). Plain grid, not virtualized -- a raid is <= ~30 players.
-// A future `data-table` widget wraps VirtualList when something needs it
-// (docs/ui-widgets.md).
+// name | DPS | damage done | % of raid (player+pet) damage. Rows arrive
+// already sorted (Overview sorts by damage desc). Plain grid, not
+// virtualized -- a raid is <= ~30 players. A future `data-table` widget
+// wraps VirtualList when something needs it (docs/ui-widgets.md).
 
 import { registerWidget } from "../registry";
 import type { Widget } from "../spec";
@@ -11,13 +11,14 @@ export interface PlayerRow {
   name: string;
   dps: number;
   damage: number;
+  share: number; // 0..1, this row's damage / the table's total damage
 }
 
 export interface PlayerTableProps {
   rows: PlayerRow[];
 }
 
-const COLUMNS = ["Player", "DPS", "Damage"];
+const COLUMNS = ["Player", "DPS", "Damage", "%"];
 
 registerWidget<PlayerTableProps>("player-table", (props) => {
   const element = document.createElement("div");
@@ -47,7 +48,9 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
           dps.textContent = formatCompact(r.dps);
           const dmg = document.createElement("span");
           dmg.textContent = formatCompact(r.damage);
-          row.append(name, dps, dmg);
+          const pct = document.createElement("span");
+          pct.textContent = `${(r.share * 100).toFixed(1)}%`;
+          row.append(name, dps, dmg, pct);
           return row;
         }),
       );
