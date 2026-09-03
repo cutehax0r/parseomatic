@@ -180,11 +180,31 @@ with the spatial/replay view.
 
 ## Overview "Active" column (next)
 
-A metric-cell-style column: the activity figure as the headline, **death
-count as the secondary line** when > 0. The bar area is an inline
-micro-chart of activity across the fight — either 10 fixed slices with
-height = active fraction, or a line curving between the per-slice
-percentages. Mock-up to follow once the data lands.
+A metric-cell column matching the damage/healing cells:
+
+- **Headline:** active % (`activeMs / encounterMs`). **Secondary line:**
+  death count in red when > 0, else "active".
+- **Micro-chart:** 10 decile slice-bars (decided over the curve — reads as
+  "how many buttons, when", matches the segmented damage bars). Bar height
+  = active fraction of that decile, in the activity hue (`--ctp-teal`,
+  distinct from damage/heal/taken).
+  - A decile the player was **dead** for → full-height **dim-orange**
+    block (`--ctp-peach` @ 0.5) — visually the opposite of a tall teal bar.
+  - A decile they were **alive but idle** (~0 active) → a short grey tick
+    at the baseline.
+  - Render order per decile: `deadBins[i] > 0.5` → dead; else
+    `activeBins[i] < ~0.04` → idle tick; else teal bar.
+
+**Data still to add:** two per-decile arrays on `PlayerStatsRow` /
+`PlayerEncounterStats` — `active_bins: [f64; 10]` (active fraction) and
+`dead_bins: [f64; 10]` (dead fraction). Both fall out of the existing
+pass: `dead_bins` distributes `dead_spans` across the deciles the way
+`movement_bins` already distributes distance; `active_bins` means having
+the `ActivityModel` report a per-bin profile rather than only the scalar
+`active_ms` (change the trait method to return `Vec<f64>` / a fixed-size
+profile and derive the scalar from it).
+
+Mock: `active-column-mock.html`.
 
 ## Later: "maximum possible" projection line on damage / healing bars
 
