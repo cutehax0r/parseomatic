@@ -1,9 +1,11 @@
-// name | class/spec | role | Damage | Healing | Damage taken. The last
-// three are `buildMetricCell` cells (bar + amount + rate/%); see
-// metric-cell.ts. Plain grid, not virtualized -- a raid is <= ~30 players.
-// A future `data-table` widget wraps VirtualList when something needs it
-// (docs/ui-widgets.md). `spec`/`role` are "" for logs without
-// COMBATANT_INFO (or an unmapped spec id).
+// role icon | player (bold class-coloured name over a dim spec line) |
+// Damage | Healing | Damage taken. The last three are `buildMetricCell`
+// cells (bar + amount + rate/%); see metric-cell.ts. Plain grid, not
+// virtualized -- a raid is <= ~30 players. A future `data-table` widget
+// wraps VirtualList when something needs it (docs/ui-widgets.md).
+// `spec`/`role`/`nameColor` are "" for logs without COMBATANT_INFO (or an
+// unmapped spec id) -- the row then shows no glyph and a default-colour
+// name.
 //
 // Sorting lives here, not in the view: every column's data is already in
 // the row, so a header click is a local array re-sort + body rebuild (~30
@@ -20,12 +22,14 @@ import { registerWidget } from "../registry";
 import type { Widget } from "../spec";
 import { formatCompact } from "../../format";
 import { buildMetricCell } from "./metric-cell";
+import { roleIcon, roleIconClass } from "./role-icon";
 
 export interface PlayerRow {
   name: string;
   spec: string; // "Frost Mage" etc., or "" if unknown
   role: string; // "Tank" / "Healer" / "DPS (ranged)" / "DPS (melee)" / ""
   roleRank: number; // 0 tank / 1 healer / 2 melee / 3 ranged / 4 unknown
+  nameColor: string; // CSS colour for the name (class colour), or "" for default
 
   // Damage -- own is the player unit, pet is all their pets folded together.
   dmgOwn: number;
@@ -57,10 +61,10 @@ export interface PlayerTableProps {
 type SortKey = "name" | "role" | "damage" | "healing" | "taken";
 
 // `sortable` columns get a header button; the rest are plain labels.
-const COLUMNS: Array<{ label: string; sort?: SortKey }> = [
+// `center` aligns the header (the narrow role column).
+const COLUMNS: Array<{ label: string; sort?: SortKey; center?: boolean }> = [
+  { label: "Role", sort: "role", center: true },
   { label: "Player", sort: "name" },
-  { label: "Class / Spec" },
-  { label: "Role", sort: "role" },
   { label: "Damage", sort: "damage" },
   { label: "Healing", sort: "healing" },
   { label: "Damage taken", sort: "taken" },
@@ -106,6 +110,7 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
   const headBtns = new Map<SortKey, { btn: HTMLButtonElement; caret: HTMLSpanElement }>();
   for (const c of COLUMNS) {
     const cell = document.createElement("span");
+    if (c.center) cell.className = "pt-head-center";
     if (c.sort) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -197,14 +202,21 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
         row.className = "player-table-row";
         row.dataset.i = String(i);
 
-        const name = document.createElement("span");
-        name.textContent = r.name;
-        const spec = document.createElement("span");
-        spec.className = "pt-dim";
-        spec.textContent = r.spec;
         const role = document.createElement("span");
-        role.className = "pt-dim";
-        role.textContent = r.role;
+        role.className = `pt-role ${roleIconClass(r.roleRank)}`.trim();
+        role.innerHTML = roleIcon(r.roleRank);
+        if (r.role) role.title = r.role;
+
+        const who = document.createElement("span");
+        who.className = "pt-who";
+        const name = document.createElement("span");
+        name.className = "pt-name";
+        name.textContent = r.name;
+        if (r.nameColor) name.style.color = r.nameColor;
+        const spec = document.createElement("span");
+        spec.className = "pt-spec pt-dim";
+        spec.textContent = r.spec;
+        who.append(name, spec);
 
         const dmg = buildMetricCell(
           {
@@ -245,7 +257,7 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
           "taken",
         );
 
-        row.append(name, spec, role, dmg, heal, taken);
+        row.append(role, who, dmg, heal, taken);
         return row;
       }),
     );

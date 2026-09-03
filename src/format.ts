@@ -137,6 +137,41 @@ export function roleRank(specId: number): number {
   return 2; // DPS (melee)
 }
 
+// The 13 WoW class names, ordered so a longer name is tested before one
+// that is its suffix ("Death Knight" before "Knight" would ever match).
+const WOW_CLASSES = [
+  "Death Knight",
+  "Demon Hunter",
+  "Druid",
+  "Evoker",
+  "Hunter",
+  "Mage",
+  "Monk",
+  "Paladin",
+  "Priest",
+  "Rogue",
+  "Shaman",
+  "Warlock",
+  "Warrior",
+];
+
+// "Frost Mage" -> "Mage", "Blood Death Knight" -> "Death Knight". "" for
+// an unknown / missing spec id.
+export function specClass(specId: number): string {
+  const name = SPECS[specId];
+  if (!name) return "";
+  return WOW_CLASSES.find((c) => name.endsWith(c)) ?? "";
+}
+
+// CSS custom-property reference for a spec's class colour -- a Catppuccin
+// reading of the traditional Blizzard hue (see --class-* in styles.css).
+// "" when the class is unknown, so the caller leaves the text its default
+// colour.
+export function classColorVar(specId: number): string {
+  const cls = specClass(specId);
+  return cls ? `var(--class-${cls.toLowerCase().replace(/ /g, "-")})` : "";
+}
+
 // WoW `ENCOUNTER_START` difficultyID -> name. `flex` difficulties vary in
 // raid size, so the group size adds information there; legacy 10/25 carry
 // it in the name and Mythic raids are always 20, so it's noise for those.

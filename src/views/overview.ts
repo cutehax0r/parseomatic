@@ -17,6 +17,7 @@ import { createViewContext, type ViewContext } from "../ui/context";
 import type { NodeSpec } from "../ui/spec";
 import type { EncounterRow } from "../types";
 import {
+  classColorVar,
   formatCompact,
   formatDifficulty,
   formatDuration,
@@ -278,6 +279,7 @@ async function buildPlayerRows(
         spec: formatSpec(specId),
         role: formatRole(specId),
         roleRank: roleRank(specId),
+        nameColor: classColorVar(specId),
         dmgOwn: r.dmgOwn,
         dmgPet: r.dmgPet,
         damage,

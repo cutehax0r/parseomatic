@@ -58,6 +58,25 @@
   --bar-heal-pet: #6a9e7f; /* ...continued in a darker shade for their pets */
   --bar-taken: var(--chart-deep-red); /* players-table damage-taken bar (single segment) */
 
+  /* Class colours -- a Catppuccin Macchiato reading of the traditional
+     Blizzard class hues (used to tint the player name). Warrior and Monk
+     have no native token (no brown, no spring-green), so a blended shade
+     stands in for each. Keyed by class name, lower-cased + hyphenated --
+     see format.ts `classColorVar`. */
+  --class-death-knight: var(--ctp-red);
+  --class-demon-hunter: var(--ctp-mauve);
+  --class-druid: var(--ctp-peach);
+  --class-evoker: var(--ctp-teal);
+  --class-hunter: var(--ctp-green);
+  --class-mage: var(--ctp-sky);
+  --class-monk: #93e0c0;
+  --class-paladin: var(--ctp-pink);
+  --class-priest: var(--ctp-text);
+  --class-rogue: var(--ctp-yellow);
+  --class-shaman: var(--ctp-blue);
+  --class-warlock: var(--ctp-lavender);
+  --class-warrior: #c8a98a;
+
   /* Shape/elevation tokens -- kept semantic so the shadcn-ish widget look
      (see docs/ui-widgets.md "Styling") stays a one-block change. */
   --radius: 8px;
@@ -1115,24 +1134,75 @@ body {
 
 .player-table-row {
   display: grid;
-  /* name | class/spec | role | damage | healing | damage taken */
-  grid-template-columns: 1fr 140px 92px minmax(150px, 1fr) minmax(150px, 1fr) minmax(116px, 0.72fr);
+  /* role | player (name + spec) | damage | healing | damage taken */
+  grid-template-columns: 44px minmax(180px, 1.6fr) minmax(150px, 1fr) minmax(150px, 1fr) minmax(116px, 0.72fr);
   gap: 14px;
   padding: 7px 14px;
   align-items: center;
   font-size: 13px;
 }
 
-/* text columns (name / class-spec / role): left-aligned, clipped rather
-   than widening the column. */
 .player-table-row > span {
+  min-width: 0;
+}
+
+.pt-dim {
+  color: var(--text-muted);
+}
+
+/* role glyph -- centred in its narrow column, tinted by role. */
+.pt-role {
+  display: flex;
+  justify-content: center;
+}
+
+.pt-role svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.pt-role-tank {
+  color: var(--ctp-sapphire);
+}
+
+.pt-role-healer {
+  color: var(--ctp-green);
+}
+
+.pt-role-melee {
+  color: var(--ctp-peach);
+}
+
+.pt-role-ranged {
+  color: var(--ctp-mauve);
+}
+
+.pt-head-center {
+  display: flex;
+  justify-content: center;
+}
+
+/* player cell: bold (class-coloured) name over a dim spec line, each
+   clipped rather than widening the column. */
+.pt-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pt-name {
+  font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.pt-dim {
-  color: var(--text-muted);
+.pt-spec {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* metric cell: a bar stacked over a line of numbers. */
