@@ -478,10 +478,14 @@ and grown past the original one-query shape:
   them by unit id, and computes per-second rates + shares client-side.
 - The roster is whoever dealt/took damage or healed in the window —
   inherently per-encounter (players come and go across a night).
-- Rendered as three grouped **metric cells** (bar + amount + rate + %):
-  Damage, Healing, Damage taken. Damage/Healing show an own/pet bar split
-  and a hover popover with the own-vs-pet breakdown; Damage taken is a
-  bare bar + amount. Sort (name / role / damage / healing / taken) is
+- Rendered as three grouped **metric cells** — a bar over a numbers line
+  with the amount + per-second rate on the left and the share % (right
+  edge): Damage, Healing, Damage taken. Damage/Healing show an own/pet
+  bar split and a hover popover with the own-vs-pet breakdown; Damage
+  taken is a bare bar + amount, and carries the player's **death count**
+  (red) on the right edge where the % would be. Plus an **Active** cell
+  (activity curve + `NN% active`). Sort (name / role / damage / healing /
+  taken / active) is
   local to the widget — the rows are already in hand, so a header click
   re-sorts and rebuilds ~30 rows with no query. Role shows as an icon,
   the player name in its class colour (`format.ts` `classColorVar`).

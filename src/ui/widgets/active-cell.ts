@@ -1,8 +1,8 @@
 // The Overview players-table "Active" cell: a smooth curve through the
 // per-decile activity level, with the stretches the player was dead for
 // redrawn yellow (a clipPath over the dead x-ranges -- one treatment, a
-// colour change at full strength). Headline is the active %, with the
-// death count as the dim secondary line when > 0.
+// colour change at full strength). Headline is the active %; the death
+// count lives on the Damage-taken cell, not here.
 //
 // Plain DOM factory like metric-cell.ts -- the player table rebuilds its
 // body on every sort, so this stays cheap `createElement` + a static SVG
@@ -19,7 +19,6 @@ let clipSeq = 0;
 
 export interface ActiveCellSpec {
   activePct: number | null; // null: no encounter stats (custom range) -> dash
-  deaths: number;
   activeBins: number[]; // 0..1 per decile
   deadBins: number[]; // 0..1 per decile
 }
@@ -102,13 +101,16 @@ export function buildActiveCell(spec: ActiveCellSpec): HTMLElement {
     cell.append(holder);
   }
 
+  const main = document.createElement("span");
+  main.className = "pt-metric-main";
   const amount = document.createElement("b");
   amount.textContent = `${Math.round(spec.activePct * 100)}%`;
-  nums.appendChild(amount);
+  main.appendChild(amount);
   const sub = document.createElement("span");
-  sub.className = spec.deaths > 0 ? "pt-metric-sub pt-metric-sub--dead" : "pt-metric-sub";
-  sub.textContent = spec.deaths > 0 ? `${spec.deaths} death${spec.deaths > 1 ? "s" : ""}` : "active";
-  nums.appendChild(sub);
+  sub.className = "pt-metric-sub";
+  sub.textContent = "active";
+  main.appendChild(sub);
+  nums.appendChild(main);
 
   cell.append(nums);
   return cell;

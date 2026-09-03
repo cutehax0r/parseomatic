@@ -2,7 +2,8 @@
 // Damage | Healing | Damage taken | Active. Damage/Healing/Damage taken
 // are `buildMetricCell` cells (bar + amount + rate/%); see metric-cell.ts.
 // Active is `buildActiveCell` -- an activity curve (dead stretches drawn
-// yellow) + "NN% / N deaths"; see active-cell.ts. Plain grid, not
+// yellow) + "NN% active"; see active-cell.ts. The death count rides on
+// the Damage taken cell (metric-cell `note`). Plain grid, not
 // virtualized -- a raid is <= ~30 players. A future `data-table` widget
 // wraps VirtualList when something needs it (docs/ui-widgets.md).
 // `spec`/`role`/`nameColor` are "" for logs without COMBATANT_INFO (or an
@@ -275,12 +276,13 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
             segs: [{ cls: "pt-bar-taken", value: r.taken }],
             max: max.taken,
             amount: r.taken,
+            note: r.deaths > 0 ? `${r.deaths} death${r.deaths > 1 ? "s" : ""}` : undefined,
+            noteClass: "pt-metric-sub--dead",
           },
           "taken",
         );
         const active = buildActiveCell({
           activePct: r.activePct,
-          deaths: r.deaths,
           activeBins: r.activeBins,
           deadBins: r.deadBins,
         });

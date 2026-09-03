@@ -1279,10 +1279,25 @@ body {
 .pt-metric-nums {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  justify-content: space-between; /* amount+rate left, share%/note right */
+  gap: 8px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
+}
+
+/* left group: amount + per-second rate */
+.pt-metric-main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* right-edge item: the share % (or a note like the death count) */
+.pt-metric-aside {
+  flex: none;
 }
 
 .pt-metric-nums b {
