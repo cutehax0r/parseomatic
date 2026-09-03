@@ -1208,9 +1208,12 @@ body {
   min-width: 0;
 }
 
-/* name over spec, set tight so the two lines read as one stack */
+/* name over spec, set tight so the two lines read as one stack. The name
+   is the row's anchor, so it's deliberately the largest text in the row
+   -- bigger than the metric numbers, which have the icon + curve for
+   visual weight and don't need it. */
 .pt-name {
-  font-size: 14px; /* match the metric headline numbers (.pt-metric-nums b) */
+  font-size: 16px;
   font-weight: 700;
   line-height: 1.2;
   overflow: hidden;
