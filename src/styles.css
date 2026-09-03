@@ -152,6 +152,11 @@ body {
   background-color: var(--border-strong);
 }
 
+/* pushed to the far right of the toolbar (zoom controls) */
+.toolbar-group--right {
+  margin-left: auto;
+}
+
 .toolbar-btn {
   display: inline-flex;
   align-items: center;

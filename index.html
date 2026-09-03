@@ -186,13 +186,9 @@
             <rect x="14" y="11" width="7" height="10" rx="1"></rect>
           </svg>
         </button>
-        <button
-          id="view-debug-btn"
-          class="toolbar-btn"
-          data-view="debug"
-          title="Debug view"
-          aria-pressed="false"
-        >
+      </div>
+      <div class="toolbar-group toolbar-group--right">
+        <button id="zoom-out-btn" class="toolbar-btn" title="Zoom out (⌘−)">
           <svg
             xmlns="http://www.w3.org/2000/svg"
             width="18"
@@ -204,18 +200,11 @@
             stroke-linecap="round"
             stroke-linejoin="round"
           >
-            <path d="M8 6 6.5 4.5M16 6l1.5-1.5"></path>
-            <rect x="7" y="8" width="10" height="11" rx="5"></rect>
-            <path d="M12 8V5M7 12H3M21 12h-4M7 16H4M20 16h-3M9 19l-2 2M15 19l2 2"></path>
+            <circle cx="11" cy="11" r="8"></circle>
+            <path d="m21 21-4.3-4.3M8 11h6"></path>
           </svg>
         </button>
-        <button
-          id="view-raw-btn"
-          class="toolbar-btn"
-          data-view="raw"
-          title="Raw log view"
-          aria-pressed="false"
-        >
+        <button id="zoom-in-btn" class="toolbar-btn" title="Zoom in (⌘+)">
           <svg
             xmlns="http://www.w3.org/2000/svg"
             width="18"
@@ -227,7 +216,8 @@
             stroke-linecap="round"
             stroke-linejoin="round"
           >
-            <path d="M4 6h16M4 12h10M4 18h13"></path>
+            <circle cx="11" cy="11" r="8"></circle>
+            <path d="m21 21-4.3-4.3M11 8v6M8 11h6"></path>
           </svg>
         </button>
       </div>

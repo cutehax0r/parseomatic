@@ -102,12 +102,25 @@ impl ViewKind {
 #[derive(Default)]
 struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 
-// The View submenu, held onto so its Debug/Raw CheckMenuItems can be
-// looked up directly (see sync_view_menu) -- `Menu::get` only searches
-// the menu bar's own top-level items (File, Edit, View, ...), never
-// recursing into a submenu's children, so looking up "view_debug"/
-// "view_raw" through the top-level Menu silently finds nothing.
-struct ViewMenu(Submenu<tauri::Wry>);
+// Direct handles to the three view CheckMenuItems (Overview lives in the
+// View menu, Debug/Raw in its "Developer" submenu). Held individually
+// rather than via `Submenu::get`, which only searches a menu's *direct*
+// children and never recurses into a nested submenu.
+struct ViewMenu {
+    overview: CheckMenuItem<tauri::Wry>,
+    debug: CheckMenuItem<tauri::Wry>,
+    raw: CheckMenuItem<tauri::Wry>,
+}
+
+impl ViewMenu {
+    fn item(&self, view: ViewKind) -> &CheckMenuItem<tauri::Wry> {
+        match view {
+            ViewKind::Overview => &self.overview,
+            ViewKind::Debug => &self.debug,
+            ViewKind::Raw => &self.raw,
+        }
+    }
+}
 
 // Handles to the History menu's Back / Forward items so `set_history_nav`
 // can enable/disable them for the focused window (the stack itself lives
@@ -225,9 +238,7 @@ fn current_view_for(app: &AppHandle, label: &str) -> ViewKind {
 fn sync_view_menu(window: &WebviewWindow, current: ViewKind) {
     let view_menu = window.app_handle().state::<ViewMenu>();
     for view in ALL_VIEWS {
-        if let Some(check) = view_menu.0.get(view.menu_id()).and_then(|i| i.as_check_menuitem().cloned()) {
-            let _ = check.set_checked(view == current);
-        }
+        let _ = view_menu.item(view).set_checked(view == current);
     }
 }
 
@@ -590,6 +601,18 @@ fn set_history_nav(app: AppHandle, can_back: bool, can_forward: bool) {
     let history = app.state::<HistoryMenu>();
     let _ = history.back.set_enabled(can_back);
     let _ = history.forward.set_enabled(can_forward);
+}
+
+/// Toolbar zoom buttons -- same effect as the View menu's Zoom items.
+/// `direction`: positive zooms in, negative out, zero resets to 100%.
+#[tauri::command]
+fn zoom(app: AppHandle, direction: i32) {
+    let delta = match direction.cmp(&0) {
+        std::cmp::Ordering::Greater => ZOOM_STEP,
+        std::cmp::Ordering::Less => -ZOOM_STEP,
+        std::cmp::Ordering::Equal => 0.0,
+    };
+    adjust_zoom(&app, delta);
 }
 
 #[derive(serde::Serialize)]
@@ -1032,7 +1055,7 @@ fn new_window_from(window: WebviewWindow) {
 struct BuiltMenu {
     menu: Menu<tauri::Wry>,
     window_menu: Submenu<tauri::Wry>,
-    view_menu: Submenu<tauri::Wry>,
+    view: ViewMenu,
     history: HistoryMenu,
 }
 
@@ -1066,6 +1089,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     // A radio group over independent CheckMenuItems (muda has no distinct
     // radio-item type) -- Overview starts checked to match ViewKind::default().
     // See sync_view_menu for how exclusivity is enforced on selection.
+    // Overview sits in View; Debug/Raw are tucked into a "Developer"
+    // submenu (they're not part of the everyday flow -- the toolbar only
+    // exposes Overview).
     let debug_view_item =
         CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
     let raw_view_item =
@@ -1078,6 +1104,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         true,
         None::<&str>,
     )?;
+    let developer_menu = SubmenuBuilder::new(app, "Developer")
+        .item(&debug_view_item)
+        .item(&raw_view_item)
+        .build()?;
+
     // Zoom: standard Cmd + / Cmd - / Cmd 0. Driven entirely through our
     // own `adjust_zoom` (one global level over every window) -- we don't
     // enable the webview's built-in zoom hotkeys, which keep a separate
@@ -1089,8 +1120,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
 
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&overview_view_item)
-        .item(&debug_view_item)
-        .item(&raw_view_item)
+        .item(&developer_menu)
         .separator()
         .item(&zoom_in_item)
         .item(&zoom_out_item)
@@ -1161,7 +1191,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     Ok(BuiltMenu {
         menu,
         window_menu,
-        view_menu,
+        view: ViewMenu {
+            overview: overview_view_item,
+            debug: debug_view_item,
+            raw: raw_view_item,
+        },
         history: HistoryMenu {
             back: history_back,
             forward: history_forward,
@@ -1186,14 +1220,14 @@ pub fn run() {
         .manage(NextWindowId::default())
         .manage(Zoom::default())
         .setup(|app| {
-            let BuiltMenu { menu, window_menu, view_menu, history } = build_menu(app.handle())?;
+            let BuiltMenu { menu, window_menu, view, history } = build_menu(app.handle())?;
             app.set_menu(menu)?;
             // Must run after set_menu -- muda resolves the submenu through
             // the *installed* main menu's delegate, so calling this any
             // earlier is a silent no-op (see build_menu).
             #[cfg(target_os = "macos")]
             window_menu.set_as_windows_menu_for_nsapp()?;
-            app.manage(ViewMenu(view_menu));
+            app.manage(view);
             app.manage(history);
 
             // A window with nothing open shows the launch screen (recent
@@ -1276,7 +1310,8 @@ pub fn run() {
             raw_event_count,
             raw_events,
             query_events,
-            encounter_stats
+            encounter_stats,
+            zoom
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

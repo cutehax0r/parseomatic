@@ -1075,8 +1075,6 @@ async function refreshStatus() {
   const debugView = document.querySelector<HTMLElement>("#debug-view");
   const rawView = document.querySelector<HTMLElement>("#raw-view");
   const overviewView = document.querySelector<HTMLElement>("#overview-view");
-  const debugBtn = document.querySelector<HTMLButtonElement>("#view-debug-btn");
-  const rawBtn = document.querySelector<HTMLButtonElement>("#view-raw-btn");
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
   const statusBar = document.querySelector<HTMLElement>("#status-bar");
   const statusBarFill = document.querySelector<HTMLElement>("#statusbar-fill");
@@ -1088,8 +1086,6 @@ async function refreshStatus() {
     !debugView ||
     !rawView ||
     !overviewView ||
-    !debugBtn ||
-    !rawBtn ||
     !overviewBtn ||
     !statusBar ||
     !statusBarFill ||
@@ -1103,8 +1099,8 @@ async function refreshStatus() {
     invoke<string>("current_view"),
   ]);
   currentViewMode = viewId === "raw" ? "raw" : viewId === "overview" ? "overview" : "debug";
-  debugBtn.setAttribute("aria-pressed", String(currentViewMode === "debug"));
-  rawBtn.setAttribute("aria-pressed", String(currentViewMode === "raw"));
+  // Only Overview has a toolbar button now (Debug/Raw are menu-only, under
+  // View > Developer); it reads as "pressed" whenever Overview is showing.
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
 
   if (!info) {
@@ -1247,16 +1243,15 @@ window.addEventListener("DOMContentLoaded", () => {
     invoke("new_window_from");
   });
 
-  document.querySelector("#view-debug-btn")?.addEventListener("click", () => {
-    invoke("set_current_view", { view: "debug" });
-  });
-
-  document.querySelector("#view-raw-btn")?.addEventListener("click", () => {
-    invoke("set_current_view", { view: "raw" });
-  });
-
   document.querySelector("#view-overview-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "overview" });
+  });
+
+  document.querySelector("#zoom-out-btn")?.addEventListener("click", () => {
+    invoke("zoom", { direction: -1 });
+  });
+  document.querySelector("#zoom-in-btn")?.addEventListener("click", () => {
+    invoke("zoom", { direction: 1 });
   });
 
   listen("log-changed", () => refreshStatus());
