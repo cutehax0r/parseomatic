@@ -33,6 +33,7 @@ export interface PlayerRow {
   role: string; // "Tank" / "Healer" / "DPS (ranged)" / "DPS (melee)" / ""
   roleRank: number; // 0 tank / 1 healer / 2 melee / 3 ranged / 4 unknown
   nameColor: string; // CSS colour for the name (class colour), or "" for default
+  itemLevel: number | null; // avg ilvl from COMBATANT_INFO, shown under the role glyph
 
   // Damage -- own is the player unit, pet is all their pets folded together.
   dmgOwn: number;
@@ -221,6 +222,12 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
         role.className = `pt-role ${roleIconClass(r.roleRank)}`.trim();
         role.innerHTML = roleIcon(r.roleRank);
         if (r.role) role.title = r.role;
+        if (r.itemLevel !== null) {
+          const ilvl = document.createElement("span");
+          ilvl.className = "pt-role-ilvl";
+          ilvl.textContent = String(r.itemLevel);
+          role.appendChild(ilvl);
+        }
 
         const who = document.createElement("span");
         who.className = "pt-who";

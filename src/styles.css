@@ -1152,16 +1152,26 @@ body {
   color: var(--text-muted);
 }
 
-/* role glyph -- centred in its narrow column, tinted by role. */
+/* role glyph -- centred in its narrow column, tinted by role, with the
+   player's average item level under it (grey, when COMBATANT_INFO has one). */
 .pt-role {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
 }
 
 .pt-role svg {
   width: 20px;
   height: 20px;
   display: block;
+}
+
+.pt-role-ilvl {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .pt-role-tank {
@@ -1194,6 +1204,7 @@ body {
 }
 
 .pt-name {
+  font-size: 14px; /* match the metric headline numbers (.pt-metric-nums b) */
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1264,6 +1275,7 @@ body {
 }
 
 .pt-metric-nums b {
+  font-size: 14px;
   font-weight: 600;
 }
 

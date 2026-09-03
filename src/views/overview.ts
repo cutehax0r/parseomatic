@@ -271,9 +271,12 @@ async function buildPlayerRows(
   // player name -> spec, from this encounter's COMBATANT_INFO (falling back
   // to any snapshot for that player). Empty for logs without COMBATANT_INFO.
   const specByName = new Map<string, number>();
+  const ilvlByName = new Map<string, number>();
   for (const c of ctx!.combatants) {
-    if (c.encounterName === encounterName || !specByName.has(c.playerName)) {
-      specByName.set(c.playerName, c.specId);
+    const preferThis = c.encounterName === encounterName;
+    if (preferThis || !specByName.has(c.playerName)) specByName.set(c.playerName, c.specId);
+    if (c.avgItemLevel != null && (preferThis || !ilvlByName.has(c.playerName))) {
+      ilvlByName.set(c.playerName, Math.round(c.avgItemLevel));
     }
   }
 
@@ -295,6 +298,7 @@ async function buildPlayerRows(
         role: formatRole(specId),
         roleRank: roleRank(specId),
         nameColor: classColorVar(specId),
+        itemLevel: ilvlByName.get(r.name) ?? null,
         dmgOwn: r.dmgOwn,
         dmgPet: r.dmgPet,
         damage,
