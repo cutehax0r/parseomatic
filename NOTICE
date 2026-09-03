@@ -1,0 +1,8 @@
+Parseomatic bundles the following third-party assets:
+
+Material Design Icons (https://pictogrammers.com/library/mdi/)
+  The `sword` and `bow-arrow` glyph outlines used for role icons in the
+  Overview players table (src/ui/widgets/role-icon.ts).
+  Copyright Pictogrammers contributors.
+  Licensed under the Apache License, Version 2.0
+  (https://www.apache.org/licenses/LICENSE-2.0).

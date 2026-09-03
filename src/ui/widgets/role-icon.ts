@@ -3,33 +3,29 @@
 // a cross, melee a slash, ranged a hollow ring with a slash. Inline SVG
 // (no bundled icon font), `currentColor` so the tint is one CSS rule.
 //
-// Shapes follow Nerd Font's `nf-md-shield`, a plus/first-aid cross,
-// `nf-md-sword` (upright, chunky), and `nf-md-bow-arrow`. Hand-traced
-// approximations -- close enough at 20px; swap in exact outlines later.
+// The sword and bow-arrow path data is Material Design Icons' `sword` and
+// `bow-arrow` verbatim (Apache-2.0 -- see NOTICE), i.e. the exact outlines
+// behind Nerd Font's `nf-md-sword` / `nf-md-bow-arrow`. Shield and cross
+// are simple enough to draw directly.
 //
 // Keyed by `roleRank` (see format.ts): 0 tank, 1 healer, 2 melee DPS,
 // 3 ranged DPS. Rank 4 (unknown spec) has no glyph -- returns "".
 
-const SHIELD =
-  '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 4 5v6.5c0 5 3.4 8.9 8 10.5 4.6-1.6 8-5.5 8-10.5V5l-8-3Z"/></svg>';
+const SVG = (d: string) => `<svg viewBox="0 0 24 24" fill="currentColor"><path d="${d}"/></svg>`;
 
-const CROSS =
-  '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 2h6v7h7v6h-7v7H9v-7H2V9h7V2Z"/></svg>';
+const SHIELD = SVG("M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4Z");
 
-const SWORD =
-  '<svg viewBox="0 0 24 24" fill="currentColor">' +
-  '<path d="M12 1.4 14.1 5.7 13.5 13.7 10.5 13.7 9.9 5.7Z"/>' +
-  '<rect x="4.6" y="13.4" width="14.8" height="2.8" rx="0.8"/>' +
-  '<rect x="10.4" y="16.2" width="3.2" height="4.8"/>' +
-  '<circle cx="12" cy="21.8" r="2"/></svg>';
+const CROSS = SVG("M9 2h6v7h7v6h-7v7H9v-7H2V9h7V2Z");
 
-const BOW =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">' +
-  '<path d="M16 3.5Q-5 12 8 20.5"/>' +
-  '<path d="M16 3.5 8 20.5" stroke-width="1.5"/>' +
-  '<path d="M5 20.5 20.5 4.5"/>' +
-  '<path d="M20.5 4.5 16.5 5.4 19.5 9.2Z" fill="currentColor" stroke="none"/>' +
-  '<path d="M5 20.5 2.4 18.3M5 20.5 7.2 23"/></svg>';
+// MDI `sword`
+const SWORD = SVG(
+  "M6.92,5H5L14,14L15,13.06M19.96,19.12L19.12,19.96C18.73,20.35 18.1,20.35 17.71,19.96L14.59,16.84L11.91,19.5L10.5,18.09L11.92,16.67L3,7.75V3H7.75L16.67,11.92L18.09,10.5L19.5,11.91L16.83,14.58L19.95,17.7C20.35,18.1 20.35,18.73 19.96,19.12Z",
+);
+
+// MDI `bow-arrow`
+const BOW = SVG(
+  "M19.03 6.03L20 7L22 2L17 4L17.97 4.97L16.15 6.79C10.87 2.16 3.3 3.94 2.97 4L2 4.26L2.5 6.2L3.29 6L10.12 12.82L6.94 16H5L2 19L4 20L5 22L8 19V17.06L11.18 13.88L18 20.71L17.81 21.5L19.74 22L20 21.03C20.06 20.7 21.84 13.13 17.21 7.85L19.03 6.03M4.5 5.78C6.55 5.5 11.28 5.28 14.73 8.21L10.82 12.12L4.5 5.78M18.22 19.5L11.88 13.18L15.79 9.27C18.72 12.72 18.5 17.45 18.22 19.5Z",
+);
 
 const BY_RANK = [SHIELD, CROSS, SWORD, BOW] as const;
 
