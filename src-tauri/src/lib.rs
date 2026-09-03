@@ -1,5 +1,6 @@
 mod parser;
 mod query;
+mod stats;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,7 +11,6 @@ use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem, Submenu, SubmenuBu
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-use parser::event::{LineKind, Prefix};
 use parser::intern::{NO_SPELL, NO_UNIT};
 use parser::ParsedLog;
 
@@ -787,31 +787,6 @@ fn raw_event_count(window: WebviewWindow) -> Option<usize> {
     Some(log.data()?.events.len())
 }
 
-/// The 19-field advanced-params block's `positionX`/`positionY` sit at
-/// indices 14/15 within it (`docs/combat-log-format.md` §5). `raw_fields`
-/// only actually starts with that block at index 0 for most prefixes --
-/// `Prefix::Environmental` has one untyped prefix field (environmentalType)
-/// ahead of it (see `event::parse_composed`'s `raw_start`) -- and
-/// standalone events never carry an advanced block at all (`has_advanced`
-/// is always false for them), so this only ever returns `Some` for
-/// `LineKind::Composed`.
-fn extract_position(kind: LineKind, has_advanced: bool, raw: &[parser::tokenizer::FieldSpan], data: &[u8]) -> Option<(f32, f32)> {
-    if !has_advanced {
-        return None;
-    }
-    let LineKind::Composed { prefix, .. } = kind else {
-        return None;
-    };
-    let advanced_start = if prefix == Prefix::Environmental { 1 } else { 0 };
-    let (x_idx, y_idx) = (advanced_start + 14, advanced_start + 15);
-    if raw.len() <= y_idx {
-        return None;
-    }
-    let x: f32 = raw[x_idx].resolve_str(data).parse().ok()?;
-    let y: f32 = raw[y_idx].resolve_str(data).parse().ok()?;
-    Some((x, y))
-}
-
 /// A page of raw events (`start..start+count`, clamped to the event
 /// count), in file order, for the raw view's virtual scroller -- never
 /// the whole event store at once, which for a multi-million-line log
@@ -833,7 +808,7 @@ fn raw_event_row(events: &parser::event::EventStore, mmap: &[u8], row: usize) ->
         source_unit_id: (events.source_unit[row] != NO_UNIT).then_some(events.source_unit[row]),
         target_unit_id: (events.dest_unit[row] != NO_UNIT).then_some(events.dest_unit[row]),
         spell_id: (events.spell[row] != NO_SPELL).then_some(events.spell[row]),
-        position: extract_position(events.kind[row], events.has_advanced[row], events.raw_fields(row), mmap),
+        position: (!events.pos_x[row].is_nan()).then_some((events.pos_x[row], events.pos_y[row])),
         details,
     }
 }
@@ -878,6 +853,66 @@ fn query_events(window: WebviewWindow, spec: query::QuerySpec) -> Option<serde_j
         .map(|row| raw_event_row(events, mmap, row))
         .collect();
     serde_json::to_value(rows).ok()
+}
+
+/// Carries raw intern ids (`unitId`) like `RawEventRow` -- the frontend
+/// already holds the unit table from `debug_lists` and resolves names +
+/// class/spec itself.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayerStatsRow {
+    unit_id: u32,
+    damage_own: i64,
+    damage_pet: i64,
+    heal_own: i64,
+    heal_pet: i64,
+    damage_taken: i64,
+    deaths: u32,
+    alive_ms: i64,
+    active_ms: i64,
+    /// The encounter/window duration, so the frontend gets `active%` /
+    /// `alive%` without also fetching the encounter row.
+    encounter_ms: i64,
+    distance: f64,
+    movement_ms: i64,
+    /// Distance travelled per 1/10 of the encounter (`stats::MOVE_BINS`),
+    /// for a row sparkline.
+    movement_bins: Vec<f64>,
+}
+
+/// Per-player derived stats for one encounter (`docs/activity-and-movement.md`)
+/// -- damage/healing (own vs pet), damage taken, deaths, alive + active
+/// time, movement. Computed once per log on the first call (parallel scan
+/// of the encounter windows), cached after. `None` if parsing isn't done
+/// or `encounter_index` is out of range.
+#[tauri::command]
+fn encounter_stats(window: WebviewWindow, encounter_index: usize) -> Option<Vec<PlayerStatsRow>> {
+    let log = current_log(&window)?;
+    let data = log.data()?;
+    let encounter = data.reports.encounters.get(encounter_index)?;
+    let encounter_ms = encounter.end_ms - encounter.start_ms;
+    let stats = data.encounter_stats().get(encounter_index)?;
+    Some(
+        stats
+            .players
+            .iter()
+            .map(|p| PlayerStatsRow {
+                unit_id: p.unit_id,
+                damage_own: p.damage_own,
+                damage_pet: p.damage_pet,
+                heal_own: p.heal_own,
+                heal_pet: p.heal_pet,
+                damage_taken: p.damage_taken,
+                deaths: p.deaths,
+                alive_ms: p.alive_ms,
+                active_ms: p.active_ms,
+                encounter_ms,
+                distance: p.distance,
+                movement_ms: p.movement_ms,
+                movement_bins: p.movement_bins.to_vec(),
+            })
+            .collect(),
+    )
 }
 
 #[tauri::command]
@@ -1175,7 +1210,8 @@ pub fn run() {
             set_history_nav,
             raw_event_count,
             raw_events,
-            query_events
+            query_events,
+            encounter_stats
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -1242,42 +1278,38 @@ mod tests {
     }
 
     #[test]
-    fn extract_position_present_for_advanced_composed_event() {
+    fn position_column_present_for_advanced_composed_event() {
         // Real line from the fixture (also used in event.rs's own tests).
-        let (data, _, store) = parse_lines(concat!(
+        let (_, _, store) = parse_lines(concat!(
             "7/25/2026 20:52:35.870-6  SWING_DAMAGE,Player-3678-0DCDE18E,\"Frightrogue-Thrall-US\",0x514,0x80000000,",
             "Creature-0-4227-1592-26103-238693-0000657958,\"Rotmire\",0x10a48,0x80000000,",
             "Player-3678-0DCDE18E,0000000000000000,446020,446020,2625,436,852,453,0,0,3,51,100,0,",
             "3909.77,-8650.86,2427,4.3902,285,2099,2290,-1,1,0,0,0,nil,nil,nil\n"
         ));
-        let position = extract_position(store.kind[0], store.has_advanced[0], store.raw_fields(0), &data);
-        assert_eq!(position, Some((3909.77, -8650.86)));
+        assert_eq!(store.pos_x[0], 3909.77);
+        assert_eq!(store.pos_y[0], -8650.86);
     }
 
     #[test]
-    fn extract_position_absent_without_advanced_block() {
-        let (data, _, store) = parse_lines(concat!(
+    fn position_column_is_nan_without_advanced_block() {
+        let (_, _, store) = parse_lines(concat!(
             "7/25/2026 20:52:35.870-6  SPELL_AURA_APPLIED,Creature-0-1-1-1-1-1,\"A\",0x1,0x0,",
             "Creature-0-1-1-1-1-1,\"A\",0x1,0x0,1,\"Spell\",0x1,BUFF\n"
         ));
-        assert_eq!(
-            extract_position(store.kind[0], store.has_advanced[0], store.raw_fields(0), &data),
-            None
-        );
+        assert!(store.pos_x[0].is_nan());
+        assert!(store.pos_y[0].is_nan());
     }
 
     #[test]
-    fn extract_position_absent_for_standalone_events() {
+    fn position_column_is_nan_for_standalone_events() {
         // UNIT_DIED has a base9 shape but never carries an advanced block
         // (event::parse_standalone always passes has_advanced=false for it).
-        let (data, _, store) = parse_lines(concat!(
+        let (_, _, store) = parse_lines(concat!(
             "7/25/2026 20:52:35.870-6  UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,",
             "Creature-0-1-1-1-1-1,\"A\",0x1,0x0,0\n"
         ));
-        assert_eq!(
-            extract_position(store.kind[0], store.has_advanced[0], store.raw_fields(0), &data),
-            None
-        );
+        assert!(store.pos_x[0].is_nan());
+        assert!(store.pos_y[0].is_nan());
     }
 
     #[test]
@@ -1302,12 +1334,10 @@ mod tests {
     /// Sweeps every row of the real 547MB fixture, indexing `GuidTable`/
     /// `SpellTable` by whatever id `raw_events` would hand the frontend
     /// (skipping the `NO_UNIT`/`NO_SPELL` sentinels, same as `raw_events`
-    /// does) and calling `extract_position` -- same style as
-    /// `parser::mod::tests`'s ignored full-file test. Confirms no panics
-    /// (the real risk: an id somehow out of range, or `raw_fields` shorter
-    /// than expected for some prefix/suffix combination the smaller unit
-    /// tests didn't happen to cover) and spot-checks the one row whose
-    /// content is already known (the file's own first line).
+    /// does) -- same style as `parser::mod::tests`'s ignored full-file
+    /// test. Confirms no panics (the real risk: an id somehow out of
+    /// range) and spot-checks the one row whose content is already known
+    /// (the file's own first line).
     #[test]
     #[ignore = "needs the real fixture log; run with `cargo test -- --ignored --nocapture`"]
     fn raw_row_resolution_survives_the_real_fixture() {
@@ -1318,7 +1348,6 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let data = log.data().expect("data must be set once progress.done is true");
-        let mmap = log.mmap_bytes();
         let events = &data.events;
         let tables = &data.tables;
 
@@ -1334,8 +1363,11 @@ mod tests {
             if events.spell[row] != NO_SPELL {
                 tables.spells.get(events.spell[row]);
             }
-            let _ = extract_position(events.kind[row], events.has_advanced[row], events.raw_fields(row), mmap);
         }
-        println!("resolved all {} rows without panicking", events.len());
+        let positioned = (0..events.len()).filter(|&r| !events.pos_x[r].is_nan()).count();
+        println!(
+            "resolved all {} rows without panicking ({positioned} with a position)",
+            events.len()
+        );
     }
 }

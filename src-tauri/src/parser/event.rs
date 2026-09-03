@@ -249,6 +249,14 @@ pub struct EventStore {
     pub amount: Vec<i64>,
     /// `FLAG_CRIT | FLAG_AOE | FLAG_OFFHAND`, 0 for non-damage/heal rows.
     pub flags: Vec<u8>,
+    /// Source-unit world position from the advanced-params block (indices
+    /// 14/15, `docs/combat-log-format.md` §5). `f32::NAN` on every row
+    /// that carries no advanced block (swings without it, all standalones,
+    /// unrecognized lines). Promoted from `raw_fields` because movement
+    /// metrics (`docs/activity-and-movement.md`) walk it per event and
+    /// can't afford to re-parse the raw span each time.
+    pub pos_x: Vec<f32>,
+    pub pos_y: Vec<f32>,
     raw_field_ranges: Vec<(u32, u32)>,
     raw_field_arena: Vec<FieldSpan>,
 }
@@ -280,6 +288,8 @@ impl EventStore {
         has_advanced: bool,
         amount: i64,
         flags: u8,
+        pos_x: f32,
+        pos_y: f32,
         raw_fields: &[FieldSpan],
     ) {
         self.timestamp_ms.push(timestamp_ms);
@@ -291,6 +301,8 @@ impl EventStore {
         self.has_advanced.push(has_advanced);
         self.amount.push(amount);
         self.flags.push(flags);
+        self.pos_x.push(pos_x);
+        self.pos_y.push(pos_y);
         let start = self.raw_field_arena.len() as u32;
         self.raw_field_arena.extend_from_slice(raw_fields);
         self.raw_field_ranges.push((start, raw_fields.len() as u32));
@@ -307,6 +319,8 @@ impl EventStore {
             false,
             0,
             0,
+            f32::NAN,
+            f32::NAN,
             &[],
         );
     }
@@ -347,6 +361,8 @@ impl EventStore {
         self.dest_unit.extend(other.dest_unit);
         self.spell.extend(other.spell);
         self.has_advanced.extend(other.has_advanced);
+        self.pos_x.extend(other.pos_x);
+        self.pos_y.extend(other.pos_y);
         self.amount.extend(other.amount);
         self.flags.extend(other.flags);
         self.raw_field_arena.extend(other.raw_field_arena);
@@ -689,6 +705,22 @@ fn parse_composed(
 
     let (amount, flags) = extract_damage_heal(prefix, suffix, has_advanced, raw, data);
 
+    // Source position: advanced-block indices 14/15 (`docs/combat-log-format.md`
+    // §5). `fields[after_prefix..advanced_end]` is the clean 19-field block
+    // for every prefix (Environmental's leading environmentalType field is
+    // already before `after_prefix`), so no per-prefix offset here --
+    // unlike lib.rs's raw-span `extract_position`, which this replaces.
+    let (pos_x, pos_y) = if has_advanced {
+        let adv = &fields[after_prefix..advanced_end];
+        let at = |i: usize| adv.get(i).and_then(|f| f.resolve_str(data).parse::<f32>().ok());
+        match (at(14), at(15)) {
+            (Some(x), Some(y)) => (x, y),
+            _ => (f32::NAN, f32::NAN),
+        }
+    } else {
+        (f32::NAN, f32::NAN)
+    };
+
     store.push(
         timestamp_ms,
         line_start as u32,
@@ -699,6 +731,8 @@ fn parse_composed(
         has_advanced,
         amount,
         flags,
+        pos_x,
+        pos_y,
         raw,
     );
 }
@@ -720,6 +754,8 @@ fn push_raw_only(
         false,
         0,
         0,
+        f32::NAN,
+        f32::NAN,
         fields,
     );
 }
@@ -754,6 +790,8 @@ fn parse_standalone(
                 false,
                 0,
                 0,
+                f32::NAN,
+                f32::NAN,
                 &fields[9..],
             );
         }
@@ -791,6 +829,8 @@ fn parse_standalone(
                 false,
                 0,
                 0,
+                f32::NAN,
+                f32::NAN,
                 fields.get(2..).unwrap_or(&[]),
             );
         }
@@ -839,6 +879,8 @@ fn parse_emote(
         false,
         0,
         0,
+        f32::NAN,
+        f32::NAN,
         raw,
     );
 }
