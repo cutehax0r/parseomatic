@@ -195,16 +195,14 @@ A metric-cell column matching the damage/healing cells:
     differently from a dip that's slacking.
   - A decile counts as dead for the recolour when `deadBins[i] > 0.5`.
 
-**Data still to add:** two per-decile arrays on `PlayerStatsRow` /
-`PlayerEncounterStats` — `active_bins: [f64; 10]` (active fraction) and
-`dead_bins: [f64; 10]` (dead fraction). Both fall out of the existing
-pass: `dead_bins` distributes `dead_spans` across the deciles the way
-`movement_bins` already distributes distance; `active_bins` means having
-the `ActivityModel` report a per-bin profile rather than only the scalar
-`active_ms` (change the trait method to return `Vec<f64>` / a fixed-size
-profile and derive the scalar from it).
-
-Mock: `active-column-mock.html`.
+**Built.** `PlayerEncounterStats` / `PlayerStatsRow` carry
+`active_bins[10]` and `dead_bins[10]`: `ActivityModel::active_seconds`
+returns a per-second bitmap, `build_one` rolls it into per-decile active
+fractions and spreads `dead_spans` into `dead_bins` (like
+`movement_bins`). The cell is `src/ui/widgets/active-cell.ts`;
+`overview.ts` fetches `encounter_stats` for a real encounter and joins by
+unit id (custom ranges get no stats → the cell shows a dash). Column sits
+right-most, sortable. Mock: `active-column-mock.html`.
 
 ## Later: "maximum possible" projection line on damage / healing bars
 
@@ -222,13 +220,16 @@ active-fraction over a short alive window explodes). **Not building now**
 
 ## Rollout
 
-1. `pos_x` / `pos_y` columns; `raw_events` + tests moved onto them.
-2. `stats.rs`: `EncounterStats`, `ActivityModel` + `ApsActivityModel`,
-   the per-encounter rayon pass, wired into `parse_all`.
-3. `encounter_stats` Tauri command + frontend types + `ctx` accessor +
-   client memoization.
-4. Overview "Active" column + mock-up; then migrate the whole players
-   table onto `encounter_stats` (drops the 3 live `query_events` scans).
-5. Character page velocity graph.
+1. ~~`pos_x` / `pos_y` columns; `raw_events` + tests moved onto them.~~ Done.
+2. ~~`stats.rs`: `EncounterStats`, `ActivityModel` + `ApsActivityModel`,
+   the per-encounter pass (lazy via `ParsedData::encounter_stats()`).~~ Done.
+3. ~~`encounter_stats` Tauri command + `src/ui/encounter-stats.ts`
+   fetch/cache.~~ Done.
+4. ~~Overview "Active" column.~~ Done. **Still open:** migrate the whole
+   players table onto `encounter_stats` (its damage/healing/taken already
+   live in `PlayerEncounterStats`) to drop the 3 live `query_events`
+   scans — do this once the numbers are confirmed to match the query path.
+5. Character page velocity graph; movement distance / moving-% in a player
+   row (data's already in `PlayerStatsRow`).
 6. (Later) `GcdActivityModel` + bundled spell-data table; path/replay
-   view.
+   view; the "maximum possible" projection line.
