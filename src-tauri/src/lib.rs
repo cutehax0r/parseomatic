@@ -23,20 +23,20 @@ struct LogRegistry(Mutex<HashMap<PathBuf, Weak<ParsedLog>>>);
 #[derive(Default)]
 struct WindowLogs(Mutex<HashMap<String, Arc<ParsedLog>>>);
 
-/// Which of the app's views a window is currently showing. `Debug` is the
-/// default (matches the pre-Raw-view behavior, and `Default` here doubles
-/// as the fallback for a window with no entry in `WindowViewState` yet).
+/// Which of the app's views a window is currently showing. `Overview` is
+/// the default (`Default` here doubles as the fallback for a window with
+/// no entry in `WindowViewState` yet).
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum ViewKind {
     #[default]
+    Overview,
     Debug,
     Raw,
-    Overview,
 }
 
 // Every view in the radio group, in toolbar/menu display order -- the
 // single source of truth for `sync_view_menu`'s loop and anywhere else
-// that has to touch them all. (`ViewKind::default()` is still Debug.)
+// that has to touch them all.
 const ALL_VIEWS: [ViewKind; 3] = [ViewKind::Overview, ViewKind::Debug, ViewKind::Raw];
 
 impl ViewKind {
@@ -66,7 +66,7 @@ impl ViewKind {
 }
 
 // Per-window "which view is showing" preference -- absent means the
-// default (ViewKind::Debug), matching the View menu's initial checked item.
+// default (ViewKind::Overview), matching the View menu's initial checked item.
 #[derive(Default)]
 struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 
@@ -270,10 +270,43 @@ fn open_path_in_window(window: &WebviewWindow, path: &Path) {
     let app = window.app_handle().clone();
     match get_or_parse(&app, path) {
         Ok(log) => {
+            push_recent(&app, path);
             attach_window_to_log(window, log.clone());
             apply_window_chrome(window.clone(), log);
         }
         Err(err) => show_open_error(window, path, &err),
+    }
+}
+
+// ---- Recently opened logs (launch screen) ----------------------------
+
+fn recent_file_path(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_config_dir().ok()?.join("recent_logs.json"))
+}
+
+/// Canonical paths of recently opened logs, most-recent first. May include
+/// files that have since been moved/deleted -- callers filter.
+fn read_recent(app: &AppHandle) -> Vec<String> {
+    recent_file_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Moves `path` to the front of the recent list (canonicalized, deduped,
+/// capped). Best-effort -- a config-dir it can't write just means no MRU.
+fn push_recent(app: &AppHandle, path: &Path) {
+    let Ok(canon) = path.canonicalize() else { return };
+    let canon = canon.to_string_lossy().into_owned();
+    let mut list = read_recent(app);
+    list.retain(|p| p != &canon);
+    list.insert(0, canon);
+    list.truncate(20);
+    if let (Some(f), Ok(json)) = (recent_file_path(app), serde_json::to_string(&list)) {
+        if let Some(dir) = f.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(f, json);
     }
 }
 
@@ -299,9 +332,15 @@ fn set_last_dir(app: &AppHandle, dir: &Path) {
 }
 
 fn pick_and_open_log(window: WebviewWindow) {
+    pick_and_open_log_in(window, None);
+}
+
+/// The native open dialog, starting in `dir` if given, else the last-used
+/// directory. The pick is opened in `window` and recorded in the MRU.
+fn pick_and_open_log_in(window: WebviewWindow, dir: Option<PathBuf>) {
     let app = window.app_handle().clone();
     let mut builder = app.dialog().file().add_filter("Combat Log", &["txt"]);
-    if let Some(dir) = get_last_dir(&app) {
+    if let Some(dir) = dir.or_else(|| get_last_dir(&app)) {
         builder = builder.set_directory(dir);
     }
 
@@ -836,6 +875,64 @@ fn open_log_file(window: WebviewWindow) {
     pick_and_open_log(window);
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentFile {
+    path: String,
+    name: String,
+    dir: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentLogs {
+    /// Recently opened logs that still exist, most-recent first.
+    files: Vec<RecentFile>,
+    /// Directories those logs live in that still exist, most-recent first.
+    locations: Vec<String>,
+}
+
+/// Feeds the launch screen. Both lists are pruned to things that still
+/// exist on disk.
+#[tauri::command]
+fn recent_logs(app: AppHandle) -> RecentLogs {
+    let mut files = Vec::new();
+    let mut locations: Vec<String> = Vec::new();
+    for p in read_recent(&app) {
+        let path = Path::new(&p);
+        if let Some(parent) = path.parent() {
+            let dir = parent.to_string_lossy().into_owned();
+            if parent.is_dir() && !locations.contains(&dir) {
+                locations.push(dir.clone());
+            }
+            if path.is_file() {
+                files.push(RecentFile {
+                    name: path
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| p.clone()),
+                    dir,
+                    path: p,
+                });
+            }
+        }
+    }
+    locations.truncate(10);
+    RecentLogs { files, locations }
+}
+
+/// Opens a specific recent log in `window` (launch-screen file click).
+#[tauri::command]
+fn open_recent(window: WebviewWindow, path: String) {
+    open_path_in_window(&window, Path::new(&path));
+}
+
+/// Opens the native dialog starting in `dir` (launch-screen location click).
+#[tauri::command]
+fn pick_log_in(window: WebviewWindow, dir: String) {
+    pick_and_open_log_in(window, Some(PathBuf::from(dir)));
+}
+
 #[tauri::command]
 fn new_window_from(window: WebviewWindow) {
     // Plain (non-`sync`) commands already run off the main thread by
@@ -878,10 +975,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         .build()?;
 
     // A radio group over independent CheckMenuItems (muda has no distinct
-    // radio-item type) -- Debug starts checked to match ViewKind::default().
+    // radio-item type) -- Overview starts checked to match ViewKind::default().
     // See sync_view_menu for how exclusivity is enforced on selection.
     let debug_view_item =
-        CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, true, None::<&str>)?;
+        CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
     let raw_view_item =
         CheckMenuItem::with_id(app, ViewKind::Raw.menu_id(), "Raw", true, false, None::<&str>)?;
     let overview_view_item = CheckMenuItem::with_id(
@@ -889,7 +986,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         ViewKind::Overview.menu_id(),
         "Overview",
         true,
-        false,
+        true,
         None::<&str>,
     )?;
     let view_menu = SubmenuBuilder::new(app, "View")
@@ -996,11 +1093,10 @@ pub fn run() {
             app.manage(ViewMenu(view_menu));
             app.manage(history);
 
-            // This is a file viewer -- a window with nothing open is only
-            // useful for picking a file, so go straight to that. A path
-            // passed on the command line (`parseomatic /path/to/log.txt`)
-            // skips the dialog and opens directly -- also handy for
-            // scripting/testing without driving the native file picker.
+            // A window with nothing open shows the launch screen (recent
+            // logs + an Open button) -- the frontend renders it whenever
+            // `window_info` is null. A path on the command line
+            // (`parseomatic /path/to/log.txt`) skips straight to it.
             if let Some(main_window) = app.get_webview_window("main") {
                 register_close_cleanup(&main_window);
                 register_drag_drop(&main_window);
@@ -1012,8 +1108,6 @@ pub fn run() {
 
                 if let Some(path) = std::env::args().nth(1) {
                     open_path_in_window(&main_window, Path::new(&path));
-                } else {
-                    pick_and_open_log(main_window);
                 }
             }
 
@@ -1060,6 +1154,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_log_file,
+            recent_logs,
+            open_recent,
+            pick_log_in,
             new_window_from,
             window_info,
             debug_lists,
@@ -1104,9 +1201,8 @@ pub fn run() {
             if !has_visible_windows {
                 let app_handle = app_handle.clone();
                 std::thread::spawn(move || {
-                    if let Some(window) = create_empty_window(&app_handle) {
-                        pick_and_open_log(window);
-                    }
+                    // A blank window -- it shows the launch screen.
+                    let _ = create_empty_window(&app_handle);
                 });
             }
         }

@@ -46,15 +46,30 @@ file's data": canonicalize, check the registry, reuse-or-read, register a
 
 `open_path_in_window(window, path)` is the one function that actually
 attaches a file to a window — it's the shared tail end of every way a
-file can reach the app (open dialog, drag-and-drop, OS file-open). It
-calls `get_or_parse`, and on success:
+file can reach the app (open dialog, drag-and-drop, OS file-open,
+launch-screen recent-file click). It calls `get_or_parse`, and on success:
 
-1. `attach_window_to_log` — records the `Arc` in `WindowLogs` under this
+1. `push_recent` — moves the (canonicalized) path to the front of the MRU
+   at `app_config_dir()/recent_logs.json` (deduped, capped at 20). Feeds
+   the launch screen's `recent_logs` command.
+2. `attach_window_to_log` — records the `Arc` in `WindowLogs` under this
    window's label, and emits a `log-changed` event so the window's own
    frontend re-fetches its state (via the `window_info` command).
-2. `apply_window_chrome` — sets the window title to `parseomatic:
+3. `apply_window_chrome` — sets the window title to `parseomatic:
    <filename>` and, on macOS, the title-bar proxy icon
    (`NSWindow.setRepresentedFilename`).
+
+## The launch screen
+
+A window with no file open shows an in-`index.html` landing view
+(`src/views/launch.ts`), not the old auto-popped file dialog. It has an
+**Open** button (`open_log_file` — native dialog in the last-used dir), a
+list of **recent logs** (`recent_logs` command; a click →
+`open_recent(path)` opens it in that window), and a list of **recent
+locations** — the folders those logs live in (a click → `pick_log_in(dir)`
+opens the native dialog started there). Both lists are pruned to paths
+that still exist. The frontend renders this whenever `window_info` returns
+null; startup and dock-reopen no longer force the dialog.
 
 On failure (only ever an I/O error — canonicalize/open/mmap; combat-log
 content itself is parsed leniently in the background and never fails
@@ -66,11 +81,12 @@ pick never spawns a new window with data). See `show_open_error`.
 
 ## Multiple windows
 
-- **File > Open / toolbar button** (`pick_and_open_log`) — opens the
-  native file dialog on whichever window triggered it (or the focused
-  window, for the menu item), remembers the chosen directory
-  (`get_last_dir`/`set_last_dir`, persisted to `app_config_dir()`) for
-  next time.
+- **File > Open / toolbar button / launch-screen Open**
+  (`pick_and_open_log` → `pick_and_open_log_in`) — opens the native file
+  dialog on whichever window triggered it (or the focused window, for the
+  menu item; the launch screen's location rows pass a starting `dir`),
+  remembers the chosen directory (`get_last_dir`/`set_last_dir`, persisted
+  to `app_config_dir()`) for next time.
 - **New Window** (`spawn_sibling_window`) — looks up the calling window's
   current `Arc<ParsedLog>` and attaches a freshly created window to the
   *same* `Arc`. Zero re-parsing, just a refcount bump.

@@ -24,7 +24,8 @@ Sharing one generic recycling `VirtualList<T>` (`src/virtual-list.ts`) — row p
 
 ### Window chrome
 - **Toolbar** — grouped rounded-rect buttons: `[open | new window] · [back | forward | history▾] · [encounter picker] · [Overview | Debug | Raw]`, `aria-pressed` for the active view.
-- **View menu** — Overview/Debug/Raw as a proper radio group, kept in sync with the toolbar and with per-window state (each window remembers its own view; switching focus re-syncs the menu). Default is still Debug.
+- **View menu** — Overview/Debug/Raw as a proper radio group, kept in sync with the toolbar and with per-window state (each window remembers its own view; switching focus re-syncs the menu). Default is **Overview**.
+- **Launch screen** — a blank window shows an in-`index.html` landing view (`src/views/launch.ts`): Open button + recent logs + recent locations. Replaces the old auto-popped open dialog at startup / dock reopen. MRU persisted to `app_config_dir()/recent_logs.json`; `recent_logs` / `open_recent` / `pick_log_in` commands.
 - **History menu** — Back (`⌘[`) / Forward (`⌘]`) / Clear History over a per-window selection stack (`src/ui/history.ts`); the toolbar's `history▾` popup lists the session's picks. See `docs/ui-widgets.md` ("Selection history").
 - **Window menu** — standard-issue macOS: Minimize/Zoom/Toggle Full Screen/Bring All to Front explicit, plus the full native treatment (window list with checkmark, Move & Resize submenu, Fill/Center, Full Screen Tile) via registering the submenu as the app's official windows menu.
 - **Multi-window / file handling** — unchanged from `windows-and-files.md`'s design, now operating on the real `ParsedLog` (parsed data + retained mmap) instead of the placeholder it originally described.

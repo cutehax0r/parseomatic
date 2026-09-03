@@ -167,7 +167,7 @@
           class="toolbar-btn"
           data-view="overview"
           title="Overview"
-          aria-pressed="false"
+          aria-pressed="true"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -191,7 +191,7 @@
           class="toolbar-btn"
           data-view="debug"
           title="Debug view"
-          aria-pressed="true"
+          aria-pressed="false"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -233,7 +233,25 @@
       </div>
     </div>
     <main id="content" class="content">
-      <p id="log-status" class="placeholder">No combat log open</p>
+      <p id="log-status" class="placeholder" hidden>No combat log open</p>
+      <section id="launch-view" class="launch" hidden>
+        <div class="launch-inner">
+          <h1 class="launch-title">parseomatic</h1>
+          <button id="launch-open-btn" class="launch-open" type="button">Open combat log…</button>
+          <div class="launch-cols">
+            <div class="launch-col">
+              <h2 class="launch-h">Recent logs</h2>
+              <ul id="launch-files" class="launch-list"></ul>
+              <p id="launch-files-empty" class="launch-empty" hidden>No logs opened yet.</p>
+            </div>
+            <div class="launch-col">
+              <h2 class="launch-h">Recent locations</h2>
+              <ul id="launch-locations" class="launch-list"></ul>
+              <p id="launch-locations-empty" class="launch-empty" hidden>—</p>
+            </div>
+          </div>
+        </div>
+      </section>
       <div id="debug-view" class="debug-view" hidden>
         <div class="tabs" role="tablist">
           <button class="tab-btn active" data-tab="players" role="tab">Players</button>

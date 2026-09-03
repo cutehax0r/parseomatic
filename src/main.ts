@@ -24,6 +24,7 @@ import {
   type HistoryState,
 } from "./ui/history";
 import { renderOverview } from "./views/overview";
+import { renderLaunch } from "./views/launch";
 
 interface WindowInfo {
   lineCount: number;
@@ -113,7 +114,7 @@ let unitsById: UnitRow[] = [];
 let spellsById: SpellRow[] = [];
 
 type ViewMode = "debug" | "raw" | "overview";
-let currentViewMode: ViewMode = "debug";
+let currentViewMode: ViewMode = "overview";
 
 const RAW_ROW_HEIGHT = 24;
 
@@ -1036,12 +1037,16 @@ function setupHistory(): void {
   listen("window-focused", () => {
     lastNavSent = null;
     syncHistoryUi(historyState());
+    // Keep the launch screen's recent list fresh if a file was opened in
+    // another window while this one sat blank.
+    if (!document.querySelector<HTMLElement>("#launch-view")?.hidden) void renderLaunch();
   });
 }
 
 async function refreshStatus() {
   const content = document.querySelector<HTMLElement>("#content");
   const statusEl = document.querySelector<HTMLElement>("#log-status");
+  const launchView = document.querySelector<HTMLElement>("#launch-view");
   const debugView = document.querySelector<HTMLElement>("#debug-view");
   const rawView = document.querySelector<HTMLElement>("#raw-view");
   const overviewView = document.querySelector<HTMLElement>("#overview-view");
@@ -1054,6 +1059,7 @@ async function refreshStatus() {
   if (
     !content ||
     !statusEl ||
+    !launchView ||
     !debugView ||
     !rawView ||
     !overviewView ||
@@ -1077,7 +1083,9 @@ async function refreshStatus() {
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
 
   if (!info) {
-    statusEl.textContent = "No combat log open";
+    statusEl.hidden = true;
+    launchView.hidden = false;
+    void renderLaunch();
     statusBar.hidden = true;
     content.classList.remove("has-data");
     debugView.hidden = true;
@@ -1102,6 +1110,7 @@ async function refreshStatus() {
     lastLineCount = info.lineCount;
     lastCounts = null;
     updateSummaryText();
+    launchView.hidden = true;
     content.classList.remove("has-data");
     debugView.hidden = true;
     rawView.hidden = true;
@@ -1157,6 +1166,7 @@ async function refreshStatus() {
   }
   updateSummaryText();
 
+  launchView.hidden = true;
   content.classList.add("has-data");
   setEncounterPickerVisible(true);
   debugView.hidden = currentViewMode !== "debug";
