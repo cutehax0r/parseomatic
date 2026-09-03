@@ -186,6 +186,18 @@ micro-chart of activity across the fight — either 10 fixed slices with
 height = active fraction, or a line curving between the per-slice
 percentages. Mock-up to follow once the data lands.
 
+## Later: "maximum possible" projection line on damage / healing bars
+
+A tick on each damage-done / healing-done bar marking where that player's
+amount *would* land at 100 % active time — `amount / active_pct`. So the
+top DPS at 98 % uptime / 150k reads a tick at ~153k; a player at 125k /
+85 % uptime reads a tick at ~147k, i.e. "more buttons ≈ 97 % of the top
+bar". It's aspirational, not literal — damage done is zero-sum, encounter
+mechanics cap real uptime below 100 %, and it needs care for players who
+did burst damage and then died (dividing a big number by a small
+active-fraction over a short alive window explodes). **Not building now**
+— captured here for when the activity numbers are trusted.
+
 ---
 
 ## Rollout

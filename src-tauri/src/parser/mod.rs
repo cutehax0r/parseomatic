@@ -30,6 +30,28 @@ pub struct ParsedData {
     pub tables: InternTables,
     pub events: EventStore,
     pub reports: Reports,
+    /// Per-encounter, per-player derived stats (damage/healing/taken,
+    /// deaths, alive + active time, movement). Computed lazily on first
+    /// request and cached -- one rayon pass over the encounter windows
+    /// (`crate::stats`), so a boss selection in the Overview is an O(1)
+    /// lookup after that. `encounter_stats()` is the accessor.
+    encounter_stats: OnceLock<Vec<crate::stats::EncounterStats>>,
+}
+
+impl ParsedData {
+    /// Per-encounter stats, index-aligned with `reports.encounters`.
+    /// Builds them on the first call (a parallel scan of the encounter
+    /// row ranges) and caches for every call after.
+    pub fn encounter_stats(&self) -> &[crate::stats::EncounterStats] {
+        self.encounter_stats.get_or_init(|| {
+            crate::stats::build_all(
+                &self.events,
+                &self.tables,
+                &self.reports.encounters,
+                &crate::stats::ApsActivityModel,
+            )
+        })
+    }
 }
 
 /// A combat log file: its mmap (retained for the log's full lifetime, not
@@ -138,6 +160,7 @@ fn parse_all<F: Fn() + Send + Sync>(log: &Arc<ParsedLog>, on_progress: &Arc<F>) 
             tables: InternTables::default(),
             events: EventStore::default(),
             reports: Reports::default(),
+            encounter_stats: OnceLock::new(),
         };
     }
 
@@ -201,6 +224,7 @@ fn parse_all<F: Fn() + Send + Sync>(log: &Arc<ParsedLog>, on_progress: &Arc<F>) 
         tables,
         events,
         reports,
+        encounter_stats: OnceLock::new(),
     }
 }
 
@@ -299,6 +323,32 @@ mod tests {
         assert!(
             elapsed.as_secs() < 5,
             "parsing 547MB took {elapsed:?} -- expected well under 5s from the parallel single-pass design"
+        );
+
+        // The lazy per-encounter stats pass (crate::stats) over the real
+        // encounter windows -- confirm it runs without panicking and in a
+        // sane time, and that it produces a row per encounter with players.
+        let stats_start = Instant::now();
+        let stats = data.encounter_stats();
+        let stats_elapsed = stats_start.elapsed();
+        let total_players: usize = stats.iter().map(|s| s.players.len()).sum();
+        let moved: usize = stats
+            .iter()
+            .flat_map(|s| &s.players)
+            .filter(|p| p.distance > 0.0)
+            .count();
+        println!(
+            "encounter_stats: {} encounters, {} player-rows ({} with movement) in {:?}",
+            stats.len(),
+            total_players,
+            moved,
+            stats_elapsed,
+        );
+        assert_eq!(stats.len(), data.reports.encounters.len());
+        assert!(total_players > 0, "real encounters should have player rows");
+        assert!(
+            stats_elapsed.as_secs() < 3,
+            "encounter_stats pass took {stats_elapsed:?} -- expected well under 3s"
         );
     }
 }

@@ -84,6 +84,9 @@ Anything outside a start/end pair is **trash** and is ignored in v1. Nobody opti
 ### Storage for filtering
 Keep **fully parsed structs in memory, as a vector per encounter**. Filtering (e.g. "all damage-received lines for character X in encounter 5") is then in-memory iteration over already-parsed data — no reparsing, no disk access.
 
+### Per-encounter derived stats
+`src-tauri/src/stats.rs` reduces each encounter's event window (once, in parallel, lazily on first request) to per-player `EncounterStats`: damage/healing (own vs pet), damage taken, deaths, alive time, **active time** (via a pluggable `ActivityModel`), and movement (distance, moving time, per-decile bins). One scan per encounter, so a boss selection in the Overview is an O(1) lookup rather than repeated live query scans. See `docs/activity-and-movement.md`.
+
 ### Per-encounter mechanic analysis (long-term)
 Base parsing is boss-agnostic. **Boss parsers** (`docs/boss-parsers.md`) are per-`encounterId` analyzers that run after encounter pairing and emit phase boundaries, discrete mechanic events, and derived stats — driving a timeline/kanban encounter view, phase-aware graphs, and mechanic filtering. Nothing built.
 

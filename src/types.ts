@@ -48,6 +48,26 @@ export interface CombatantRow {
   gear: GearItemRow[];
 }
 
+// Per-player derived stats for one encounter, from the `encounter_stats`
+// command (see src-tauri/src/stats.rs, docs/activity-and-movement.md).
+// `unitId` is a dense intern id -- resolve names/spec against the `units`
+// array from `debug_lists`, same as the raw view does.
+export interface PlayerStatsRow {
+  unitId: number;
+  damageOwn: number;
+  damagePet: number;
+  healOwn: number;
+  healPet: number;
+  damageTaken: number;
+  deaths: number;
+  aliveMs: number;
+  activeMs: number;
+  encounterMs: number; // window duration -> active% = activeMs / encounterMs
+  distance: number;
+  movementMs: number;
+  movementBins: number[]; // distance per 1/10 of the encounter (10 entries)
+}
+
 // ---- Encounter-picker selection ----------------------------------------
 
 // The picker's filter is always a concrete [startMs, endMs]. `source` is

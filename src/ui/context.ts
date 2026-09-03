@@ -8,6 +8,7 @@
 
 import type { EncounterRow, DeathRow, UnitRow, CombatantRow, RangeSelection } from "../types";
 import { query, invalidateQueryCache, type QuerySpec } from "./query";
+import { invalidateEncounterStatsCache } from "./encounter-stats";
 
 // ---- Shared stores -----------------------------------------------------
 //
@@ -48,6 +49,7 @@ export function getLogData(): LogData {
 export function setLogData(next: LogData): void {
   currentLogData = next;
   invalidateQueryCache(); // parsed data changed -- memoized query rows are stale
+  invalidateEncounterStatsCache();
   for (const fn of logDataSubs) fn(next);
 }
 
