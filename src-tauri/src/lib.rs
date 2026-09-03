@@ -512,6 +512,7 @@ struct WindowInfo {
     line_count: u64,
     percent: f64,
     done: bool,
+    path: String,
 }
 
 #[tauri::command]
@@ -522,6 +523,7 @@ fn window_info(window: WebviewWindow) -> Option<WindowInfo> {
         line_count: progress.lines,
         percent: progress.percent,
         done: progress.done,
+        path: log.path.to_string_lossy().into_owned(),
     })
 }
 

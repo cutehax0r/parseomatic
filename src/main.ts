@@ -25,11 +25,13 @@ import {
 } from "./ui/history";
 import { renderOverview } from "./views/overview";
 import { renderLaunch } from "./views/launch";
+import { renderEncounterGrid } from "./views/encounter-grid";
 
 interface WindowInfo {
   lineCount: number;
   percent: number;
   done: boolean;
+  path: string;
 }
 
 interface SpellRow {
@@ -418,6 +420,26 @@ async function loadRawView() {
 const pickerSortMode: "grouped" | "chronological" = "grouped";
 
 let encounterRows: EncounterRow[] = [];
+// Absolute path of the log this window is showing (from `window_info`);
+// the encounter-grid header displays it.
+let currentLogPath = "";
+
+// (Re)draws the "choose an encounter" grid into #overview-empty. Cheap
+// enough to call on every selection change (to move the highlight).
+function renderEncGrid(): void {
+  const el = document.querySelector<HTMLElement>("#overview-empty");
+  if (!el || encounterRows.length === 0) return;
+  const sel = rangeSelection.source;
+  renderEncounterGrid(el, {
+    path: currentLogPath,
+    encounters: encounterRows,
+    selectedIndex: sel.kind === "encounter" ? sel.index : null,
+    onPick: (idx) => {
+      const e = encounterRows[idx];
+      if (e) applySelection({ startMs: e.startMs, endMs: e.endMs, source: { kind: "encounter", index: idx } });
+    },
+  });
+}
 // The loaded log's overall time extent -- the snap targets and the
 // datetime inputs' min/max. Derived from the encounter list, whose
 // leading/trailing synthesized trash spans reach the first/last event
@@ -711,6 +733,9 @@ function applySelection(
   const mode = opts.history ?? "push";
   if (mode === "push") pushHistory(sel, selectionLabel(sel));
   else if (mode === "reset") resetHistory(sel, selectionLabel(sel));
+
+  // Keep the encounter grid's highlight in step with the selection.
+  renderEncGrid();
 }
 
 function setActiveOption(el: HTMLElement | null): void {
@@ -1106,6 +1131,8 @@ async function refreshStatus() {
     return;
   }
 
+  currentLogPath = info.path;
+
   if (!info.done) {
     lastLineCount = info.lineCount;
     lastCounts = null;
@@ -1165,6 +1192,7 @@ async function refreshStatus() {
     applySelection(fullLogSelection(), { history: "reset" });
   }
   updateSummaryText();
+  renderEncGrid();
 
   launchView.hidden = true;
   content.classList.add("has-data");
