@@ -463,15 +463,15 @@ fn open_settings_window(app: &AppHandle) {
     .build();
 }
 
-/// Opens a new window sharing the same Arc<ParsedLog> as `window` -- zero
-/// re-parsing, just a refcount bump. Must not be called synchronously on
-/// the main thread, same caveat as create_empty_window.
+/// "New Window": opens another window. If `window` has a log open, the new
+/// one shares the same `Arc<ParsedLog>` (zero re-parsing, just a refcount
+/// bump); otherwise it's a blank window on the launch screen. Must not be
+/// called synchronously on the main thread, same caveat as
+/// create_empty_window.
 fn spawn_sibling_window(window: &WebviewWindow) {
     let app = window.app_handle().clone();
-
-    let Some(log) = current_log(window) else { return };
-
-    if let Some(new_window) = create_empty_window(&app) {
+    let Some(new_window) = create_empty_window(&app) else { return };
+    if let Some(log) = current_log(window) {
         attach_window_to_log(&new_window, log.clone());
         apply_window_chrome(new_window, log);
     }
