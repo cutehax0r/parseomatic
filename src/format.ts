@@ -203,6 +203,13 @@ export function formatDifficulty(e: EncounterRow): string {
   return d.flex ? `${d.label}${size}` : d.label;
 }
 
+// "Aanx – DarkIron-US" for a player (thin-space-padded en-dash), or just
+// "Aanx" / "Shroomling" when there's no server half (non-players, or a
+// player name that arrived without a realm suffix).
+export function formatUnitName(u: { name: string; server: string | null }): string {
+  return u.server ? `${u.name} – ${u.server}` : u.name;
+}
+
 // Compact magnitude: 942, 12.4k, 3.1M, 1.8B.
 export function formatCompact(n: number): string {
   const abs = Math.abs(n);

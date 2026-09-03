@@ -524,8 +524,22 @@ fn intern_unit(guid: &str, name: &str, tables: &mut InternTables) -> u32 {
     if guid == "nil" || intern::UnitKind::from_guid(guid) == intern::UnitKind::None {
         return intern::NO_UNIT;
     }
-    let name_id = tables.strings.intern(if name == "nil" { "" } else { name });
-    tables.guids.intern(guid, name_id, None)
+    let name = if name == "nil" { "" } else { name };
+    // Player unit names arrive as `"Character-Realm"`. Split them so the
+    // record holds the two halves apart (a WoW character name can't
+    // contain '-', and a realm name never does, so the first '-' is
+    // unambiguous). Non-players keep their name verbatim.
+    let (name, server_id) = match intern::UnitKind::from_guid(guid) {
+        intern::UnitKind::Player => match name.split_once('-') {
+            Some((character, realm)) if !realm.is_empty() => {
+                (character, Some(tables.strings.intern(realm)))
+            }
+            _ => (name, None),
+        },
+        _ => (name, None),
+    };
+    let name_id = tables.strings.intern(name);
+    tables.guids.intern(guid, name_id, server_id, None)
 }
 
 /// Interns the base-9 source/dest unit fields (`fields[1..9]`), present at
@@ -570,9 +584,9 @@ fn link_owner(data: &[u8], advanced_fields: &[FieldSpan], tables: &mut InternTab
     let owner_id = if owner_guid == "nil" || intern::UnitKind::from_guid(owner_guid) == intern::UnitKind::None {
         None
     } else {
-        Some(tables.guids.intern(owner_guid, empty_name, None))
+        Some(tables.guids.intern(owner_guid, empty_name, None, None))
     };
-    tables.guids.intern(info_guid, empty_name, owner_id);
+    tables.guids.intern(info_guid, empty_name, None, owner_id);
 }
 
 /// `(amount, flags)` for a damage/heal composed event, promoted from the
@@ -921,11 +935,15 @@ mod tests {
         assert_eq!(store.amount[0], 2099);
         assert_eq!(store.flags[0], 0);
 
-        let source_name = tables.strings.get(tables.guids.get(store.source_unit[0]).name_id);
-        let dest_name = tables.strings.get(tables.guids.get(store.dest_unit[0]).name_id);
-        assert_eq!(source_name, "Frightrogue-Thrall-US");
-        assert_eq!(dest_name, "Rotmire");
-        assert_eq!(tables.guids.get(store.dest_unit[0]).kind, intern::UnitKind::Creature);
+        // Player names split on the first '-': character in `name_id`,
+        // realm+region ("server") in `server_id`.
+        let source = tables.guids.get(store.source_unit[0]);
+        assert_eq!(tables.strings.get(source.name_id), "Frightrogue");
+        assert_eq!(source.server_id.map(|s| tables.strings.get(s)), Some("Thrall-US"));
+        let dest = tables.guids.get(store.dest_unit[0]);
+        assert_eq!(tables.strings.get(dest.name_id), "Rotmire");
+        assert_eq!(dest.server_id, None); // creatures are never split
+        assert_eq!(dest.kind, intern::UnitKind::Creature);
     }
 
     #[test]
@@ -1071,10 +1089,9 @@ mod tests {
         assert_eq!(store.len(), 1);
         assert_ne!(store.source_unit[0], intern::NO_UNIT);
         assert_ne!(store.dest_unit[0], intern::NO_UNIT);
-        assert_eq!(
-            tables.strings.get(tables.guids.get(store.source_unit[0]).name_id),
-            "Culligan-Shadowmoon-US"
-        );
+        let src = tables.guids.get(store.source_unit[0]);
+        assert_eq!(tables.strings.get(src.name_id), "Culligan");
+        assert_eq!(src.server_id.map(|s| tables.strings.get(s)), Some("Shadowmoon-US"));
     }
 
     #[test]

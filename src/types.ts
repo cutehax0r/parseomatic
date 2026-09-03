@@ -6,7 +6,8 @@
 
 export interface UnitRow {
   guid: string;
-  name: string;
+  name: string; // character name only; realm/region is `server` for players
+  server: string | null; // "Realm-Region" for players, null otherwise
   kind: string;
   owner: string | null;
 }

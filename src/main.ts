@@ -9,7 +9,7 @@ import type {
   RangeSource,
   RangeSelection,
 } from "./types";
-import { formatDuration, formatEncounterResult } from "./format";
+import { formatDuration, formatEncounterResult, formatUnitName } from "./format";
 import { setRange, setLogData } from "./ui/context";
 import {
   configureHistory,
@@ -202,7 +202,7 @@ function renderDebugLists(lists: DebugListsPayload): DebugCounts {
   renderTable(
     "units",
     "1fr 100px 220px 220px",
-    lists.units.map((u) => [u.name, u.kind, u.owner ?? "", u.guid]),
+    lists.units.map((u) => [formatUnitName(u), u.kind, u.owner ?? "", u.guid]),
     "No units found in this log.",
   );
   renderTable(
@@ -232,20 +232,20 @@ function renderDebugLists(lists: DebugListsPayload): DebugCounts {
 
   renderTable(
     "players",
-    "1fr 320px",
-    players.map((u) => [u.name, u.guid]),
+    "1fr 160px 320px",
+    players.map((u) => [u.name, u.server ?? "", u.guid]),
     "No players found in this log.",
   );
   renderTable(
     "pets",
     "1fr 100px 220px 220px",
-    pets.map((u) => [u.name, u.kind, u.owner ?? "", u.guid]),
+    pets.map((u) => [formatUnitName(u), u.kind, u.owner ?? "", u.guid]),
     "No player-owned pets found in this log.",
   );
   renderTable(
     "creatures",
     "1fr 100px 220px 220px",
-    creatures.map((u) => [u.name, u.kind, u.owner ?? "", u.guid]),
+    creatures.map((u) => [formatUnitName(u), u.kind, u.owner ?? "", u.guid]),
     "No creatures found in this log.",
   );
 
@@ -353,8 +353,8 @@ function renderRawRow(r: RawEventRow, el: HTMLElement) {
   const spellRow = r.spellId !== null ? spellsById[r.spellId] : undefined;
   setRawCell(time, formatRawTimestamp(r.timestampMs), false);
   setRawCell(kind, r.kind, false);
-  setRawCell(source, sourceUnit?.name ?? "", sourceUnit !== undefined, sourceUnit?.guid);
-  setRawCell(target, targetUnit?.name ?? "", targetUnit !== undefined, targetUnit?.guid);
+  setRawCell(source, sourceUnit ? formatUnitName(sourceUnit) : "", sourceUnit !== undefined, sourceUnit?.guid);
+  setRawCell(target, targetUnit ? formatUnitName(targetUnit) : "", targetUnit !== undefined, targetUnit?.guid);
   setRawCell(spell, spellRow?.name ?? "", spellRow !== undefined);
   const position = r.position ? `[${r.position[0].toFixed(1)}, ${r.position[1].toFixed(1)}] ` : "";
   setRawCell(details, position + r.details, false, position + r.details);

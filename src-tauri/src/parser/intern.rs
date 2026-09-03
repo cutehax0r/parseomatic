@@ -169,6 +169,11 @@ impl StringTable {
 pub struct UnitRecord {
     pub guid: Arc<str>,
     pub name_id: u16,
+    /// For players, the realm half of the `"Character-Realm"` unit name,
+    /// interned into the shared `StringTable` (realms repeat heavily
+    /// across a log). `None` for non-players and for a player name that
+    /// arrived without a realm suffix.
+    pub server_id: Option<u16>,
     pub kind: UnitKind,
     pub owner_id: Option<u32>,
 }
@@ -186,8 +191,16 @@ pub struct GuidTable {
 impl GuidTable {
     /// Interns `guid`. If already known, updates its record's `owner_id`
     /// when a richer sighting supplies one (advanced-params `ownerGUID`
-    /// isn't present on every line that mentions a given unit).
-    pub fn intern(&mut self, guid: &str, name_id: u16, owner_id: Option<u32>) -> u32 {
+    /// isn't present on every line that mentions a given unit); `name_id`
+    /// and `server_id` are only set on first sight (a placeholder empty
+    /// name from `link_owner` never overwrites a real one -- see there).
+    pub fn intern(
+        &mut self,
+        guid: &str,
+        name_id: u16,
+        server_id: Option<u16>,
+        owner_id: Option<u32>,
+    ) -> u32 {
         if let Some(&id) = self.index.get(guid) {
             if owner_id.is_some() {
                 self.records[id as usize].owner_id = owner_id;
@@ -205,6 +218,7 @@ impl GuidTable {
         self.records.push(UnitRecord {
             guid: arc,
             name_id,
+            server_id,
             kind,
             owner_id,
         });
@@ -244,6 +258,7 @@ impl GuidTable {
                 self.records.push(UnitRecord {
                     guid: rec.guid.clone(),
                     name_id: name_remap[rec.name_id as usize],
+                    server_id: rec.server_id.map(|s| name_remap[s as usize]),
                     kind: rec.kind,
                     owner_id: None, // fixed up below
                 });
@@ -441,8 +456,8 @@ mod tests {
         let mut strings = StringTable::default();
         let mut guids = GuidTable::default();
         let name = strings.intern("Bob");
-        let a = guids.intern("Player-1-1", name, None);
-        let b = guids.intern("Player-1-1", name, None);
+        let a = guids.intern("Player-1-1", name, None, None);
+        let b = guids.intern("Player-1-1", name, None, None);
         assert_eq!(a, b);
         assert_eq!(guids.len(), 1);
     }
@@ -454,8 +469,8 @@ mod tests {
         let mut strings = StringTable::default();
         let mut guids = GuidTable::default();
         let name = strings.intern("Timber Wolf");
-        let a = guids.intern("Creature-0-1-1-1-1-0000000001", name, None);
-        let b = guids.intern("Creature-0-1-1-1-1-0000000002", name, None);
+        let a = guids.intern("Creature-0-1-1-1-1-0000000001", name, None, None);
+        let b = guids.intern("Creature-0-1-1-1-1-0000000002", name, None, None);
         assert_ne!(a, b);
         assert_eq!(guids.get(a).name_id, guids.get(b).name_id);
     }
@@ -466,14 +481,14 @@ mod tests {
         let mut guids = GuidTable::default();
         let pet_name = strings.intern("Pet");
         let owner_name = strings.intern("Owner");
-        let pet = guids.intern("Pet-0-1-1-1-1-1", pet_name, None);
+        let pet = guids.intern("Pet-0-1-1-1-1-1", pet_name, None, None);
         assert_eq!(guids.get(pet).owner_id, None);
 
-        let owner = guids.intern("Player-1-1", owner_name, None);
+        let owner = guids.intern("Player-1-1", owner_name, None, None);
         // Re-sighting with a placeholder name (as link_owner does in
         // event.rs) must not clobber the name already on record.
         let placeholder = strings.intern("");
-        guids.intern("Pet-0-1-1-1-1-1", placeholder, Some(owner));
+        guids.intern("Pet-0-1-1-1-1-1", placeholder, None, Some(owner));
 
         assert_eq!(guids.get(pet).owner_id, Some(owner));
         assert_eq!(guids.get(pet).name_id, pet_name);
@@ -504,14 +519,14 @@ mod tests {
 
         let mut chunk_a = InternTables::default();
         let name_a = chunk_a.strings.intern("Shared Name");
-        let unit_a = chunk_a.guids.intern("Player-1-1", name_a, None);
+        let unit_a = chunk_a.guids.intern("Player-1-1", name_a, None, None);
 
         let mut chunk_b = InternTables::default();
         let name_b = chunk_b.strings.intern("Shared Name");
         // Same GUID as chunk_a (e.g. the same player mentioned in both
         // chunks) plus one genuinely new unit that happens to share a name.
-        let unit_b_same = chunk_b.guids.intern("Player-1-1", name_b, None);
-        let unit_b_new = chunk_b.guids.intern("Player-2-2", name_b, None);
+        let unit_b_same = chunk_b.guids.intern("Player-1-1", name_b, None, None);
+        let unit_b_new = chunk_b.guids.intern("Player-2-2", name_b, None, None);
 
         let remap_a = global.merge(chunk_a);
         let remap_b = global.merge(chunk_b);
@@ -543,9 +558,9 @@ mod tests {
         // Intern the pet first (lower local id), then its owner (higher
         // local id) -- the pet's owner_id references a local id that
         // doesn't exist yet at the moment the pet record is created.
-        let pet = chunk.guids.intern("Pet-0-1-1-1-1-1", name, None);
-        let owner = chunk.guids.intern("Player-1-1", name, None);
-        chunk.guids.intern("Pet-0-1-1-1-1-1", name, Some(owner));
+        let pet = chunk.guids.intern("Pet-0-1-1-1-1-1", name, None, None);
+        let owner = chunk.guids.intern("Player-1-1", name, None, None);
+        chunk.guids.intern("Pet-0-1-1-1-1-1", name, None, Some(owner));
 
         let remap = global.merge(chunk);
         let global_pet = remap.guids[pet as usize];

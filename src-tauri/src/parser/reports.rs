@@ -396,10 +396,11 @@ mod tests {
         // it must be excluded.
         assert_eq!(reports.deaths.len(), 1);
         assert_eq!(reports.deaths[0].encounter_index, 1);
-        assert_eq!(
-            tables.strings.get(tables.guids.get(reports.deaths[0].unit_id).name_id),
-            "Alice-Realm"
-        );
+        // Player unit name is split on first '-': "Alice-Realm" -> name
+        // "Alice", server "Realm".
+        let alice = tables.guids.get(reports.deaths[0].unit_id);
+        assert_eq!(tables.strings.get(alice.name_id), "Alice");
+        assert_eq!(alice.server_id.map(|s| tables.strings.get(s)), Some("Realm"));
     }
 
     #[test]

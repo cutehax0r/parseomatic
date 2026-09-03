@@ -557,7 +557,12 @@ fn set_history_nav(app: AppHandle, can_back: bool, can_forward: bool) {
 #[serde(rename_all = "camelCase")]
 struct UnitRow {
     guid: String,
+    /// Character name only -- for players, the realm/region half is split
+    /// off into `server` (see `parser::intern::UnitRecord`).
     name: String,
+    /// The `"Realm-Region"` half of a player's `"Character-Realm-Region"`
+    /// unit name; `None` for non-players.
+    server: Option<String>,
     kind: String,
     owner: Option<String>,
 }
@@ -652,6 +657,7 @@ fn debug_lists(window: WebviewWindow) -> Option<DebugListsPayload> {
         .map(|u| UnitRow {
             guid: u.guid.to_string(),
             name: tables.strings.get(u.name_id).to_string(),
+            server: u.server_id.map(|s| tables.strings.get(s).to_string()),
             kind: format!("{:?}", u.kind),
             owner: u
                 .owner_id
