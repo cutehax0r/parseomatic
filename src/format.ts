@@ -46,6 +46,7 @@ const SPECS: Record<number, string> = {
   252: "Unholy Death Knight",
   577: "Havoc Demon Hunter",
   581: "Vengeance Demon Hunter",
+  1480: "Devourer Demon Hunter",
   102: "Balance Druid",
   103: "Feral Druid",
   104: "Guardian Druid",
