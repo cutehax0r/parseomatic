@@ -77,19 +77,16 @@ pick never spawns a new window with data). See `show_open_error`.
 - **Window creation** (`create_empty_window`) always goes through
   `WebviewWindowBuilder`, with a counter-based label (`log-1`, `log-2`,
   ...), and always registers `register_close_cleanup`, `register_drag_drop`
-  and `register_focus_sync` on the new window before handing it back. It's
-  sized to ~80% of its monitor (`size_to_monitor`, which returns the size
-  it applied), then **placed**: the first window (`main`, and any
-  OS/dock-driven open) is centered via `center_in_work_area` — an explicit
-  `set_position` computed from the monitor work area and the size we just
-  set, *not* `window.center()`, which reads the live size and so races the
-  `set_size` (centering the old 800×600 and leaving the grown window low
-  and right). A window spawned off another
-  (`create_empty_window(app, Some(src))` from `spawn_sibling_window`) is
-  `cascade_from`'d one title-bar step (`CASCADE_STEP`, 28 logical px)
-  down-and-right of its source, wrapping back toward the work-area top-left
-  when a step would run it off-screen — same stagger the OS uses for its
-  own "New Window".
+  and `register_focus_sync` on the new window before handing it back. It is
+  **not** resized or repositioned in code — every attempt to (center / fit
+  to ~80% of screen / cascade off the previous window) misbehaved on this
+  tao/wry across multi-monitor + Retina setups (windows landing on the
+  wrong display, at the wrong scale, or walking off-screen). The window
+  opens at the `tauri.conf.json` `inner_size`, wherever the OS places it.
+  The one AppKit tweak that stays is `setRestorable(false)` (in
+  `set_represented_filename`): setting a proxy icon makes AppKit treat the
+  window as a document window and re-run its own auto-cascade placement,
+  which *did* walk the window off-screen after a file opened.
 
 Every window's capability permissions come from a single glob-scoped
 capability (`src-tauri/capabilities/default.json`, `"windows": ["*"]`)
