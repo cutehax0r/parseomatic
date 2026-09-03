@@ -65,7 +65,10 @@ export interface PlayerStatsRow {
   encounterMs: number; // window duration -> active% = activeMs / encounterMs
   distance: number;
   movementMs: number;
-  movementBins: number[]; // distance per 1/10 of the encounter (10 entries)
+  // Per-decile (1/10 of the encounter) fractions, 10 entries each.
+  activeBins: number[]; // share of the decile spent active
+  deadBins: number[]; // share of the decile spent dead
+  movementBins: number[]; // distance travelled in the decile
 }
 
 // ---- Encounter-picker selection ----------------------------------------

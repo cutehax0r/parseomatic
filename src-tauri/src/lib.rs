@@ -875,8 +875,11 @@ struct PlayerStatsRow {
     encounter_ms: i64,
     distance: f64,
     movement_ms: i64,
-    /// Distance travelled per 1/10 of the encounter (`stats::MOVE_BINS`),
-    /// for a row sparkline.
+    /// Per-decile (1/10 of the encounter) fractions for row sparklines:
+    /// `activeBins` = share active, `deadBins` = share dead, `movementBins`
+    /// = distance travelled. Each has `stats::DECILES` (10) entries.
+    active_bins: Vec<f64>,
+    dead_bins: Vec<f64>,
     movement_bins: Vec<f64>,
 }
 
@@ -909,6 +912,8 @@ fn encounter_stats(window: WebviewWindow, encounter_index: usize) -> Option<Vec<
                 encounter_ms,
                 distance: p.distance,
                 movement_ms: p.movement_ms,
+                active_bins: p.active_bins.to_vec(),
+                dead_bins: p.dead_bins.to_vec(),
                 movement_bins: p.movement_bins.to_vec(),
             })
             .collect(),

@@ -1,6 +1,8 @@
 // role icon | player (bold class-coloured name over a dim spec line) |
-// Damage | Healing | Damage taken. The last three are `buildMetricCell`
-// cells (bar + amount + rate/%); see metric-cell.ts. Plain grid, not
+// Damage | Healing | Damage taken | Active. Damage/Healing/Damage taken
+// are `buildMetricCell` cells (bar + amount + rate/%); see metric-cell.ts.
+// Active is `buildActiveCell` -- an activity curve (dead stretches drawn
+// yellow) + "NN% / N deaths"; see active-cell.ts. Plain grid, not
 // virtualized -- a raid is <= ~30 players. A future `data-table` widget
 // wraps VirtualList when something needs it (docs/ui-widgets.md).
 // `spec`/`role`/`nameColor` are "" for logs without COMBATANT_INFO (or an
@@ -22,6 +24,7 @@ import { registerWidget } from "../registry";
 import type { Widget } from "../spec";
 import { formatCompact } from "../../format";
 import { buildMetricCell } from "./metric-cell";
+import { buildActiveCell } from "./active-cell";
 import { roleIcon, roleIconClass } from "./role-icon";
 
 export interface PlayerRow {
@@ -52,13 +55,22 @@ export interface PlayerRow {
   // Damage taken -- the player unit only (no pets).
   taken: number;
   takenShare: number; // 0..1, this row's damage taken / the table's total
+
+  // Active -- from `encounter_stats`; `activePct` is null for a custom
+  // time range (no encounter to key stats by). `deaths` is this player's
+  // death count in the encounter; `activeBins`/`deadBins` are the 10
+  // per-decile fractions the "Active" cell's curve is drawn from.
+  activePct: number | null;
+  deaths: number;
+  activeBins: number[];
+  deadBins: number[];
 }
 
 export interface PlayerTableProps {
   rows: PlayerRow[];
 }
 
-type SortKey = "name" | "role" | "damage" | "healing" | "taken";
+type SortKey = "name" | "role" | "damage" | "healing" | "taken" | "active";
 
 // `sortable` columns get a header button; the rest are plain labels.
 // `center` aligns the header (the narrow role column).
@@ -68,6 +80,7 @@ const COLUMNS: Array<{ label: string; sort?: SortKey; center?: boolean }> = [
   { label: "Damage", sort: "damage" },
   { label: "Healing", sort: "healing" },
   { label: "Damage taken", sort: "taken" },
+  { label: "Active", sort: "active" },
 ];
 
 // Natural ("as written") order for a key: names A->Z, everything else
@@ -87,6 +100,8 @@ function compare(a: PlayerRow, b: PlayerRow, key: SortKey): number {
       return b.healing - a.healing;
     case "taken":
       return b.taken - a.taken;
+    case "active":
+      return (b.activePct ?? -1) - (a.activePct ?? -1);
   }
 }
 
@@ -256,8 +271,14 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
           },
           "taken",
         );
+        const active = buildActiveCell({
+          activePct: r.activePct,
+          deaths: r.deaths,
+          activeBins: r.activeBins,
+          deadBins: r.deadBins,
+        });
 
-        row.append(role, who, dmg, heal, taken);
+        row.append(role, who, dmg, heal, taken, active);
         return row;
       }),
     );

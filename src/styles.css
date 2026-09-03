@@ -57,6 +57,8 @@
   --bar-heal-own: var(--success); /* players-table healing bar: the player's own healing */
   --bar-heal-pet: #6a9e7f; /* ...continued in a darker shade for their pets */
   --bar-taken: var(--chart-deep-red); /* players-table damage-taken bar (single segment) */
+  --activity: var(--ctp-teal); /* players-table Active curve -- its own hue, not damage/heal */
+  --activity-dead: var(--ctp-yellow); /* ...redrawn where the player was dead */
 
   /* Class colours -- a Catppuccin Macchiato reading of the traditional
      Blizzard class hues (used to tint the player name). Warrior and Monk
@@ -1134,8 +1136,8 @@ body {
 
 .player-table-row {
   display: grid;
-  /* role | player (name + spec) | damage | healing | damage taken */
-  grid-template-columns: 44px minmax(180px, 1.6fr) minmax(150px, 1fr) minmax(150px, 1fr) minmax(116px, 0.72fr);
+  /* role | player | damage | healing | damage taken | active */
+  grid-template-columns: 44px minmax(170px, 1.5fr) minmax(140px, 1fr) minmax(140px, 1fr) minmax(112px, 0.7fr) minmax(120px, 0.8fr);
   gap: 14px;
   padding: 7px 14px;
   align-items: center;
@@ -1270,6 +1272,46 @@ body {
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.pt-metric-sub--dead {
+  color: var(--danger);
+}
+
+/* Active cell: an activity curve over the fight. `pt-spark-wrap` gives it
+   a fixed height; the SVG stretches to fill (preserveAspectRatio=none).
+   Dead stretches are the same paths redrawn in --activity-dead, clipped
+   to those x-ranges. */
+.pt-spark-wrap {
+  display: block;
+  height: 22px;
+}
+
+.pt-spark {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.pt-spark-fill {
+  fill: var(--activity);
+  fill-opacity: 0.15;
+}
+
+.pt-spark-line {
+  fill: none;
+  stroke: var(--activity);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.pt-spark-fill.pt-spark-dead {
+  fill: var(--activity-dead);
+  fill-opacity: 0.2;
+}
+
+.pt-spark-line.pt-spark-dead {
+  stroke: var(--activity-dead);
 }
 
 .player-table-head {

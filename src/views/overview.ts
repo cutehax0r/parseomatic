@@ -28,6 +28,8 @@ import {
 } from "../format";
 import type { ChartDeath } from "../ui/widgets/line-chart";
 import type { PlayerRow } from "../ui/widgets/player-table";
+import { encounterStats } from "../ui/encounter-stats";
+import type { PlayerStatsRow } from "../types";
 
 const DAMAGE_KINDS = [
   "SPELL_DAMAGE",
@@ -139,9 +141,14 @@ async function paint(): Promise<void> {
   const bounds = { startMs: win.startMs, endMs: win.endMs };
   // ~1 bucket/second, capped near the chart's pixel width.
   const bucketCount = Math.min(800, Math.max(60, Math.round(seconds)));
+  // Per-player active/alive/movement stats -- only for a real encounter
+  // (they're keyed by encounter index); a custom range gets an empty list
+  // and the Active column falls back to a dash.
+  const statsPromise: Promise<PlayerStatsRow[]> =
+    src.kind === "encounter" ? encounterStats(src.index) : Promise.resolve([]);
   const [series, playerRows] = await Promise.all([
     damageHealingSeries(bounds, bucketCount),
-    buildPlayerRows(bounds, seconds, win.name),
+    statsPromise.then((stats) => buildPlayerRows(bounds, seconds, win.name, stats)),
   ]);
   if (seq !== paintSeq) return; // a newer selection is painting
 
@@ -206,6 +213,7 @@ async function buildPlayerRows(
   bounds: { startMs: number; endMs: number },
   seconds: number,
   encounterName: string,
+  stats: PlayerStatsRow[],
 ): Promise<PlayerRow[]> {
   // Two parallel passes over the window:
   //  - grouped by (owner, unit): damage and healing, each split own vs pet
@@ -269,11 +277,18 @@ async function buildPlayerRows(
     }
   }
 
+  // Active / alive / death stats from `encounter_stats`, joined by unit id
+  // (a player's own unit id == their `sourceOwner`). Empty for a custom
+  // range -> `activePct` stays null and the Active cell shows a dash.
+  const statsByUnit = new Map<number, PlayerStatsRow>();
+  for (const s of stats) statsByUnit.set(s.unitId, s);
+
   return list
     .map((r) => {
       const specId = specByName.get(r.name) ?? 0;
       const damage = r.dmgOwn + r.dmgPet;
       const healing = r.healOwn + r.healPet;
+      const st = statsByUnit.get(r.id);
       return {
         name: r.name,
         spec: formatSpec(specId),
@@ -296,6 +311,10 @@ async function buildPlayerRows(
         healShare: share(healing, totalHeal),
         taken: r.taken,
         takenShare: share(r.taken, totalTaken),
+        activePct: st && st.encounterMs > 0 ? st.activeMs / st.encounterMs : null,
+        deaths: st?.deaths ?? 0,
+        activeBins: st?.activeBins ?? [],
+        deadBins: st?.deadBins ?? [],
       };
     })
     // Pre-sorted to the widget's default (role-grouped); the widget owns

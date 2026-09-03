@@ -26,7 +26,9 @@ const MOVE_SPEED_MIN: f64 = 1.0;
 /// A single step contributes at most this much to "moving time" (guards
 /// against one long stride across a sparse stretch of the log).
 const MOVE_STEP_CAP_MS: i64 = 2000;
-pub const MOVE_BINS: usize = 10;
+/// The encounter is sliced into this many equal time buckets for the
+/// per-row sparklines (activity curve, movement bars).
+pub const DECILES: usize = 10;
 
 // ---- Activity model -------------------------------------------------------
 
@@ -51,9 +53,16 @@ pub struct CastEvent {
 }
 
 pub trait ActivityModel: Sync {
-    /// Active milliseconds for one player within `[start_ms, end_ms]`,
-    /// given their cast timeline.
-    fn active_ms(&self, casts: &[CastEvent], start_ms: i64, end_ms: i64) -> i64;
+    /// Per-second active bitmap over `[start_ms, end_ms]` (length =
+    /// seconds in the window, rounded up), given the player's cast
+    /// timeline. Bucket i covers `[start_ms + i*1000, +1000)`. The caller
+    /// derives the scalar active-ms (and the per-decile profile) from it.
+    fn active_seconds(&self, casts: &[CastEvent], start_ms: i64, end_ms: i64) -> Vec<bool>;
+}
+
+/// Milliseconds of `true` in a per-second active bitmap.
+fn active_ms(secs: &[bool]) -> i64 {
+    secs.iter().filter(|&&on| on).count() as i64 * BIN_MS
 }
 
 /// "Actions per second"-style: a 1 s bin is active if the player started a
@@ -71,9 +80,9 @@ pub trait ActivityModel: Sync {
 pub struct ApsActivityModel;
 
 impl ActivityModel for ApsActivityModel {
-    fn active_ms(&self, casts: &[CastEvent], start_ms: i64, end_ms: i64) -> i64 {
+    fn active_seconds(&self, casts: &[CastEvent], start_ms: i64, end_ms: i64) -> Vec<bool> {
         if end_ms <= start_ms {
-            return 0;
+            return Vec::new();
         }
         let n_bins = (((end_ms - start_ms) / BIN_MS) + 1).max(1) as usize;
         let mut active = vec![false; n_bins];
@@ -119,7 +128,7 @@ impl ActivityModel for ApsActivityModel {
             mark(&mut active, e, end_ms);
         }
 
-        active.iter().filter(|&&x| x).count() as i64 * BIN_MS
+        active
     }
 }
 
@@ -137,8 +146,13 @@ pub struct PlayerEncounterStats {
     pub active_ms: i64,
     pub distance: f64,
     pub movement_ms: i64,
-    /// Distance travelled in each 1/10 of the encounter, for a row sparkline.
-    pub movement_bins: [f64; MOVE_BINS],
+    /// Per-decile (1/10 of the encounter) fractions, for row sparklines:
+    /// `active_bins[i]` is the share of decile i the player was active
+    /// for; `dead_bins[i]` the share they were dead for; `movement_bins[i]`
+    /// the distance travelled in it.
+    pub active_bins: [f64; DECILES],
+    pub dead_bins: [f64; DECILES],
+    pub movement_bins: [f64; DECILES],
 }
 
 #[derive(Default)]
@@ -161,7 +175,7 @@ struct Acc {
     last_pos: Option<(i64, f32, f32)>,
     distance: f64,
     movement_ms: i64,
-    movement_bins: [f64; MOVE_BINS],
+    movement_bins: [f64; DECILES],
 }
 
 /// One `EncounterStats` per entry in `encounters`, same order. Parallel
@@ -281,7 +295,7 @@ fn build_one(
                     let d = f64::from(x - lx).hypot(f64::from(y - ly));
                     a.distance += d;
                     let bin =
-                        (((ts - start_ms) * MOVE_BINS as i64) / dur).clamp(0, MOVE_BINS as i64 - 1) as usize;
+                        (((ts - start_ms) * DECILES as i64) / dur).clamp(0, DECILES as i64 - 1) as usize;
                     a.movement_bins[bin] += d;
                     if d / (dt as f64 / 1000.0) >= MOVE_SPEED_MIN {
                         a.movement_ms += dt.min(MOVE_STEP_CAP_MS);
@@ -292,17 +306,48 @@ fn build_one(
         }
     }
 
+    let decile_ms = dur as f64 / DECILES as f64;
+
     let mut players: Vec<PlayerEncounterStats> = accs
         .into_iter()
         .map(|(unit_id, a)| {
+            // Dead time overall + spread across the deciles it overlaps.
             let mut dead = 0i64;
-            for (d, r) in &a.dead_spans {
-                let d = (*d).clamp(start_ms, end_ms);
-                let r = r.unwrap_or(end_ms).clamp(start_ms, end_ms);
-                dead += (r - d).max(0);
+            let mut dead_bins = [0f64; DECILES];
+            for (ds, dr) in &a.dead_spans {
+                let ds = (*ds).clamp(start_ms, end_ms);
+                let de = dr.unwrap_or(end_ms).clamp(start_ms, end_ms);
+                dead += (de - ds).max(0);
+                for (d, slot) in dead_bins.iter_mut().enumerate() {
+                    let d0 = start_ms as f64 + d as f64 * decile_ms;
+                    let d1 = d0 + decile_ms;
+                    let overlap = (de as f64).min(d1) - (ds as f64).max(d0);
+                    if overlap > 0.0 && decile_ms > 0.0 {
+                        *slot = (*slot + overlap / decile_ms).min(1.0);
+                    }
+                }
             }
             let alive_ms = (dur - dead).max(0);
-            let active_ms = model.active_ms(&a.casts, start_ms, end_ms).clamp(0, alive_ms);
+
+            // Per-second active bitmap -> total + per-decile fractions.
+            let secs = model.active_seconds(&a.casts, start_ms, end_ms);
+            let active_ms = active_ms(&secs).clamp(0, alive_ms);
+            let mut active_bins = [0f64; DECILES];
+            let mut bin_secs = [0f64; DECILES];
+            for (i, &on) in secs.iter().enumerate() {
+                let t = start_ms + i as i64 * BIN_MS;
+                let d = (((t - start_ms) * DECILES as i64) / dur).clamp(0, DECILES as i64 - 1) as usize;
+                bin_secs[d] += 1.0;
+                if on {
+                    active_bins[d] += 1.0;
+                }
+            }
+            for (frac, total) in active_bins.iter_mut().zip(bin_secs) {
+                if total > 0.0 {
+                    *frac /= total;
+                }
+            }
+
             PlayerEncounterStats {
                 unit_id,
                 damage_own: a.damage_own,
@@ -315,6 +360,8 @@ fn build_one(
                 active_ms,
                 distance: a.distance,
                 movement_ms: a.movement_ms.min(alive_ms),
+                active_bins,
+                dead_bins,
                 movement_bins: a.movement_bins,
             }
         })
@@ -331,6 +378,10 @@ mod tests {
         CastEvent { ts, kind, spell: 0 }
     }
 
+    fn aps_ms(casts: &[CastEvent], start: i64, end: i64) -> i64 {
+        active_ms(&ApsActivityModel.active_seconds(casts, start, end))
+    }
+
     #[test]
     fn aps_counts_cast_bins_not_gaps() {
         // window 0..10s. START 1.0 + SUCCESS 1.4 -> bin 1. A lone SUCCESS
@@ -344,14 +395,14 @@ mod tests {
             ev(7_000, CastEventKind::Start),
             ev(7_500, CastEventKind::Success),
         ];
-        assert_eq!(ApsActivityModel.active_ms(&casts, 0, 10_000), 3_000);
+        assert_eq!(aps_ms(&casts, 0, 10_000), 3_000);
     }
 
     #[test]
     fn aps_marks_the_span_between_start_and_success() {
         // A 2.5s cast: START 1.0 -> SUCCESS 3.5 marks bins 1,2,3 = 3s.
         let casts = [ev(1_000, CastEventKind::Start), ev(3_500, CastEventKind::Success)];
-        assert_eq!(ApsActivityModel.active_ms(&casts, 0, 10_000), 3_000);
+        assert_eq!(aps_ms(&casts, 0, 10_000), 3_000);
     }
 
     #[test]
@@ -361,11 +412,11 @@ mod tests {
             ev(4_500, CastEventKind::EmpowerEnd),
         ];
         // bins 2,3,4 -> 3s
-        assert_eq!(ApsActivityModel.active_ms(&casts, 0, 10_000), 3_000);
+        assert_eq!(aps_ms(&casts, 0, 10_000), 3_000);
     }
 
     #[test]
     fn aps_empty_timeline_is_zero() {
-        assert_eq!(ApsActivityModel.active_ms(&[], 0, 10_000), 0);
+        assert_eq!(aps_ms(&[], 0, 10_000), 0);
     }
 }
