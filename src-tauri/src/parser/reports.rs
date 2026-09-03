@@ -226,7 +226,15 @@ fn parse_combatant_info(
     if unit_id == intern::NO_UNIT || raw.len() < 27 {
         return None;
     }
-    let spec_id: u32 = raw[22].resolve_str(data).parse().ok()?; // doc field 24
+    // currentSpecID is nominally doc field 24 (`raw[22]`), but the stat
+    // block ahead of it has picked up a field in newer logs (real 2026
+    // fixtures put it at field 25). It's always the last plain-numeric
+    // field right before the class-talent array, so anchor on the first
+    // `[` / `(` group instead of a fixed offset.
+    let bracket = raw.iter().position(|f| {
+        matches!(f.resolve_str(data).as_bytes().first(), Some(b'[') | Some(b'('))
+    })?;
+    let spec_id: u32 = raw.get(bracket.checked_sub(1)?)?.resolve_str(data).parse().ok()?;
     let gear = parse_equipped_items(raw[26].resolve_str(data)); // doc field 28
     Some(CombatantSnapshot {
         unit_id,

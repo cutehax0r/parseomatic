@@ -897,8 +897,8 @@ body {
 
 .player-table-row {
   display: grid;
-  /* name | % | bar (~a stat-tile wide) | damage | DPS */
-  grid-template-columns: 1fr 64px 200px 110px 90px;
+  /* name | class/spec | % | bar (~a stat-tile wide) | damage | DPS */
+  grid-template-columns: 1fr 150px 64px 200px 110px 90px;
   gap: 10px;
   padding: 6px 14px;
   align-items: center;
@@ -908,6 +908,17 @@ body {
 .player-table-row > span:nth-child(n + 2) {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* class/spec is text, not a figure -- keep it left-aligned and let it
+   ellipsis rather than widen the column. */
+.player-table-row > span.pt-spec {
+  text-align: left;
+  font-variant-numeric: normal;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* inline damage bar: light = player, darker = pets, filling left to right */

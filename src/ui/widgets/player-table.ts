@@ -1,7 +1,8 @@
-// name | % of raid (player+pet) damage | bar | damage done | DPS. Rows
-// arrive already sorted (Overview sorts by damage desc). Plain grid, not
-// virtualized -- a raid is <= ~30 players. A future `data-table` widget
-// wraps VirtualList when something needs it (docs/ui-widgets.md).
+// name | class/spec | % of raid (player+pet) damage | bar | damage done |
+// DPS. Rows arrive already sorted (Overview sorts by damage desc). Plain
+// grid, not virtualized -- a raid is <= ~30 players. A future `data-table`
+// widget wraps VirtualList when something needs it (docs/ui-widgets.md).
+// `spec` is "" for logs recorded without COMBATANT_INFO.
 //
 // The bar is scaled 0..max where max is the top row's total damage. Two
 // segments from the left: a light one for the player's own damage, then a
@@ -13,6 +14,7 @@ import { formatCompact } from "../../format";
 
 export interface PlayerRow {
   name: string;
+  spec: string; // "Frost Mage" etc., or "" if unknown
   dps: number;
   damage: number; // own + pet
   own: number; // damage by the player unit itself
@@ -24,7 +26,7 @@ export interface PlayerTableProps {
   rows: PlayerRow[];
 }
 
-const COLUMNS = ["Player", "%", "", "Damage", "DPS"];
+const COLUMNS = ["Player", "Class / Spec", "%", "", "Damage", "DPS"];
 
 registerWidget<PlayerTableProps>("player-table", (props) => {
   const element = document.createElement("div");
@@ -51,6 +53,9 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
           row.className = "player-table-row";
           const name = document.createElement("span");
           name.textContent = r.name;
+          const spec = document.createElement("span");
+          spec.className = "pt-spec";
+          spec.textContent = r.spec;
           const pct = document.createElement("span");
           pct.textContent = `${(r.share * 100).toFixed(1)}%`;
           const dmg = document.createElement("span");
@@ -68,7 +73,7 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
           pet.style.width = `${(r.pet / max) * 100}%`;
           bar.append(own, pet);
 
-          row.append(name, pct, bar, dmg, dps);
+          row.append(name, spec, pct, bar, dmg, dps);
           return row;
         }),
       );

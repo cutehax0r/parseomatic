@@ -15,7 +15,13 @@ import { buildView, type BuiltView } from "../ui/panel";
 import { createViewContext, type ViewContext } from "../ui/context";
 import type { NodeSpec } from "../ui/spec";
 import type { EncounterRow } from "../types";
-import { formatCompact, formatDifficulty, formatDuration, formatEncounterResult } from "../format";
+import {
+  formatCompact,
+  formatDifficulty,
+  formatDuration,
+  formatEncounterResult,
+  formatSpec,
+} from "../format";
 import type { ChartDeath } from "../ui/widgets/line-chart";
 import type { PlayerRow } from "../ui/widgets/player-table";
 
@@ -108,7 +114,7 @@ async function paint(): Promise<void> {
   const bucketCount = Math.min(800, Math.max(60, Math.round(seconds)));
   const [series, playerRows] = await Promise.all([
     damageHealingSeries(bounds, bucketCount),
-    playerDamageRows(bounds, seconds),
+    playerDamageRows(bounds, seconds, e.name),
   ]);
   if (seq !== paintSeq) return; // a newer selection is painting
 
@@ -172,6 +178,7 @@ function damageHealingSeries(
 async function playerDamageRows(
   bounds: { startMs: number; endMs: number },
   seconds: number,
+  encounterName: string,
 ): Promise<PlayerRow[]> {
   // Group by (owner, unit) so we can split each player's rolled-up total
   // into their own damage (unit === owner) vs their pets' (unit !== owner).
@@ -192,9 +199,20 @@ async function playerDamageRows(
   }
   const list = [...byOwner].map(([id, v]) => ({ name: units[id]!.name, own: v.own, pet: v.pet }));
   const total = list.reduce((s, r) => s + r.own + r.pet, 0);
+
+  // player name -> spec, from this encounter's COMBATANT_INFO (falling back
+  // to any snapshot for that player). Empty for logs without COMBATANT_INFO.
+  const specByName = new Map<string, number>();
+  for (const c of ctx!.combatants) {
+    if (c.encounterName === encounterName || !specByName.has(c.playerName)) {
+      specByName.set(c.playerName, c.specId);
+    }
+  }
+
   return list
     .map((r) => ({
       name: r.name,
+      spec: formatSpec(specByName.get(r.name) ?? 0),
       own: r.own,
       pet: r.pet,
       damage: r.own + r.pet,

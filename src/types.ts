@@ -29,6 +29,24 @@ export interface DeathRow {
   encounterName: string;
 }
 
+export interface GearItemRow {
+  itemId: number;
+  itemLevel: number;
+  enchantId: number;
+  gemIds: number[];
+}
+
+// One COMBATANT_INFO snapshot -- a player's spec + gear at an encounter's
+// start. Absent entirely for logs recorded without COMBATANT_INFO lines.
+export interface CombatantRow {
+  playerName: string;
+  encounterName: string;
+  specId: number;
+  avgItemLevel: number | null;
+  itemCount: number;
+  gear: GearItemRow[];
+}
+
 // ---- Encounter-picker selection ----------------------------------------
 
 // The picker's filter is always a concrete [startMs, endMs]. `source` is

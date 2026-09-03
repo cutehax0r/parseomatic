@@ -37,6 +37,56 @@ export function formatEncounterResult(e: EncounterRow): string {
   return "?";
 }
 
+// WoW specialization id (`COMBATANT_INFO` CurrentSpecID) -> "Spec Class".
+// Blizzard's ids are stable; this needs a touch-up only when a new spec or
+// class ships (~once a year).
+const SPECS: Record<number, string> = {
+  250: "Blood Death Knight",
+  251: "Frost Death Knight",
+  252: "Unholy Death Knight",
+  577: "Havoc Demon Hunter",
+  581: "Vengeance Demon Hunter",
+  102: "Balance Druid",
+  103: "Feral Druid",
+  104: "Guardian Druid",
+  105: "Restoration Druid",
+  1467: "Devastation Evoker",
+  1468: "Preservation Evoker",
+  1473: "Augmentation Evoker",
+  253: "Beast Mastery Hunter",
+  254: "Marksmanship Hunter",
+  255: "Survival Hunter",
+  62: "Arcane Mage",
+  63: "Fire Mage",
+  64: "Frost Mage",
+  268: "Brewmaster Monk",
+  270: "Mistweaver Monk",
+  269: "Windwalker Monk",
+  65: "Holy Paladin",
+  66: "Protection Paladin",
+  70: "Retribution Paladin",
+  256: "Discipline Priest",
+  257: "Holy Priest",
+  258: "Shadow Priest",
+  259: "Assassination Rogue",
+  260: "Outlaw Rogue",
+  261: "Subtlety Rogue",
+  262: "Elemental Shaman",
+  263: "Enhancement Shaman",
+  264: "Restoration Shaman",
+  265: "Affliction Warlock",
+  266: "Demonology Warlock",
+  267: "Destruction Warlock",
+  71: "Arms Warrior",
+  72: "Fury Warrior",
+  73: "Protection Warrior",
+};
+
+// "" for an unknown / missing spec id (0, or a log without COMBATANT_INFO).
+export function formatSpec(specId: number): string {
+  return SPECS[specId] ?? "";
+}
+
 // WoW `ENCOUNTER_START` difficultyID -> name. `flex` difficulties vary in
 // raid size, so the group size adds information there; legacy 10/25 carry
 // it in the name and Mythic raids are always 20, so it's noise for those.

@@ -6,7 +6,7 @@
 // scheduler, and `query` (stubbed -- see query.ts). No `filterChain`,
 // no `playhead` yet; they join when a view needs them.
 
-import type { EncounterRow, DeathRow, UnitRow, RangeSelection } from "../types";
+import type { EncounterRow, DeathRow, UnitRow, CombatantRow, RangeSelection } from "../types";
 import { query, type QuerySpec } from "./query";
 
 // ---- Shared stores -----------------------------------------------------
@@ -35,9 +35,10 @@ export interface LogData {
   encounters: EncounterRow[];
   deaths: DeathRow[];
   units: UnitRow[];
+  combatants: CombatantRow[];
 }
 
-let currentLogData: LogData = { encounters: [], deaths: [], units: [] };
+let currentLogData: LogData = { encounters: [], deaths: [], units: [], combatants: [] };
 const logDataSubs = new Set<(d: LogData) => void>();
 
 export function getLogData(): LogData {
@@ -62,6 +63,7 @@ export interface ViewContext {
   readonly deaths: DeathRow[];
   readonly units: UnitRow[]; // index-aligned with backend intern ids
   readonly players: UnitRow[]; // units where kind === "Player"
+  readonly combatants: CombatantRow[]; // COMBATANT_INFO spec/gear; often empty
 
   query<T>(spec: QuerySpec): Promise<T[]>;
   // Batches redraw callbacks into one requestAnimationFrame per window.
@@ -90,6 +92,9 @@ export function createViewContext(): ViewContext {
     },
     get players() {
       return currentLogData.units.filter((u) => u.kind === "Player");
+    },
+    get combatants() {
+      return currentLogData.combatants;
     },
     query,
     requestFrame(cb) {

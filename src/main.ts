@@ -1,7 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { VirtualList } from "./virtual-list";
-import type { UnitRow, EncounterRow, DeathRow, RangeSource, RangeSelection } from "./types";
+import type {
+  UnitRow,
+  EncounterRow,
+  DeathRow,
+  CombatantRow,
+  RangeSource,
+  RangeSelection,
+} from "./types";
 import { formatDuration, formatEncounterResult } from "./format";
 import { setRange, setLogData } from "./ui/context";
 import {
@@ -33,22 +40,6 @@ interface SpellRow {
 interface ZoneRow {
   mapId: number;
   name: string;
-}
-
-interface GearItemRow {
-  itemId: number;
-  itemLevel: number;
-  enchantId: number;
-  gemIds: number[];
-}
-
-interface CombatantRow {
-  playerName: string;
-  encounterName: string;
-  specId: number;
-  avgItemLevel: number | null;
-  itemCount: number;
-  gear: GearItemRow[];
 }
 
 interface DebugListsPayload {
@@ -1150,7 +1141,12 @@ async function refreshStatus() {
     lastListsLineCount = info.lineCount;
 
     // Feed the shared stores the src/ui views read from.
-    setLogData({ encounters: lists.encounters, deaths: lists.deaths, units: lists.units });
+    setLogData({
+      encounters: lists.encounters,
+      deaths: lists.deaths,
+      units: lists.units,
+      combatants: lists.combatants,
+    });
 
     // New log -> repopulate the encounter picker and reset the range to
     // the whole log (notifying any listener the filter changed).
