@@ -23,6 +23,38 @@ struct LogRegistry(Mutex<HashMap<PathBuf, Weak<ParsedLog>>>);
 #[derive(Default)]
 struct WindowLogs(Mutex<HashMap<String, Arc<ParsedLog>>>);
 
+// UI zoom, applied to every window's webview (WKWebView `pageZoom` under
+// the hood -- scales layout, text, and SVG uniformly). One global level,
+// not per-window; new windows inherit it (see `create_empty_window`). Not
+// persisted across launches yet -- a Settings default is a later job.
+struct Zoom(Mutex<f64>);
+impl Default for Zoom {
+    fn default() -> Self {
+        Zoom(Mutex::new(1.0))
+    }
+}
+const ZOOM_MIN: f64 = 0.5;
+const ZOOM_MAX: f64 = 3.0;
+const ZOOM_STEP: f64 = 0.2;
+
+/// Nudges the global zoom by `delta` (or resets to 1.0 when `delta` is 0),
+/// clamps it, and applies it to every open window's webview.
+fn adjust_zoom(app: &AppHandle, delta: f64) {
+    let level = {
+        let zoom = app.state::<Zoom>();
+        let mut level = zoom.0.lock().unwrap();
+        *level = if delta == 0.0 {
+            1.0
+        } else {
+            (*level + delta).clamp(ZOOM_MIN, ZOOM_MAX)
+        };
+        *level
+    };
+    for window in app.webview_windows().into_values() {
+        let _ = window.set_zoom(level);
+    }
+}
+
 /// Which of the app's views a window is currently showing. `Overview` is
 /// the default (`Default` here doubles as the fallback for a window with
 /// no entry in `WindowViewState` yet).
@@ -439,6 +471,13 @@ fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
     register_close_cleanup(&window);
     register_drag_drop(&window);
     register_focus_sync(&window);
+
+    // Inherit the current global zoom so a new window matches the others.
+    let level = *app.state::<Zoom>().0.lock().unwrap();
+    if level != 1.0 {
+        let _ = window.set_zoom(level);
+    }
+
     Some(window)
 }
 
@@ -1039,10 +1078,23 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         true,
         None::<&str>,
     )?;
+    // Zoom: standard Cmd + / Cmd - / Cmd 0. Driven entirely through our
+    // own `adjust_zoom` (one global level over every window) -- we don't
+    // enable the webview's built-in zoom hotkeys, which keep a separate
+    // internal factor that would drift out of sync with these.
+    let zoom_in_item = MenuItem::with_id(app, "zoom_in", "Zoom In", true, Some("CmdOrCtrl+="))?;
+    let zoom_out_item = MenuItem::with_id(app, "zoom_out", "Zoom Out", true, Some("CmdOrCtrl+-"))?;
+    let zoom_reset_item =
+        MenuItem::with_id(app, "zoom_reset", "Actual Size", true, Some("CmdOrCtrl+0"))?;
+
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&overview_view_item)
         .item(&debug_view_item)
         .item(&raw_view_item)
+        .separator()
+        .item(&zoom_in_item)
+        .item(&zoom_out_item)
+        .item(&zoom_reset_item)
         .build()?;
 
     // History: Back / Forward navigate the focused window's selection
@@ -1132,6 +1184,7 @@ pub fn run() {
         .manage(WindowLogs::default())
         .manage(WindowViewState::default())
         .manage(NextWindowId::default())
+        .manage(Zoom::default())
         .setup(|app| {
             let BuiltMenu { menu, window_menu, view_menu, history } = build_menu(app.handle())?;
             app.set_menu(menu)?;
@@ -1182,6 +1235,13 @@ pub fn run() {
             } else if event.id() == "open_settings" {
                 let app = app.clone();
                 std::thread::spawn(move || open_settings_window(&app));
+            } else if let Some(delta) = match event.id().as_ref() {
+                "zoom_in" => Some(ZOOM_STEP),
+                "zoom_out" => Some(-ZOOM_STEP),
+                "zoom_reset" => Some(0.0),
+                _ => None,
+            } {
+                adjust_zoom(app, delta);
             } else if let Some(view) = ViewKind::from_menu_id(event.id().as_ref()) {
                 // No window creation involved -- state mutation + an
                 // event emit, both cheap and non-blocking, so this runs
