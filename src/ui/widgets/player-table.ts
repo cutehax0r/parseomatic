@@ -1,4 +1,4 @@
-// name | DPS | damage done | % of raid (player+pet) damage | a bar. Rows
+// name | % of raid (player+pet) damage | bar | damage done | DPS. Rows
 // arrive already sorted (Overview sorts by damage desc). Plain grid, not
 // virtualized -- a raid is <= ~30 players. A future `data-table` widget
 // wraps VirtualList when something needs it (docs/ui-widgets.md).
@@ -24,7 +24,7 @@ export interface PlayerTableProps {
   rows: PlayerRow[];
 }
 
-const COLUMNS = ["Player", "DPS", "Damage", "%", ""];
+const COLUMNS = ["Player", "%", "", "Damage", "DPS"];
 
 registerWidget<PlayerTableProps>("player-table", (props) => {
   const element = document.createElement("div");
@@ -51,12 +51,12 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
           row.className = "player-table-row";
           const name = document.createElement("span");
           name.textContent = r.name;
-          const dps = document.createElement("span");
-          dps.textContent = formatCompact(r.dps);
-          const dmg = document.createElement("span");
-          dmg.textContent = formatCompact(r.damage);
           const pct = document.createElement("span");
           pct.textContent = `${(r.share * 100).toFixed(1)}%`;
+          const dmg = document.createElement("span");
+          dmg.textContent = formatCompact(r.damage);
+          const dps = document.createElement("span");
+          dps.textContent = formatCompact(r.dps);
 
           const bar = document.createElement("span");
           bar.className = "pt-bar";
@@ -68,7 +68,7 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
           pet.style.width = `${(r.pet / max) * 100}%`;
           bar.append(own, pet);
 
-          row.append(name, dps, dmg, pct, bar);
+          row.append(name, pct, bar, dmg, dps);
           return row;
         }),
       );

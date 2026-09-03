@@ -897,8 +897,8 @@ body {
 
 .player-table-row {
   display: grid;
-  /* last col ~= a stat-tile wide -- the 0..100 damage bar */
-  grid-template-columns: 1fr 90px 110px 64px 200px;
+  /* name | % | bar (~a stat-tile wide) | damage | DPS */
+  grid-template-columns: 1fr 64px 200px 110px 90px;
   gap: 10px;
   padding: 6px 14px;
   align-items: center;
