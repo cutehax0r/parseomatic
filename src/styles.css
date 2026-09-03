@@ -1213,7 +1213,7 @@ body {
    -- bigger than the metric numbers, which have the icon + curve for
    visual weight and don't need it. */
 .pt-name {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
   line-height: 1.2;
   overflow: hidden;
