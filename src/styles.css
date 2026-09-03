@@ -1158,7 +1158,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 5px;
 }
 
 .pt-role svg {
@@ -1203,9 +1203,11 @@ body {
   min-width: 0;
 }
 
+/* name over spec, set tight so the two lines read as one stack */
 .pt-name {
   font-size: 14px; /* match the metric headline numbers (.pt-metric-nums b) */
   font-weight: 700;
+  line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1213,6 +1215,7 @@ body {
 
 .pt-spec {
   font-size: 11px;
+  line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
