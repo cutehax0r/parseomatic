@@ -55,12 +55,14 @@ fn adjust_zoom(app: &AppHandle, delta: f64) {
     }
 }
 
-/// Which of the app's views a window is currently showing. `Overview` is
-/// the default (`Default` here doubles as the fallback for a window with
-/// no entry in `WindowViewState` yet).
+/// Which of the app's views a window is currently showing. `Encounters`
+/// (the pick-an-encounter / open-a-file surface) is the default -- `Default`
+/// here doubles as the fallback for a window with no entry in
+/// `WindowViewState` yet.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum ViewKind {
     #[default]
+    Encounters,
     Overview,
     Debug,
     Raw,
@@ -69,7 +71,8 @@ enum ViewKind {
 // Every view in the radio group, in toolbar/menu display order -- the
 // single source of truth for `sync_view_menu`'s loop and anywhere else
 // that has to touch them all.
-const ALL_VIEWS: [ViewKind; 3] = [ViewKind::Overview, ViewKind::Debug, ViewKind::Raw];
+const ALL_VIEWS: [ViewKind; 4] =
+    [ViewKind::Encounters, ViewKind::Overview, ViewKind::Debug, ViewKind::Raw];
 
 impl ViewKind {
     fn from_id(s: &str) -> Option<ViewKind> {
@@ -82,23 +85,25 @@ impl ViewKind {
 
     fn id(&self) -> &'static str {
         match self {
+            ViewKind::Encounters => "encounters",
+            ViewKind::Overview => "overview",
             ViewKind::Debug => "debug",
             ViewKind::Raw => "raw",
-            ViewKind::Overview => "overview",
         }
     }
 
     fn menu_id(&self) -> &'static str {
         match self {
+            ViewKind::Encounters => "view_encounters",
+            ViewKind::Overview => "view_overview",
             ViewKind::Debug => "view_debug",
             ViewKind::Raw => "view_raw",
-            ViewKind::Overview => "view_overview",
         }
     }
 }
 
 // Per-window "which view is showing" preference -- absent means the
-// default (ViewKind::Overview), matching the View menu's initial checked item.
+// default (ViewKind::Encounters), matching the View menu's initial checked item.
 #[derive(Default)]
 struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 
@@ -107,6 +112,7 @@ struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 // rather than via `Submenu::get`, which only searches a menu's *direct*
 // children and never recurses into a nested submenu.
 struct ViewMenu {
+    encounters: CheckMenuItem<tauri::Wry>,
     overview: CheckMenuItem<tauri::Wry>,
     debug: CheckMenuItem<tauri::Wry>,
     raw: CheckMenuItem<tauri::Wry>,
@@ -115,6 +121,7 @@ struct ViewMenu {
 impl ViewMenu {
     fn item(&self, view: ViewKind) -> &CheckMenuItem<tauri::Wry> {
         match view {
+            ViewKind::Encounters => &self.encounters,
             ViewKind::Overview => &self.overview,
             ViewKind::Debug => &self.debug,
             ViewKind::Raw => &self.raw,
@@ -1087,23 +1094,30 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         .build()?;
 
     // A radio group over independent CheckMenuItems (muda has no distinct
-    // radio-item type) -- Overview starts checked to match ViewKind::default().
-    // See sync_view_menu for how exclusivity is enforced on selection.
-    // Overview sits in View; Debug/Raw are tucked into a "Developer"
-    // submenu (they're not part of the everyday flow -- the toolbar only
-    // exposes Overview).
-    let debug_view_item =
-        CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
-    let raw_view_item =
-        CheckMenuItem::with_id(app, ViewKind::Raw.menu_id(), "Raw", true, false, None::<&str>)?;
+    // radio-item type) -- Encounters starts checked to match
+    // ViewKind::default(). See sync_view_menu for how exclusivity is
+    // enforced on selection. Encounters + Overview sit in View; Debug/Raw
+    // are tucked into a "Developer" submenu (not part of the everyday flow).
+    let encounters_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Encounters.menu_id(),
+        "Encounters",
+        true,
+        true,
+        None::<&str>,
+    )?;
     let overview_view_item = CheckMenuItem::with_id(
         app,
         ViewKind::Overview.menu_id(),
         "Overview",
         true,
-        true,
+        false,
         None::<&str>,
     )?;
+    let debug_view_item =
+        CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
+    let raw_view_item =
+        CheckMenuItem::with_id(app, ViewKind::Raw.menu_id(), "Raw", true, false, None::<&str>)?;
     let developer_menu = SubmenuBuilder::new(app, "Developer")
         .item(&debug_view_item)
         .item(&raw_view_item)
@@ -1119,6 +1133,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         MenuItem::with_id(app, "zoom_reset", "Actual Size", true, Some("CmdOrCtrl+0"))?;
 
     let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&encounters_view_item)
         .item(&overview_view_item)
         .item(&developer_menu)
         .separator()
@@ -1192,6 +1207,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         menu,
         window_menu,
         view: ViewMenu {
+            encounters: encounters_view_item,
             overview: overview_view_item,
             debug: debug_view_item,
             raw: raw_view_item,

@@ -163,11 +163,33 @@
       <div class="toolbar-divider"></div>
       <div class="toolbar-group">
         <button
+          id="view-encounters-btn"
+          class="toolbar-btn"
+          data-view="encounters"
+          title="Encounters"
+          aria-pressed="true"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+            <path d="M7 9h.01M7 15h.01M11 9h6M11 15h6"></path>
+          </svg>
+        </button>
+        <button
           id="view-overview-btn"
           class="toolbar-btn"
           data-view="overview"
           title="Overview"
-          aria-pressed="true"
+          aria-pressed="false"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -224,23 +246,26 @@
     </div>
     <main id="content" class="content">
       <p id="log-status" class="placeholder" hidden>No combat log open</p>
-      <section id="launch-view" class="launch" hidden>
-        <div class="launch-inner">
-          <h1 class="launch-title">parseomatic</h1>
-          <button id="launch-open-btn" class="launch-open" type="button">Open combat log…</button>
-          <div class="launch-cols">
-            <div class="launch-col">
-              <h2 class="launch-h">Recent logs</h2>
-              <ul id="launch-files" class="launch-list"></ul>
-              <p id="launch-files-empty" class="launch-empty" hidden>No logs opened yet.</p>
-            </div>
-            <div class="launch-col">
-              <h2 class="launch-h">Recent locations</h2>
-              <ul id="launch-locations" class="launch-list"></ul>
-              <p id="launch-locations-empty" class="launch-empty" hidden>—</p>
+      <section id="encounters-view" class="encounters-view" hidden>
+        <div id="encounters-open" class="launch" hidden>
+          <div class="launch-inner">
+            <h1 class="launch-title">parseomatic</h1>
+            <button id="launch-open-btn" class="launch-open" type="button">Open combat log…</button>
+            <div class="launch-cols">
+              <div class="launch-col">
+                <h2 class="launch-h">Recent logs</h2>
+                <ul id="launch-files" class="launch-list"></ul>
+                <p id="launch-files-empty" class="launch-empty" hidden>No logs opened yet.</p>
+              </div>
+              <div class="launch-col">
+                <h2 class="launch-h">Recent locations</h2>
+                <ul id="launch-locations" class="launch-list"></ul>
+                <p id="launch-locations-empty" class="launch-empty" hidden>—</p>
+              </div>
             </div>
           </div>
         </div>
+        <div id="encounters-grid" hidden></div>
       </section>
       <div id="debug-view" class="debug-view" hidden>
         <div class="tabs" role="tablist">
@@ -386,7 +411,9 @@
       </div>
       <section id="overview-view" class="overview-view" hidden>
         <div id="overview-mount"></div>
-        <div id="overview-empty" class="overview-empty" hidden></div>
+        <p id="overview-hint" class="overview-hint" hidden>
+          Pick an encounter in the Encounters view.
+        </p>
       </section>
     </main>
     <div id="status-bar" class="statusbar" hidden>

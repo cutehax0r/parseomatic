@@ -1,8 +1,7 @@
-// The "choose an encounter" screen, shown in the Overview view whenever
-// no single encounter is selected (full log / custom range / trash span).
-// A header (file + kill/wipe tally) over a grid of bosses laid out
-// horizontally, each with its pulls listed underneath. Clicking a pull
-// selects that encounter.
+// The "choose an encounter" screen -- the body of the Encounters view
+// once a log is loaded. A header (file + kill/wipe tally) over a grid of
+// bosses laid out horizontally, each with its pulls listed underneath.
+// Clicking a pull selects that encounter and drills into the Overview view.
 //
 // Rendering only -- main.ts owns the data and wires `onPick` to its
 // `applySelection`. Styling is deliberately minimal for now.
@@ -24,8 +23,8 @@ function basename(p: string): string {
 
 export function renderEncounterGrid(container: HTMLElement, props: EncounterGridProps): void {
   const { path, encounters, selectedIndex, onPick } = props;
-  // `container` (#overview-empty) has its class + `hidden` managed by
-  // overview.ts, so render into an inner root we own.
+  // `container` (#encounters-grid) has its `hidden` managed by main.ts, so
+  // render into an inner root we own.
   const root = document.createElement("div");
   root.className = "eg";
   container.replaceChildren(root);

@@ -1,6 +1,7 @@
-// Overview -- the first Panel/Widget view and the first consumer of the
-// encounter selector. Assumes a single selected encounter; anything else
-// (custom range, "Full log") shows an empty state.
+// Overview -- the per-encounter stats/chart/players-table Panel/Widget
+// view. Assumes a concrete window is selected (a boss, a trash span, or a
+// custom range); with nothing narrower than the whole log picked it shows
+// a hint pointing at the Encounters view (which owns the picker/grid).
 //
 // All numbers are real via query_events: one bucketed query yields the
 // chart's four time series (damage and healing, each split player-side vs
@@ -96,23 +97,23 @@ async function paint(): Promise<void> {
   if (!ctx || !built) return;
   const seq = ++paintSeq;
 
-  const emptyEl = document.querySelector<HTMLElement>("#overview-empty");
+  const hintEl = document.querySelector<HTMLElement>("#overview-hint");
   const mount = document.querySelector<HTMLElement>("#overview-mount");
 
   const src = ctx.range.source;
   const encs = ctx.encounters;
   const e = src.kind === "encounter" ? encs[src.index] : undefined;
 
-  // Render the overview for any concrete time window: a boss encounter, a
-  // trash span, or a user-picked custom range. The chooser shows only when
-  // nothing narrower than the whole log is selected (the default state).
+  // Render for any concrete time window: a boss encounter, a trash span,
+  // or a user-picked custom range. Nothing narrower than the whole log
+  // (the default) -> the "pick one in Encounters" hint.
   const extentStart = encs.length ? Math.min(...encs.map((x) => x.startMs)) : 0;
   const extentEnd = encs.length ? Math.max(...encs.map((x) => x.endMs)) : 0;
   const isWholeLog =
     !e && ctx.range.startMs <= extentStart && ctx.range.endMs >= extentEnd;
   const ready = !isWholeLog && ctx.range.endMs > ctx.range.startMs;
 
-  if (emptyEl) emptyEl.hidden = ready;
+  if (hintEl) hintEl.hidden = ready;
   if (mount) mount.hidden = !ready;
   if (!ready) return;
 

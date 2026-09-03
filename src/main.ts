@@ -115,8 +115,8 @@ let lastListsLineCount: number | null = null;
 let unitsById: UnitRow[] = [];
 let spellsById: SpellRow[] = [];
 
-type ViewMode = "debug" | "raw" | "overview";
-let currentViewMode: ViewMode = "overview";
+type ViewMode = "encounters" | "overview" | "debug" | "raw";
+let currentViewMode: ViewMode = "encounters";
 
 const RAW_ROW_HEIGHT = 24;
 
@@ -424,10 +424,10 @@ let encounterRows: EncounterRow[] = [];
 // the encounter-grid header displays it.
 let currentLogPath = "";
 
-// (Re)draws the "choose an encounter" grid into #overview-empty. Cheap
-// enough to call on every selection change (to move the highlight).
+// (Re)draws the "choose an encounter" grid into the Encounters view.
+// Cheap enough to call on every selection change (to move the highlight).
 function renderEncGrid(): void {
-  const el = document.querySelector<HTMLElement>("#overview-empty");
+  const el = document.querySelector<HTMLElement>("#encounters-grid");
   if (!el || encounterRows.length === 0) return;
   const sel = rangeSelection.source;
   renderEncounterGrid(el, {
@@ -436,7 +436,10 @@ function renderEncGrid(): void {
     selectedIndex: sel.kind === "encounter" ? sel.index : null,
     onPick: (idx) => {
       const e = encounterRows[idx];
-      if (e) applySelection({ startMs: e.startMs, endMs: e.endMs, source: { kind: "encounter", index: idx } });
+      if (!e) return;
+      applySelection({ startMs: e.startMs, endMs: e.endMs, source: { kind: "encounter", index: idx } });
+      // Picking a pull drills straight into the Overview view.
+      void invoke("set_current_view", { view: "overview" });
     },
   });
 }
@@ -1064,17 +1067,20 @@ function setupHistory(): void {
     syncHistoryUi(historyState());
     // Keep the launch screen's recent list fresh if a file was opened in
     // another window while this one sat blank.
-    if (!document.querySelector<HTMLElement>("#launch-view")?.hidden) void renderLaunch();
+    if (!document.querySelector<HTMLElement>("#encounters-open")?.hidden) void renderLaunch();
   });
 }
 
 async function refreshStatus() {
   const content = document.querySelector<HTMLElement>("#content");
   const statusEl = document.querySelector<HTMLElement>("#log-status");
-  const launchView = document.querySelector<HTMLElement>("#launch-view");
+  const encountersView = document.querySelector<HTMLElement>("#encounters-view");
+  const encountersOpen = document.querySelector<HTMLElement>("#encounters-open");
+  const encountersGrid = document.querySelector<HTMLElement>("#encounters-grid");
   const debugView = document.querySelector<HTMLElement>("#debug-view");
   const rawView = document.querySelector<HTMLElement>("#raw-view");
   const overviewView = document.querySelector<HTMLElement>("#overview-view");
+  const encountersBtn = document.querySelector<HTMLButtonElement>("#view-encounters-btn");
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
   const statusBar = document.querySelector<HTMLElement>("#status-bar");
   const statusBarFill = document.querySelector<HTMLElement>("#statusbar-fill");
@@ -1082,10 +1088,13 @@ async function refreshStatus() {
   if (
     !content ||
     !statusEl ||
-    !launchView ||
+    !encountersView ||
+    !encountersOpen ||
+    !encountersGrid ||
     !debugView ||
     !rawView ||
     !overviewView ||
+    !encountersBtn ||
     !overviewBtn ||
     !statusBar ||
     !statusBarFill ||
@@ -1098,14 +1107,24 @@ async function refreshStatus() {
     invoke<WindowInfo | null>("window_info"),
     invoke<string>("current_view"),
   ]);
-  currentViewMode = viewId === "raw" ? "raw" : viewId === "overview" ? "overview" : "debug";
-  // Only Overview has a toolbar button now (Debug/Raw are menu-only, under
-  // View > Developer); it reads as "pressed" whenever Overview is showing.
+  currentViewMode = (["encounters", "overview", "raw", "debug"].includes(viewId)
+    ? viewId
+    : "encounters") as ViewMode;
+  // Encounters + Overview have toolbar buttons (Debug/Raw are menu-only,
+  // under View > Developer).
+  encountersBtn.setAttribute("aria-pressed", String(currentViewMode === "encounters"));
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
 
   if (!info) {
+    // No log: the Encounters view shows the open-a-file / recent-logs UI.
+    // Force the view to Encounters (nothing else makes sense with no log);
+    // guarded so the resulting view-changed -> refreshStatus doesn't loop.
+    if (viewId !== "encounters") void invoke("set_current_view", { view: "encounters" });
+    currentViewMode = "encounters";
     statusEl.hidden = true;
-    launchView.hidden = false;
+    encountersView.hidden = false;
+    encountersOpen.hidden = false;
+    encountersGrid.hidden = true;
     void renderLaunch();
     statusBar.hidden = true;
     content.classList.remove("has-data");
@@ -1133,7 +1152,7 @@ async function refreshStatus() {
     lastLineCount = info.lineCount;
     lastCounts = null;
     updateSummaryText();
-    launchView.hidden = true;
+    encountersView.hidden = true;
     content.classList.remove("has-data");
     debugView.hidden = true;
     rawView.hidden = true;
@@ -1163,6 +1182,7 @@ async function refreshStatus() {
       lastListsLineCount = null;
       updateSummaryText();
       content.classList.remove("has-data");
+      encountersView.hidden = true;
       debugView.hidden = true;
       rawView.hidden = true;
       overviewView.hidden = true;
@@ -1188,18 +1208,21 @@ async function refreshStatus() {
     applySelection(fullLogSelection(), { history: "reset" });
   }
   updateSummaryText();
-  renderEncGrid();
 
-  launchView.hidden = true;
   content.classList.add("has-data");
   setEncounterPickerVisible(true);
+  encountersView.hidden = currentViewMode !== "encounters";
+  encountersOpen.hidden = true; // a log is loaded -> the grid, not the open prompt
+  encountersGrid.hidden = false;
   debugView.hidden = currentViewMode !== "debug";
   rawView.hidden = currentViewMode !== "raw";
   overviewView.hidden = currentViewMode !== "overview";
   // The "X lines — Y players" line is parser-sanity-check context for
-  // Debug/Raw; on Overview it's just noise.
-  statusEl.hidden = currentViewMode === "overview";
-  if (currentViewMode === "overview") {
+  // Debug/Raw; on Encounters/Overview it's just noise.
+  statusEl.hidden = currentViewMode === "overview" || currentViewMode === "encounters";
+  if (currentViewMode === "encounters") {
+    renderEncGrid();
+  } else if (currentViewMode === "overview") {
     renderOverview();
   } else if (currentViewMode === "raw") {
     await loadRawView();
@@ -1243,6 +1266,10 @@ window.addEventListener("DOMContentLoaded", () => {
     invoke("new_window_from");
   });
 
+  document.querySelector("#view-encounters-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "encounters" });
+  });
+
   document.querySelector("#view-overview-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "overview" });
   });
@@ -1252,6 +1279,18 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   document.querySelector("#zoom-in-btn")?.addEventListener("click", () => {
     invoke("zoom", { direction: 1 });
+  });
+
+  // ⌘←/⌘→ mirror the History menu's Back/Forward (⌘[/⌘]); ignore while a
+  // text field has focus so arrow-key editing still works there.
+  window.addEventListener("keydown", (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    e.preventDefault();
+    if (e.key === "ArrowLeft") historyBack();
+    else historyForward();
   });
 
   listen("log-changed", () => refreshStatus());
