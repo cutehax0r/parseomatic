@@ -184,16 +184,16 @@ A metric-cell column matching the damage/healing cells:
 
 - **Headline:** active % (`activeMs / encounterMs`). **Secondary line:**
   death count in red when > 0, else "active".
-- **Micro-chart:** 10 decile slice-bars (decided over the curve — reads as
-  "how many buttons, when", matches the segmented damage bars). Bar height
-  = active fraction of that decile, in the activity hue (`--ctp-teal`,
-  distinct from damage/heal/taken).
-  - A decile the player was **dead** for → full-height **dim-orange**
-    block (`--ctp-peach` @ 0.5) — visually the opposite of a tall teal bar.
-  - A decile they were **alive but idle** (~0 active) → a short grey tick
-    at the baseline.
-  - Render order per decile: `deadBins[i] > 0.5` → dead; else
-    `activeBins[i] < ~0.04` → idle tick; else teal bar.
+- **Micro-chart:** a smooth **curve** through the 10 per-decile activity
+  values (Catmull-Rom, like the line-chart widget), teal stroke
+  (`--ctp-teal`, distinct from damage/heal/taken) over a faint teal area
+  fill.
+  - Where the player was **dead**, that stretch of the curve + fill is
+    redrawn **yellow** (`--ctp-yellow`) — one treatment only: a colour
+    change at full strength, not a dimmed teal. Implemented as a
+    `clipPath` over the dead x-ranges. So a dip that's death reads
+    differently from a dip that's slacking.
+  - A decile counts as dead for the recolour when `deadBins[i] > 0.5`.
 
 **Data still to add:** two per-decile arrays on `PlayerStatsRow` /
 `PlayerEncounterStats` — `active_bins: [f64; 10]` (active fraction) and
