@@ -204,24 +204,35 @@ async function playerDamageRows(
   seconds: number,
   encounterName: string,
 ): Promise<PlayerRow[]> {
-  // Group by (owner, unit) so we can split each player's rolled-up total
-  // into their own damage (unit === owner) vs their pets' (unit !== owner).
-  const rows = await ctx!.query<{ sourceOwner: number; sourceUnit: number; dmg: number }>({
+  // One grouped pass over the window: damage (split own vs pet via the
+  // (owner, unit) key) and healing per owner. A player who only healed
+  // (common on trash spans / between pulls) still gets a row.
+  const rows = await ctx!.query<{
+    sourceOwner: number;
+    sourceUnit: number;
+    dmg: number;
+    heal: number;
+  }>({
     ...bounds,
-    where: [{ field: "kind", op: "in", value: DAMAGE_KINDS }],
     groupBy: ["sourceOwner", "sourceUnit"],
-    aggregate: [{ op: "sum", field: "amount", as: "dmg" }],
+    aggregate: [
+      { op: "sum", field: "amount", as: "dmg", where: [{ field: "kind", op: "in", value: DAMAGE_KINDS }] },
+      { op: "sum", field: "amount", as: "heal", where: [{ field: "kind", op: "in", value: HEAL_KINDS }] },
+    ],
   });
   const units = ctx!.units;
-  const byOwner = new Map<number, { own: number; pet: number }>();
+  const byOwner = new Map<number, { own: number; pet: number; heal: number }>();
   for (const r of rows) {
     if (units[r.sourceOwner]?.kind !== "Player") continue;
-    const acc = byOwner.get(r.sourceOwner) ?? { own: 0, pet: 0 };
+    const acc = byOwner.get(r.sourceOwner) ?? { own: 0, pet: 0, heal: 0 };
     if (r.sourceUnit === r.sourceOwner) acc.own += r.dmg;
     else acc.pet += r.dmg;
+    acc.heal += r.heal;
     byOwner.set(r.sourceOwner, acc);
   }
-  const list = [...byOwner].map(([id, v]) => ({ name: units[id]!.name, own: v.own, pet: v.pet }));
+  const list = [...byOwner]
+    .map(([id, v]) => ({ name: units[id]!.name, own: v.own, pet: v.pet, heal: v.heal }))
+    .filter((r) => r.own + r.pet + r.heal > 0);
   const total = list.reduce((s, r) => s + r.own + r.pet, 0);
 
   // player name -> spec, from this encounter's COMBATANT_INFO (falling back
@@ -244,10 +255,11 @@ async function playerDamageRows(
         pet: r.pet,
         damage: r.own + r.pet,
         dps: (r.own + r.pet) / seconds,
+        healing: r.heal,
         share: total > 0 ? (r.own + r.pet) / total : 0,
       };
     })
-    .sort((a, b) => b.damage - a.damage);
+    .sort((a, b) => b.damage - a.damage || b.healing - a.healing);
 }
 
 function deathMarkers(e: EncounterRow): ChartDeath[] {

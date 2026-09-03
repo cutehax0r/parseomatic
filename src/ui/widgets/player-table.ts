@@ -1,7 +1,7 @@
 // name | class/spec | role | % of raid (player+pet) damage | bar | damage
-// done | DPS. Rows arrive already sorted (Overview sorts by damage desc).
-// Plain grid, not virtualized -- a raid is <= ~30 players. A future
-// `data-table` widget wraps VirtualList when something needs it
+// done | DPS | healing done. Rows arrive already sorted (Overview sorts by
+// damage desc). Plain grid, not virtualized -- a raid is <= ~30 players. A
+// future `data-table` widget wraps VirtualList when something needs it
 // (docs/ui-widgets.md). `spec`/`role` are "" for logs without
 // COMBATANT_INFO (or an unmapped spec id).
 //
@@ -21,6 +21,7 @@ export interface PlayerRow {
   damage: number; // own + pet
   own: number; // damage by the player unit itself
   pet: number; // damage by the player's pets
+  healing: number; // healing done (player + pets) in the window
   share: number; // 0..1, this row's damage / the table's total damage
 }
 
@@ -37,6 +38,7 @@ const COLUMNS: Array<{ label: string; left?: boolean }> = [
   { label: "" },
   { label: "Damage" },
   { label: "DPS" },
+  { label: "Healing" },
 ];
 
 registerWidget<PlayerTableProps>("player-table", (props) => {
@@ -77,6 +79,8 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
           dmg.textContent = formatCompact(r.damage);
           const dps = document.createElement("span");
           dps.textContent = formatCompact(r.dps);
+          const heal = document.createElement("span");
+          heal.textContent = r.healing > 0 ? formatCompact(r.healing) : "—";
 
           const bar = document.createElement("span");
           bar.className = "pt-bar";
@@ -88,7 +92,7 @@ registerWidget<PlayerTableProps>("player-table", (props) => {
           pet.style.width = `${(r.pet / max) * 100}%`;
           bar.append(own, pet);
 
-          row.append(name, spec, role, pct, bar, dmg, dps);
+          row.append(name, spec, role, pct, bar, dmg, dps, heal);
           return row;
         }),
       );
