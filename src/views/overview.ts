@@ -95,30 +95,50 @@ async function paint(): Promise<void> {
   const mount = document.querySelector<HTMLElement>("#overview-mount");
 
   const src = ctx.range.source;
-  const e = src.kind === "encounter" ? ctx.encounters[src.index] : undefined;
-  // Trash spans are a legit time window -- render the overview for them
-  // too (the queries don't care that it's not a boss). Only a
-  // no-encounter selection (full log / custom range) shows the chooser.
-  const ready = !!e;
+  const encs = ctx.encounters;
+  const e = src.kind === "encounter" ? encs[src.index] : undefined;
+
+  // Render the overview for any concrete time window: a boss encounter, a
+  // trash span, or a user-picked custom range. The chooser shows only when
+  // nothing narrower than the whole log is selected (the default state).
+  const extentStart = encs.length ? Math.min(...encs.map((x) => x.startMs)) : 0;
+  const extentEnd = encs.length ? Math.max(...encs.map((x) => x.endMs)) : 0;
+  const isWholeLog =
+    !e && ctx.range.startMs <= extentStart && ctx.range.endMs >= extentEnd;
+  const ready = !isWholeLog && ctx.range.endMs > ctx.range.startMs;
 
   if (emptyEl) emptyEl.hidden = ready;
   if (mount) mount.hidden = !ready;
-  if (!e || !ready) return;
+  if (!ready) return;
 
-  const result = formatEncounterResult(e); // Kill / Wipe / ?
-  const durText = formatDuration(e.durationMs);
-  const seconds = Math.max(1, e.durationMs / 1000);
-  const tone = e.success === true ? "kill" : e.success === false ? "wipe" : undefined;
+  // The window we're overviewing -- a real encounter, or a synthetic
+  // stand-in for a custom range so the rest of paint() is uniform.
+  const win: EncounterRow = e ?? {
+    name: "Custom range",
+    encounterId: 0,
+    difficultyId: 0,
+    groupSize: 0,
+    startMs: ctx.range.startMs,
+    endMs: ctx.range.endMs,
+    durationMs: ctx.range.endMs - ctx.range.startMs,
+    success: null,
+    isTrash: false,
+  };
+
+  const result = formatEncounterResult(win); // Kill / Wipe / ?
+  const durText = formatDuration(win.durationMs);
+  const seconds = Math.max(1, win.durationMs / 1000);
+  const tone = win.success === true ? "kill" : win.success === false ? "wipe" : undefined;
   const deathCount = ctx.deaths.filter(
-    (d) => d.timestampMs >= e.startMs && d.timestampMs <= e.endMs,
+    (d) => d.timestampMs >= win.startMs && d.timestampMs <= win.endMs,
   ).length;
 
-  const bounds = { startMs: e.startMs, endMs: e.endMs };
+  const bounds = { startMs: win.startMs, endMs: win.endMs };
   // ~1 bucket/second, capped near the chart's pixel width.
   const bucketCount = Math.min(800, Math.max(60, Math.round(seconds)));
   const [series, playerRows] = await Promise.all([
     damageHealingSeries(bounds, bucketCount),
-    playerDamageRows(bounds, seconds, e.name),
+    playerDamageRows(bounds, seconds, win.name),
   ]);
   if (seq !== paintSeq) return; // a newer selection is painting
 
@@ -131,9 +151,9 @@ async function paint(): Promise<void> {
     npc: r.npc,
     npcHeal: r.npcHeal,
   }));
-  const deaths = deathMarkers(e);
+  const deaths = deathMarkers(win);
 
-  built.get("title")?.update({ name: e.name, badge: durText, tone, detail: formatDifficulty(e) });
+  built.get("title")?.update({ name: win.name, badge: durText, tone, detail: formatDifficulty(win) });
   built.get("dmg")?.update({
     label: "Damage",
     value: formatCompact(playerDmg),
@@ -150,7 +170,7 @@ async function paint(): Promise<void> {
   // (docs/boss-parsers.md), so for now a wipe just shows "Wipe". Duration
   // rides along in the sub slot, like DPS under Damage.
   built.get("progress")?.update({ label: "Progress", value: result || "?", sub: durText, tone });
-  built.get("chart")?.update({ buckets, deaths, startMs: e.startMs, endMs: e.endMs, displaySeconds: 8 });
+  built.get("chart")?.update({ buckets, deaths, startMs: win.startMs, endMs: win.endMs, displaySeconds: 8 });
   built.get("players")?.update({ rows: playerRows });
 }
 
