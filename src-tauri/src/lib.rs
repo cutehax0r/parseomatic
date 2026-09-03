@@ -430,7 +430,9 @@ fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
         tauri::WebviewUrl::App("index.html".into()),
     )
     .title("parseomatic")
-    .inner_size(800.0, 600.0)
+    // Keep in sync with tauri.conf.json's window size. Logical pixels, so
+    // this is ~1200x800 CSS px regardless of display scaling.
+    .inner_size(1200.0, 800.0)
     .build()
     .ok()?;
 
