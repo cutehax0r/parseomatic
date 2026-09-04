@@ -6,14 +6,22 @@
 // scheduler, and `query` (stubbed -- see query.ts). No `filterChain`,
 // no `playhead` yet; they join when a view needs them.
 
-import type { EncounterRow, DeathRow, UnitRow, CombatantRow, RangeSelection } from "../types";
+import type {
+  EncounterRow,
+  DeathRow,
+  UnitRow,
+  SpellRow,
+  CombatantRow,
+  RangeSelection,
+} from "../types";
 import { query, invalidateQueryCache, type QuerySpec } from "./query";
 import { invalidateEncounterStatsCache } from "./encounter-stats";
+import { invalidateSpellBreakdownCache } from "./spell-breakdown";
 
 // ---- Shared stores -----------------------------------------------------
 //
 // main.ts owns the writers: `setRange` from the encounter picker's
-// `applySelection`, `setLogData` when `debug_lists` is (re)fetched.
+// `applySelection`, `setLogData` when `log_lists` is (re)fetched.
 
 let currentRange: RangeSelection = { startMs: 0, endMs: 0, source: { kind: "custom" } };
 const rangeSubs = new Set<(r: RangeSelection) => void>();
@@ -32,14 +40,40 @@ export function subscribeRange(fn: (r: RangeSelection) => void): () => void {
   return () => rangeSubs.delete(fn);
 }
 
+// ---- Selected player -------------------------------------------------
+//
+// The toolbar's player picker writes this (via `main.ts`), the
+// per-character views read it. A dense intern id (index into `units`),
+// or null when nothing is picked. Independent of the range store --
+// picking a player does not touch Encounters/Overview.
+
+let currentPlayerUnitId: number | null = null;
+const playerSubs = new Set<(id: number | null) => void>();
+
+export function getSelectedPlayer(): number | null {
+  return currentPlayerUnitId;
+}
+
+export function setSelectedPlayer(id: number | null): void {
+  if (currentPlayerUnitId === id) return;
+  currentPlayerUnitId = id;
+  for (const fn of playerSubs) fn(id);
+}
+
+export function subscribeSelectedPlayer(fn: (id: number | null) => void): () => void {
+  playerSubs.add(fn);
+  return () => playerSubs.delete(fn);
+}
+
 export interface LogData {
   encounters: EncounterRow[];
   deaths: DeathRow[];
   units: UnitRow[];
+  spells: SpellRow[]; // index-aligned with backend intern ids
   combatants: CombatantRow[];
 }
 
-let currentLogData: LogData = { encounters: [], deaths: [], units: [], combatants: [] };
+let currentLogData: LogData = { encounters: [], deaths: [], units: [], spells: [], combatants: [] };
 const logDataSubs = new Set<(d: LogData) => void>();
 
 export function getLogData(): LogData {
@@ -50,6 +84,8 @@ export function setLogData(next: LogData): void {
   currentLogData = next;
   invalidateQueryCache(); // parsed data changed -- memoized query rows are stale
   invalidateEncounterStatsCache();
+  invalidateSpellBreakdownCache();
+  setSelectedPlayer(null); // a new log's roster is different -- drop the pick
   for (const fn of logDataSubs) fn(next);
 }
 
@@ -65,8 +101,10 @@ export interface ViewContext {
   readonly encounters: EncounterRow[];
   readonly deaths: DeathRow[];
   readonly units: UnitRow[]; // index-aligned with backend intern ids
+  readonly spells: SpellRow[]; // index-aligned with backend intern ids
   readonly players: UnitRow[]; // units where kind === "Player"
   readonly combatants: CombatantRow[]; // COMBATANT_INFO spec/gear; often empty
+  readonly selectedPlayer: number | null; // picker's current player (unit intern id)
 
   query<T>(spec: QuerySpec): Promise<T[]>;
   // Batches redraw callbacks into one requestAnimationFrame per window.
@@ -93,11 +131,17 @@ export function createViewContext(): ViewContext {
     get units() {
       return currentLogData.units;
     },
+    get spells() {
+      return currentLogData.spells;
+    },
     get players() {
       return currentLogData.units.filter((u) => u.kind === "Player");
     },
     get combatants() {
       return currentLogData.combatants;
+    },
+    get selectedPlayer() {
+      return currentPlayerUnitId;
     },
     query,
     requestFrame(cb) {
@@ -121,11 +165,13 @@ export function createViewContext(): ViewContext {
   };
   const offRange = subscribeRange(notify);
   const offLog = subscribeLogData(notify);
+  const offPlayer = subscribeSelectedPlayer(notify);
 
   // Not currently torn down -- one ViewContext lives for the window's
   // lifetime. Kept so a future multi-window/teardown path has the hook.
   void offRange;
   void offLog;
+  void offPlayer;
 
   return ctx;
 }

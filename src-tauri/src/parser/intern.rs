@@ -176,6 +176,14 @@ pub struct UnitRecord {
     pub server_id: Option<u16>,
     pub kind: UnitKind,
     pub owner_id: Option<u32>,
+    /// True while the only sighting so far carried no usable name -- an
+    /// advanced-block `infoGUID`/`ownerGUID` reference
+    /// (`intern_placeholder`, from `event::link_owner`). The first real
+    /// named sighting (`intern` / merge) clears it and fills in the name.
+    /// Without this, a unit whose GUID happens to be referenced (e.g. as a
+    /// pet's owner) before its own first named line stays permanently
+    /// blank.
+    pub name_placeholder: bool,
 }
 
 /// GUID -> unit-instance table. Every unique spawn instance gets its own
@@ -189,16 +197,61 @@ pub struct GuidTable {
 }
 
 impl GuidTable {
-    /// Interns `guid`. If already known, updates its record's `owner_id`
-    /// when a richer sighting supplies one (advanced-params `ownerGUID`
-    /// isn't present on every line that mentions a given unit); `name_id`
-    /// and `server_id` are only set on first sight (a placeholder empty
-    /// name from `link_owner` never overwrites a real one -- see there).
+    /// Interns `guid` from a real, named sighting (source/dest fields).
+    /// If already known: fills in `owner_id` when a richer sighting
+    /// supplies one, and -- if the record so far only had a placeholder
+    /// name (`intern_placeholder`) -- upgrades `name_id`/`server_id` to
+    /// this real name. Once a real name is on record it's kept
+    /// (first-named-sighting wins); `owner_id` still updates.
     pub fn intern(
         &mut self,
         guid: &str,
         name_id: u16,
         server_id: Option<u16>,
+        owner_id: Option<u32>,
+    ) -> u32 {
+        if let Some(&id) = self.index.get(guid) {
+            let rec = &mut self.records[id as usize];
+            if owner_id.is_some() {
+                rec.owner_id = owner_id;
+            }
+            if rec.name_placeholder {
+                rec.name_id = name_id;
+                rec.server_id = server_id;
+                rec.name_placeholder = false;
+            }
+            return id;
+        }
+        assert!(
+            self.records.len() < u32::MAX as usize,
+            "GuidTable overflow: more than u32::MAX-1 distinct units in one log"
+        );
+        let id = self.records.len() as u32;
+        let arc: Arc<str> = Arc::from(guid);
+        let kind = UnitKind::from_guid(guid);
+        self.index.insert(arc.clone(), id);
+        self.records.push(UnitRecord {
+            guid: arc,
+            name_id,
+            server_id,
+            kind,
+            owner_id,
+            name_placeholder: false,
+        });
+        id
+    }
+
+    /// Interns `guid` from a sighting that carries no usable name -- an
+    /// advanced-block `infoGUID`/`ownerGUID` reference (see
+    /// `event::link_owner`). A brand-new record gets `empty_name_id` and
+    /// is flagged `name_placeholder` so the first real named sighting
+    /// (`intern`, or `merge` from another chunk) fills the name in. An
+    /// existing record keeps whatever name it has; only `owner_id` may be
+    /// filled in.
+    pub fn intern_placeholder(
+        &mut self,
+        guid: &str,
+        empty_name_id: u16,
         owner_id: Option<u32>,
     ) -> u32 {
         if let Some(&id) = self.index.get(guid) {
@@ -217,16 +270,24 @@ impl GuidTable {
         self.index.insert(arc.clone(), id);
         self.records.push(UnitRecord {
             guid: arc,
-            name_id,
-            server_id,
+            name_id: empty_name_id,
+            server_id: None,
             kind,
             owner_id,
+            name_placeholder: true,
         });
         id
     }
 
     pub fn get(&self, id: u32) -> &UnitRecord {
         &self.records[id as usize]
+    }
+
+    /// Id of an already-interned GUID, without creating a record for an
+    /// unknown one (`COMBATANT_INFO` aura lists name casters who may or
+    /// may not be otherwise present in the log).
+    pub fn get_id(&self, guid: &str) -> Option<u32> {
+        self.index.get(guid).copied()
     }
 
     pub fn len(&self) -> usize {
@@ -247,6 +308,15 @@ impl GuidTable {
         let mut remap = Vec::with_capacity(other.records.len());
         for rec in &other.records {
             if let Some(&id) = self.index.get(&*rec.guid) {
+                // Same GUID seen in an earlier chunk. If that chunk only
+                // had a placeholder name (a pet-owner reference, say) and
+                // this one has the real name, adopt it.
+                let existing = &mut self.records[id as usize];
+                if existing.name_placeholder && !rec.name_placeholder {
+                    existing.name_id = name_remap[rec.name_id as usize];
+                    existing.server_id = rec.server_id.map(|s| name_remap[s as usize]);
+                    existing.name_placeholder = false;
+                }
                 remap.push(id);
             } else {
                 assert!(
@@ -261,6 +331,7 @@ impl GuidTable {
                     server_id: rec.server_id.map(|s| name_remap[s as usize]),
                     kind: rec.kind,
                     owner_id: None, // fixed up below
+                    name_placeholder: rec.name_placeholder,
                 });
                 remap.push(id);
             }
@@ -485,13 +556,64 @@ mod tests {
         assert_eq!(guids.get(pet).owner_id, None);
 
         let owner = guids.intern("Player-1-1", owner_name, None, None);
-        // Re-sighting with a placeholder name (as link_owner does in
-        // event.rs) must not clobber the name already on record.
+        // Re-sighting via intern_placeholder (as link_owner does) must not
+        // clobber the real name already on record.
         let placeholder = strings.intern("");
-        guids.intern("Pet-0-1-1-1-1-1", placeholder, None, Some(owner));
+        guids.intern_placeholder("Pet-0-1-1-1-1-1", placeholder, Some(owner));
 
         assert_eq!(guids.get(pet).owner_id, Some(owner));
         assert_eq!(guids.get(pet).name_id, pet_name);
+        assert!(!guids.get(pet).name_placeholder);
+    }
+
+    #[test]
+    fn placeholder_name_is_upgraded_by_a_later_real_sighting() {
+        // The Xalpharis case: a hunter's GUID is first seen as their pet's
+        // ownerGUID (link_owner -> intern_placeholder, no name), then in
+        // their own first cast line (intern, real name). The real name
+        // must win -- without the upgrade the unit stays permanently blank.
+        let mut strings = StringTable::default();
+        let mut guids = GuidTable::default();
+        let empty = strings.intern("");
+        let real = strings.intern("Xalpharis");
+        let realm = strings.intern("Illidan-US");
+
+        let a = guids.intern_placeholder("Player-57-1", empty, None);
+        assert!(guids.get(a).name_placeholder);
+
+        let b = guids.intern("Player-57-1", real, Some(realm), None);
+        assert_eq!(a, b);
+        assert_eq!(guids.get(a).name_id, real);
+        assert_eq!(guids.get(a).server_id, Some(realm));
+        assert!(!guids.get(a).name_placeholder);
+
+        // A further placeholder sighting can't blank it back out.
+        guids.intern_placeholder("Player-57-1", empty, None);
+        assert_eq!(guids.get(a).name_id, real);
+    }
+
+    #[test]
+    fn merge_upgrades_a_placeholder_name_from_a_later_chunk() {
+        // Chunk A only sees the GUID as a pet owner (placeholder); chunk B
+        // has the real named sighting. The merged table must carry the
+        // real name regardless of chunk order.
+        let mut global = InternTables::default();
+
+        let mut chunk_a = InternTables::default();
+        let empty_a = chunk_a.strings.intern("");
+        let ua = chunk_a.guids.intern_placeholder("Player-57-1", empty_a, None);
+
+        let mut chunk_b = InternTables::default();
+        let name_b = chunk_b.strings.intern("Xalpharis");
+        let ub = chunk_b.guids.intern("Player-57-1", name_b, None, None);
+
+        let remap_a = global.merge(chunk_a);
+        let remap_b = global.merge(chunk_b);
+        assert_eq!(remap_a.guids[ua as usize], remap_b.guids[ub as usize]);
+
+        let g = remap_b.guids[ub as usize];
+        assert_eq!(global.strings.get(global.guids.get(g).name_id), "Xalpharis");
+        assert!(!global.guids.get(g).name_placeholder);
     }
 
     #[test]

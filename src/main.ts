@@ -3,14 +3,28 @@ import { listen } from "@tauri-apps/api/event";
 import { VirtualList } from "./virtual-list";
 import type {
   UnitRow,
+  SpellRow,
   EncounterRow,
   DeathRow,
   CombatantRow,
   RangeSource,
   RangeSelection,
 } from "./types";
-import { formatDuration, formatEncounterResult, formatUnitName } from "./format";
-import { setRange, setLogData } from "./ui/context";
+import {
+  classColorVar,
+  formatDuration,
+  formatEncounterResult,
+  formatSpec,
+  formatUnitName,
+} from "./format";
+import {
+  setRange,
+  setLogData,
+  getSelectedPlayer,
+  setSelectedPlayer,
+  subscribeSelectedPlayer,
+} from "./ui/context";
+import { query } from "./ui/query";
 import {
   configureHistory,
   pushHistory,
@@ -24,6 +38,9 @@ import {
   type HistoryState,
 } from "./ui/history";
 import { renderOverview } from "./views/overview";
+import { renderCharacter } from "./views/character";
+import { renderDamage } from "./views/damage";
+import { renderHealing } from "./views/healing";
 import { renderLaunch } from "./views/launch";
 import { renderEncounterGrid } from "./views/encounter-grid";
 
@@ -34,18 +51,12 @@ interface WindowInfo {
   path: string;
 }
 
-interface SpellRow {
-  spellId: number;
-  name: string;
-  school: number;
-}
-
 interface ZoneRow {
   mapId: number;
   name: string;
 }
 
-interface DebugListsPayload {
+interface LogListsPayload {
   units: UnitRow[];
   spells: SpellRow[];
   zones: ZoneRow[];
@@ -99,7 +110,7 @@ const lineFormatter = new Intl.NumberFormat();
 let lastLineCount: number | null = null;
 let lastCounts: DebugCounts | null = null;
 // The lineCount lastCounts was actually built from. refreshStatus fires
-// on both log-changed and view-changed, but debug_lists rebuilds its
+// on both log-changed and view-changed, but log_lists rebuilds its
 // entire payload (every unit/spell/zone/encounter/death/gear row, all
 // cloned) from scratch server-side -- once a log is done, lineCount is
 // stable for it, so a mismatch is the only signal that actually means
@@ -109,13 +120,17 @@ let lastListsLineCount: number | null = null;
 // Backend intern ids (`GuidTable`/`SpellTable`) are dense and 0-indexed,
 // so `units[id]`/`spells[id]` is an O(1) lookup -- the raw view sends ids
 // (see RawEventRow) instead of resolved strings and resolves them
-// against these, set alongside lastCounts whenever debug_lists is
+// against these, set alongside lastCounts whenever log_lists is
 // fetched. Avoids re-cloning the same handful of player/pet names on
 // every scroll tick, including rows already scrolled past.
 let unitsById: UnitRow[] = [];
 let spellsById: SpellRow[] = [];
+// COMBATANT_INFO snapshots for the loaded log, kept so the player picker
+// can label roster entries with their spec (and the character view joins
+// by unit id). Set alongside `setLogData`.
+let lastCombatants: CombatantRow[] = [];
 
-type ViewMode = "encounters" | "overview" | "debug" | "raw";
+type ViewMode = "encounters" | "overview" | "character" | "damage" | "healing" | "debug" | "raw";
 let currentViewMode: ViewMode = "encounters";
 
 const RAW_ROW_HEIGHT = 24;
@@ -195,7 +210,7 @@ function renderTable(tabKey: string, gridColumns: string, rows: string[][], empt
   table.list.setTotal(rows.length);
 }
 
-function renderDebugLists(lists: DebugListsPayload): DebugCounts {
+function renderDebugLists(lists: LogListsPayload): DebugCounts {
   unitsById = lists.units;
   spellsById = lists.spells;
 
@@ -756,6 +771,9 @@ function applySelection(
 
   // Keep the encounter grid's highlight in step with the selection.
   renderEncGrid();
+
+  // The player picker's roster is scoped to the selected range.
+  void populatePlayerPicker();
 }
 
 function setActiveOption(el: HTMLElement | null): void {
@@ -968,6 +986,246 @@ function setupEncounterPicker(): void {
   });
 }
 
+// ---- Player picker ------------------------------------------------------
+//
+// A second toolbar listbox (index.html #player-picker), right of the
+// encounter picker. Lists the human characters active in the currently
+// selected time range and writes the pick to the shared `selectedPlayer`
+// store (src/ui/context.ts) -- which the per-character views (Character,
+// and later Damage & Healing / Interrupts / Deaths / replay) read. It
+// does NOT touch the encounter range or the Encounters/Overview views.
+//
+// Simpler than the encounter picker: a flat list, no custom-range
+// popover. The generic .picker / .picker-menu / .picker-option CSS is
+// shared with the encounter picker.
+
+interface RosterEntry {
+  unitId: number;
+  name: string;
+  specId: number; // 0 when the log has no COMBATANT_INFO for them
+}
+
+let playerRoster: RosterEntry[] = [];
+let activePlayerOption: HTMLElement | null = null;
+
+function playerPickerOpen(): boolean {
+  return document.querySelector<HTMLElement>("#player-picker")?.dataset.open === "true";
+}
+
+function setActivePlayerOption(el: HTMLElement | null): void {
+  activePlayerOption?.classList.remove("is-active");
+  activePlayerOption = el;
+  if (el) {
+    el.classList.add("is-active");
+    el.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function movePlayerOption(delta: number): void {
+  const opts = Array.from(
+    document.querySelectorAll<HTMLElement>("#player-picker-menu .picker-option"),
+  );
+  if (opts.length === 0) return;
+  const cur = activePlayerOption ? opts.indexOf(activePlayerOption) : -1;
+  setActivePlayerOption(opts[(cur + delta + opts.length) % opts.length]);
+}
+
+function updatePlayerPickerLabel(): void {
+  const label = document.querySelector<HTMLElement>("#player-picker-label");
+  if (!label) return;
+  const id = getSelectedPlayer();
+  label.textContent = id !== null && unitsById[id] ? unitsById[id].name : "Select player…";
+}
+
+// The per-character view buttons (Character, Damage, ...) are enabled
+// only once a player is picked.
+function refreshCharacterViewButtons(): void {
+  const disabled = getSelectedPlayer() === null;
+  for (const id of ["#view-character-btn", "#view-damage-btn", "#view-healing-btn"]) {
+    const btn = document.querySelector<HTMLButtonElement>(id);
+    if (btn) btn.disabled = disabled;
+  }
+}
+
+function buildPlayerMenu(): void {
+  const menu = document.querySelector<HTMLElement>("#player-picker-menu");
+  if (!menu) return;
+  menu.replaceChildren();
+
+  if (playerRoster.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "picker-section";
+    empty.textContent = "No players active in this range";
+    menu.appendChild(empty);
+    return;
+  }
+
+  const selected = getSelectedPlayer();
+  for (const p of playerRoster) {
+    const opt = document.createElement("div");
+    opt.className = "picker-option";
+    opt.setAttribute("role", "option");
+    opt.dataset.unit = String(p.unitId);
+
+    const name = document.createElement("span");
+    name.textContent = p.name;
+    const color = classColorVar(p.specId);
+    if (color) name.style.color = color;
+    opt.appendChild(name);
+
+    const specText = formatSpec(p.specId);
+    if (specText) {
+      const meta = document.createElement("span");
+      meta.className = "picker-option-meta";
+      meta.textContent = specText;
+      opt.appendChild(meta);
+    }
+
+    if (p.unitId === selected) opt.setAttribute("aria-selected", "true");
+    menu.appendChild(opt);
+  }
+}
+
+function openPlayerPickerMenu(): void {
+  const picker = document.querySelector<HTMLElement>("#player-picker");
+  const btn = document.querySelector<HTMLButtonElement>("#player-picker-btn");
+  const menu = document.querySelector<HTMLElement>("#player-picker-menu");
+  if (!picker || !btn || !menu) return;
+  buildPlayerMenu();
+  menu.hidden = false;
+  picker.dataset.open = "true";
+  btn.setAttribute("aria-expanded", "true");
+  const selected = menu.querySelector<HTMLElement>('.picker-option[aria-selected="true"]');
+  setActivePlayerOption(selected ?? menu.querySelector<HTMLElement>(".picker-option"));
+  menu.focus();
+}
+
+function closePlayerPicker(): void {
+  const picker = document.querySelector<HTMLElement>("#player-picker");
+  const btn = document.querySelector<HTMLButtonElement>("#player-picker-btn");
+  const menu = document.querySelector<HTMLElement>("#player-picker-menu");
+  if (!picker || !btn || !menu) return;
+  picker.dataset.open = "false";
+  btn.setAttribute("aria-expanded", "false");
+  menu.hidden = true;
+  setActivePlayerOption(null);
+}
+
+function choosePlayerOption(opt: HTMLElement): void {
+  const raw = opt.dataset.unit;
+  if (raw === undefined) return;
+  setSelectedPlayer(Number(raw)); // subscriber refreshes the label + button
+  closePlayerPicker();
+  document.querySelector<HTMLButtonElement>("#player-picker-btn")?.focus();
+}
+
+function setPlayerPickerVisible(visible: boolean): void {
+  const slot = document.querySelector<HTMLElement>("#player-picker-slot");
+  const picker = document.querySelector<HTMLElement>("#player-picker");
+  if (slot) slot.hidden = !visible;
+  if (picker) picker.hidden = !visible;
+  if (!visible) closePlayerPicker();
+}
+
+// Rebuilds `playerRoster` for the current range: the human characters
+// that acted as a source or target of any event in the window. One
+// aggregated `query_events` pass per direction (both memoized by
+// src/ui/query.ts, so re-selecting a seen range costs no IPC). Keeps the
+// existing selection even if that player isn't in the new roster -- their
+// gear snapshot isn't range-dependent.
+async function populatePlayerPicker(): Promise<void> {
+  const sel = rangeSelection;
+  if (!sel || sel.endMs <= sel.startMs || unitsById.length === 0) {
+    playerRoster = [];
+    if (playerPickerOpen()) buildPlayerMenu();
+    return;
+  }
+
+  const bounds = { startMs: sel.startMs, endMs: sel.endMs };
+  const [srcRows, tgtRows] = await Promise.all([
+    query<{ sourceUnit: number }>({
+      ...bounds,
+      groupBy: ["sourceUnit"],
+      aggregate: [{ op: "count", as: "n" }],
+    }),
+    query<{ targetUnit: number }>({
+      ...bounds,
+      groupBy: ["targetUnit"],
+      aggregate: [{ op: "count", as: "n" }],
+    }),
+  ]);
+
+  const ids = new Set<number>();
+  for (const r of srcRows) ids.add(r.sourceUnit);
+  for (const r of tgtRows) ids.add(r.targetUnit);
+
+  const specByUnit = new Map<number, number>();
+  for (const c of lastCombatants) specByUnit.set(c.unitId, c.specId);
+
+  playerRoster = [...ids]
+    .filter((id) => unitsById[id]?.kind === "Player")
+    .map((id) => ({ unitId: id, name: unitsById[id].name, specId: specByUnit.get(id) ?? 0 }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (playerPickerOpen()) buildPlayerMenu();
+}
+
+function setupPlayerPicker(): void {
+  const btn = document.querySelector<HTMLButtonElement>("#player-picker-btn");
+  const menu = document.querySelector<HTMLElement>("#player-picker-menu");
+  if (!btn || !menu) return;
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (playerPickerOpen()) closePlayerPicker();
+    else openPlayerPickerMenu();
+  });
+
+  menu.addEventListener("click", (e) => {
+    const opt = (e.target as HTMLElement).closest<HTMLElement>(".picker-option");
+    if (opt?.dataset.unit) choosePlayerOption(opt);
+  });
+
+  menu.addEventListener("keydown", (e) => {
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        movePlayerOption(1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        movePlayerOption(-1);
+        break;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        if (activePlayerOption) choosePlayerOption(activePlayerOption);
+        break;
+      case "Escape":
+        e.preventDefault();
+        closePlayerPicker();
+        btn.focus();
+        break;
+    }
+  });
+
+  document.addEventListener("click", (e) => {
+    const picker = document.querySelector<HTMLElement>("#player-picker");
+    if (picker && playerPickerOpen() && !picker.contains(e.target as Node)) closePlayerPicker();
+  });
+
+  // The store is the single source of truth -- new log clears it
+  // (setLogData), the menu sets it. Keep the label + Character button in
+  // sync from one place.
+  subscribeSelectedPlayer(() => {
+    updatePlayerPickerLabel();
+    refreshCharacterViewButtons();
+    if (currentViewMode === "character") renderCharacter();
+    else if (currentViewMode === "damage") renderDamage();
+    else if (currentViewMode === "healing") renderHealing();
+  });
+}
+
 // ---- Selection history (toolbar back/forward + the history popup) --------
 
 function historyPopupOpen(): boolean {
@@ -1097,8 +1355,14 @@ async function refreshStatus() {
   const debugView = document.querySelector<HTMLElement>("#debug-view");
   const rawView = document.querySelector<HTMLElement>("#raw-view");
   const overviewView = document.querySelector<HTMLElement>("#overview-view");
+  const characterView = document.querySelector<HTMLElement>("#character-view");
+  const damageView = document.querySelector<HTMLElement>("#damage-view");
+  const healingView = document.querySelector<HTMLElement>("#healing-view");
   const encountersBtn = document.querySelector<HTMLButtonElement>("#view-encounters-btn");
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
+  const characterBtn = document.querySelector<HTMLButtonElement>("#view-character-btn");
+  const damageBtn = document.querySelector<HTMLButtonElement>("#view-damage-btn");
+  const healingBtn = document.querySelector<HTMLButtonElement>("#view-healing-btn");
   const newWindowBtn = document.querySelector<HTMLButtonElement>("#new-window-btn");
   const statusBar = document.querySelector<HTMLElement>("#status-bar");
   const statusBarFill = document.querySelector<HTMLElement>("#statusbar-fill");
@@ -1112,8 +1376,14 @@ async function refreshStatus() {
     !debugView ||
     !rawView ||
     !overviewView ||
+    !characterView ||
+    !damageView ||
+    !healingView ||
     !encountersBtn ||
     !overviewBtn ||
+    !characterBtn ||
+    !damageBtn ||
+    !healingBtn ||
     !statusBar ||
     !statusBarFill ||
     !statusBarText
@@ -1125,13 +1395,29 @@ async function refreshStatus() {
     invoke<WindowInfo | null>("window_info"),
     invoke<string>("current_view"),
   ]);
-  currentViewMode = (["encounters", "overview", "raw", "debug"].includes(viewId)
+  currentViewMode = (["encounters", "overview", "character", "damage", "healing", "raw", "debug"].includes(viewId)
     ? viewId
     : "encounters") as ViewMode;
-  // Encounters + Overview have toolbar buttons (Debug/Raw are menu-only,
-  // under View > Developer).
+  // The per-character views need a picked player -- fall back to Encounters
+  // if one is somehow active without one (a Duplicate Window inheriting the
+  // view, or the View menu item clicked with nothing selected).
+  if (
+    (currentViewMode === "character" ||
+      currentViewMode === "damage" ||
+      currentViewMode === "healing") &&
+    getSelectedPlayer() === null
+  ) {
+    if (viewId !== "encounters") void invoke("set_current_view", { view: "encounters" });
+    currentViewMode = "encounters";
+  }
+  // Encounters + Overview + Character + Damage have toolbar buttons
+  // (Debug/Raw are menu-only, under View > Developer).
   encountersBtn.setAttribute("aria-pressed", String(currentViewMode === "encounters"));
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
+  characterBtn.setAttribute("aria-pressed", String(currentViewMode === "character"));
+  damageBtn.setAttribute("aria-pressed", String(currentViewMode === "damage"));
+  healingBtn.setAttribute("aria-pressed", String(currentViewMode === "healing"));
+  refreshCharacterViewButtons();
   // "Duplicate window" needs a loaded log to copy from.
   if (newWindowBtn) newWindowBtn.disabled = !info || !info.done;
 
@@ -1151,9 +1437,13 @@ async function refreshStatus() {
     debugView.hidden = true;
     rawView.hidden = true;
     overviewView.hidden = true;
+    characterView.hidden = true;
+    damageView.hidden = true;
+    healingView.hidden = true;
     lastLineCount = null;
     lastCounts = null;
     lastListsLineCount = null;
+    lastCombatants = [];
     encounterRows = [];
     encounterOptionLabels.clear();
     logStartMs = 0;
@@ -1163,6 +1453,7 @@ async function refreshStatus() {
       { silent: true, history: "none" },
     );
     setEncounterPickerVisible(false);
+    setPlayerPickerVisible(false);
     return;
   }
 
@@ -1177,7 +1468,11 @@ async function refreshStatus() {
     debugView.hidden = true;
     rawView.hidden = true;
     overviewView.hidden = true;
+    characterView.hidden = true;
+    damageView.hidden = true;
+    healingView.hidden = true;
     setEncounterPickerVisible(false);
+    setPlayerPickerVisible(false);
 
     statusBar.hidden = false;
     const percent = Math.round(info.percent);
@@ -1190,13 +1485,13 @@ async function refreshStatus() {
   statusBarFill.style.width = "0%";
   lastLineCount = info.lineCount;
 
-  // debug_lists rebuilds and clones its entire payload server-side --
+  // log_lists rebuilds and clones its entire payload server-side --
   // skip the round-trip (and the full-DOM rebuild in renderDebugLists)
   // entirely when we already have it for this exact log. A view-only
   // change (log-changed re-fires "done" state, or the user just flipped
   // to Raw) never changes lineCount, so this is a safe, cheap guard.
   if (lastListsLineCount !== info.lineCount) {
-    const lists = await invoke<DebugListsPayload | null>("debug_lists");
+    const lists = await invoke<LogListsPayload | null>("log_lists");
     if (!lists) {
       lastCounts = null;
       lastListsLineCount = null;
@@ -1206,17 +1501,23 @@ async function refreshStatus() {
       debugView.hidden = true;
       rawView.hidden = true;
       overviewView.hidden = true;
+      characterView.hidden = true;
+      damageView.hidden = true;
+      healingView.hidden = true;
       setEncounterPickerVisible(false);
+      setPlayerPickerVisible(false);
       return;
     }
     lastCounts = renderDebugLists(lists);
     lastListsLineCount = info.lineCount;
+    lastCombatants = lists.combatants;
 
     // Feed the shared stores the src/ui views read from.
     setLogData({
       encounters: lists.encounters,
       deaths: lists.deaths,
       units: lists.units,
+      spells: lists.spells,
       combatants: lists.combatants,
     });
 
@@ -1244,19 +1545,29 @@ async function refreshStatus() {
 
   content.classList.add("has-data");
   setEncounterPickerVisible(true);
+  setPlayerPickerVisible(true);
   encountersView.hidden = currentViewMode !== "encounters";
   encountersOpen.hidden = true; // a log is loaded -> the grid, not the open prompt
   encountersGrid.hidden = false;
   debugView.hidden = currentViewMode !== "debug";
   rawView.hidden = currentViewMode !== "raw";
   overviewView.hidden = currentViewMode !== "overview";
+  characterView.hidden = currentViewMode !== "character";
+  damageView.hidden = currentViewMode !== "damage";
+  healingView.hidden = currentViewMode !== "healing";
   // The "X lines — Y players" line is parser-sanity-check context for
-  // Debug/Raw; on Encounters/Overview it's just noise.
-  statusEl.hidden = currentViewMode === "overview" || currentViewMode === "encounters";
+  // Debug/Raw; on the everyday views it's just noise.
+  statusEl.hidden = currentViewMode !== "debug" && currentViewMode !== "raw";
   if (currentViewMode === "encounters") {
     renderEncGrid();
   } else if (currentViewMode === "overview") {
     renderOverview();
+  } else if (currentViewMode === "character") {
+    renderCharacter();
+  } else if (currentViewMode === "damage") {
+    renderDamage();
+  } else if (currentViewMode === "healing") {
+    renderHealing();
   } else if (currentViewMode === "raw") {
     await loadRawView();
   } else {
@@ -1288,6 +1599,7 @@ function setupTabs() {
 window.addEventListener("DOMContentLoaded", () => {
   setupTabs();
   setupEncounterPicker();
+  setupPlayerPicker();
   setupHistory();
   refreshStatus();
 
@@ -1308,6 +1620,18 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.querySelector("#view-overview-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "overview" });
+  });
+
+  document.querySelector("#view-character-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "character" });
+  });
+
+  document.querySelector("#view-damage-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "damage" });
+  });
+
+  document.querySelector("#view-healing-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "healing" });
   });
 
   document.querySelector("#zoom-out-btn")?.addEventListener("click", () => {

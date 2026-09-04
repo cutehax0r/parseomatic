@@ -8,3 +8,5 @@ import "./section-heading";
 import "./stat-tile";
 import "./player-table";
 import "./line-chart";
+import "./area-chart";
+import "./pie-chart";

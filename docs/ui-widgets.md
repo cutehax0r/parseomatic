@@ -9,7 +9,9 @@ sanity check, and this doc doesn't change them.
 > `panel.ts` `buildView`, `context.ts`, `query.ts` — the last now
 > memoizing aggregated results per spec for the loaded log), `src/ui/
 > widgets/` (`encounter-title`, `section-heading`, `stat-tile`,
-> `player-table`, `line-chart`, plus the non-widget DOM helpers
+> `player-table`, `line-chart`, `area-chart`, `pie-chart` (the last two
+> added for the Damage / Healing views; they share `line-chart`'s
+> axis/tick engine via `chart-util.ts`), plus the non-widget DOM helpers
 > `metric-cell.ts` and `role-icon.ts` the player table composes),
 > `src/views/overview.ts` — the Overview view, wired to the
 > encounter picker — and the `query_events` aggregate DSL (`src-tauri/src/
@@ -198,6 +200,28 @@ trash 2, boss1 wipe 1, boss1 wipe 2, boss1 kill, trash 3, boss2 kill,
 …`). Kill/wipe outcomes are colored (`--success`/`--danger`); trash and
 synthesized ("unknown") ends are not.
 
+**Player picker + per-character views (built, hand-wired in `main.ts`
+like the encounter picker).** A second toolbar listbox
+(`#player-picker`, `setupPlayerPicker`) right of the encounter picker.
+It lists the **human characters active in the selected range** — one
+aggregated `query_events` pass grouped by `sourceUnit` ∪ one by
+`targetUnit`, filtered to `kind === "Player"` (both memoized by
+`src/ui/query.ts`) — and writes the pick to a **`selectedPlayer` store**
+in `context.ts` (a dense unit intern id, or null), exposed as
+`ctx.selectedPlayer`. This is **independent of the range/filter model** —
+picking a player does not touch Encounters/Overview; it only feeds the
+per-character view group. A new log clears it (`setLogData`); changing
+the range re-scopes the roster list but keeps the selection.
+`ViewKind::Character` (`lib.rs`) is the first such view
+(`src/views/character.ts`): identity (name/server, class/spec/role,
+average item level) + equipped items from the player's `COMBATANT_INFO`
+snapshot, no combat numbers. Its toolbar button and the intended sibling
+views (Damage & Healing, Interrupts, Deaths, replay) are enabled only
+once a player is picked. **Deferred:** character stats
+(Strength/Haste/…) and talents aren't parsed from `COMBATANT_INFO` yet;
+the gear list is inline DOM in the view, not a widget, until a real
+`gear-list` widget (slot names, item-name lookup) exists.
+
 **TODO — trash span names.** `Trash 1, Trash 2, …` is uninformative. Name
 by adjacency instead: trash before an encounter → `Pre-<boss X> trash N`;
 trash after `<boss X>` with no later encounter → `Post-<boss X> trash N`;
@@ -215,8 +239,9 @@ count) worth making configurable. Not urgent.
 
 `src/ui/history.ts` — a per-window stack of the ranges/encounters the user
 has picked. **Back / Forward** (toolbar buttons in the `[open | duplicate
-window] · [back | forward | history▾] · [picker] · [Encounters | Overview]
-· … · [zoom− | zoom+]` layout — Debug/Raw are menu-only now — plus a native
+window] · [back | forward | history▾] · [encounter picker] · [player
+picker] · [Encounters | Overview] · [Character | Damage | Healing] · … · [zoom− | zoom+]`
+layout — Debug/Raw are menu-only now — plus a native
 **History** menu with `⌘[` / `⌘]` (also `⌘←` / `⌘→`, a frontend keydown
 handler) and Clear History) walk it;
 the `history▾` popup lists the session's selections newest-first, current
@@ -464,6 +489,19 @@ rows `ctx.query` returned in raw mode (including position fields, already
 tracked per event for the planned 3D replay) — not a backend feature.
 Conditional aggregates (crit rate = crits ÷ hits) are two queries, or a
 client-side pass over raw rows — not a new clause type.
+
+**When a shape genuinely doesn't fit, it gets a dedicated command, not a
+DSL op.** Two exist: `encounter_stats` (parse-time per-encounter
+per-player rollup, `src/stats.rs`) and `spell_breakdown`
+(`src/damage.rs`, `metric: "damage" | "healing"`) — the Damage/Healing
+views' per-`(spell, source)` breakdown for one player over a chosen
+window, returning a time-bucketed series **and** per-hit
+`min/max/mean/median/stddev` split normal vs crit in one scan. Median
+needs the raw values held per group, which the streaming `query_events`
+accumulators don't do; a bucketed-*and*-grouped series isn't expressible
+either (`bucket` and `groupBy` are mutually exclusive). Both commands are
+fetch-cached frontend-side (`src/ui/encounter-stats.ts`,
+`src/ui/spell-breakdown.ts`), cleared on log change.
 
 **Per-encounter player rows (the Overview "Players" table).** Now real,
 and grown past the original one-query shape:

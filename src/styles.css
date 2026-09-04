@@ -914,6 +914,248 @@ body {
   display: none;
 }
 
+/* ===========================================================================
+   Character view -- per-player summary (src/views/character.ts). Same
+   scroll shell as Overview; the body is a Panel/Widget tree plus an
+   equipped-items list.
+   =========================================================================== */
+.character-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px 24px 32px;
+}
+
+.character-view[hidden] {
+  display: none;
+}
+
+.character-hint {
+  margin: 48px auto 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.character-hint[hidden] {
+  display: none;
+}
+
+/* Equipped-items list -- one row per item. Placeholder until a real gear
+   widget with slot names + item-name lookup lands. */
+.character-gear {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.character-gear-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 12px;
+  font-size: 13px;
+}
+
+.character-gear-row + .character-gear-row {
+  border-top: 1px solid var(--border);
+}
+
+.character-gear-ilvl {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.character-gear-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.character-gear-meta {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.character-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* Character profile sections (src/views/character.ts): Gear / Build /
+   Primary / Secondary+radar / Buffs. All placeholder layouts pending
+   talent/item/spell lookup data. */
+.character-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.character-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.character-subnote {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.character-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.character-subheading {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.character-build-spec {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Gear as three side-by-side lists of five. */
+.character-gear-triple {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+/* Talent trees -- the intended class / hero / spec 3-up frame; the picks
+   sit in one spanning bucket until trait-tree lookup data can split them. */
+.talent-trees {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  background-color: var(--bg-elevated);
+}
+
+.talent-tree-head {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  text-align: center;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.talent-uncategorised {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.talent-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+
+.talent-pick {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  background-color: var(--bg-hover);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* label / value rows, shared by the primary + secondary stat blocks. */
+.stat-grid {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--bg-elevated);
+  overflow: hidden;
+  min-width: 220px;
+}
+
+.stat-grid-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.stat-grid-row + .stat-grid-row {
+  border-top: 1px solid var(--border);
+}
+
+.stat-grid-label {
+  color: var(--text-muted);
+}
+
+.stat-grid-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-grid-row[data-primary] {
+  background-color: var(--bg-hover);
+}
+
+.stat-grid-row[data-primary] .stat-grid-value {
+  color: var(--accent);
+}
+
+.stat-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.stat-radar {
+  width: 260px;
+  height: 238px; /* viewBox is 240 x 220 */
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.stat-radar-ring,
+.stat-radar-spoke {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.stat-radar-area {
+  fill: var(--accent-bg);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.stat-radar-label {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Encounters view -- owns the open-a-file / recent-logs prompt
    (#encounters-open, reusing .launch) and the encounter grid
    (#encounters-grid). */
@@ -1683,6 +1925,230 @@ body {
 
 .chart-tooltip-row b {
   font-variant-numeric: tabular-nums;
+}
+
+.chart-tooltip-row span i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 5px;
+}
+
+/* area-chart -- one translucent band per stacked series, `--c` set
+   per-band by the widget. */
+.chart-area {
+  fill: var(--c);
+  fill-opacity: 0.5;
+  stroke: var(--c);
+  stroke-width: 1;
+  stroke-opacity: 0.9;
+}
+
+.chart-legend--area {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  max-width: 60%;
+  justify-content: flex-end;
+}
+
+/* ===========================================================================
+   Damage + Healing views -- area chart + by-spell distribution table +
+   share donut (src/views/spell-breakdown-view.ts). The two views share
+   the `.spell-*` inner classes; only the scroll container differs.
+   =========================================================================== */
+.damage-view,
+.healing-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px 24px 32px;
+}
+
+.damage-view[hidden],
+.healing-view[hidden] {
+  display: none;
+}
+
+.damage-hint,
+.healing-hint {
+  margin: 48px auto 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.damage-hint[hidden],
+.healing-hint[hidden] {
+  display: none;
+}
+
+.spell-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+  margin-top: 10px;
+}
+
+.spell-table-wrap {
+  flex: 1 1 420px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.spell-pie-wrap {
+  flex: 0 0 auto;
+}
+
+/* 4 fixed cols (Spell/Hits/Total/DPS) + 5 Normal + 5 Crit. */
+.spell-table {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.4fr) repeat(13, minmax(52px, 1fr));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--bg-elevated);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+
+.spell-th {
+  padding: 5px 8px;
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.spell-th:first-child {
+  text-align: left;
+}
+
+/* "Normal" / "Crit" group headers span their 5 sub-columns. */
+.spell-th-group {
+  grid-column: span 5;
+  text-align: center;
+  border-left: 1px solid var(--border);
+}
+
+.spell-th-sub {
+  color: var(--text-faint);
+  font-weight: 500;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.spell-td {
+  padding: 4px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.spell-table > .spell-td:nth-last-child(-n + 14) {
+  border-bottom: none;
+}
+
+.spell-td-name {
+  text-align: left;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spell-td-num {
+  color: var(--text-muted);
+}
+
+.spell-td-crit {
+  color: var(--text-faint);
+}
+
+/* pie-chart */
+.pie-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 320px;
+  max-width: 100%;
+}
+
+.pie-title {
+  font-size: 12px;
+}
+
+.pie-body {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.pie-svg {
+  width: 120px;
+  height: 120px;
+  flex: 0 0 auto;
+}
+
+.pie-wedge {
+  stroke: var(--bg-elevated);
+  stroke-width: 0.75;
+  transition: opacity 0.1s ease;
+}
+
+.pie-wedge.is-dim {
+  opacity: 0.3;
+}
+
+.pie-centre {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pie-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.pie-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.pie-legend-row.is-active {
+  background-color: var(--bg-hover);
+}
+
+.pie-legend-row i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.pie-legend-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pie-legend-val {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
 }
 
 /* Settings window (settings.html) -- a separate, deliberately minimal

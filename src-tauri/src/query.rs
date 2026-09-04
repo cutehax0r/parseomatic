@@ -55,7 +55,7 @@ impl QuerySpec {
 /// kind (`"Player"` for players and player-owned pets, `"Creature"` for
 /// bosses/adds) -- the player-side vs enemy-side split. `SpellId` is the
 /// intern-table index, not the WoW spell id (frontend maps via the
-/// index-aligned `debug_lists`).
+/// index-aligned `log_lists`).
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum Field {
@@ -368,7 +368,7 @@ impl Accum {
 /// window, so they sort to the front and are excluded -- the rare
 /// mid-stream malformed line is the one case this can misjudge by a row
 /// or two; a strict monotonic-timestamp index is the fix if it matters.
-fn window(events: &EventStore, start_ms: i64, end_ms: i64) -> (usize, usize) {
+pub(crate) fn window(events: &EventStore, start_ms: i64, end_ms: i64) -> (usize, usize) {
     let ts = &events.timestamp_ms;
     let lo = ts.partition_point(|&t| t < start_ms);
     let hi = ts.partition_point(|&t| t <= end_ms);

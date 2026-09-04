@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 // The queryable columns. Mirrors `query::Field` (Rust). `sourceOwner`
 // resolves a player's pet to its owner so pet damage folds into the
 // owning player. `spellId` is the intern-table index, not the WoW id
-// (resolve via the index-aligned debug_lists arrays).
+// (resolve via the index-aligned log_lists arrays).
 export type QueryField =
   | "time"
   | "kind"

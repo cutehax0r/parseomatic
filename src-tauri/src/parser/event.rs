@@ -587,9 +587,9 @@ fn intern_spell(data: &[u8], fields: &[FieldSpan], tables: &mut InternTables) ->
 /// piece of the advanced block worth typing now, since it's exactly what
 /// the Units tab's "owner" column needs. `infoGUID` almost always already
 /// has a name from the line's own source/dest fields (see
-/// `docs/combat-log-format.md` §5); interning it here with an empty
-/// placeholder name is safe because `GuidTable::intern` never overwrites
-/// an existing record's name, only its `owner_id`.
+/// `docs/combat-log-format.md` §5); when it doesn't yet,
+/// `intern_placeholder` records it with a placeholder name that the
+/// first real named sighting (`GuidTable::intern`) upgrades in place.
 fn link_owner(data: &[u8], advanced_fields: &[FieldSpan], tables: &mut InternTables) {
     let info_guid = advanced_fields[0].resolve_str(data);
     if intern::UnitKind::from_guid(info_guid) == intern::UnitKind::None {
@@ -600,19 +600,30 @@ fn link_owner(data: &[u8], advanced_fields: &[FieldSpan], tables: &mut InternTab
     let owner_id = if owner_guid == "nil" || intern::UnitKind::from_guid(owner_guid) == intern::UnitKind::None {
         None
     } else {
-        Some(tables.guids.intern(owner_guid, empty_name, None, None))
+        Some(tables.guids.intern_placeholder(owner_guid, empty_name, None))
     };
-    tables.guids.intern(info_guid, empty_name, None, owner_id);
+    // A GUID can be referenced here (as another unit's ownerGUID) before
+    // its own first named line -- a hunter healed through their pet, say.
+    // `intern_placeholder` lets the first real named sighting fill the
+    // name in later rather than the GUID staying blank.
+    tables.guids.intern_placeholder(info_guid, empty_name, owner_id);
 }
 
 /// `(amount, flags)` for a damage/heal composed event, promoted from the
 /// row's raw fields. `raw` is the slice `parse_composed` is about to push
 /// (advanced block if present, then suffix fields, then a trailing
-/// `hitType` for spell-prefixed `_DAMAGE`/`_MISSED`). Suffix fields start
-/// at offset 19 when the advanced block is present, else 0
-/// (`docs/combat-log-format.md` §5/§7). Non-damage/heal suffixes, and
-/// `ENVIRONMENTAL_*` (its raw slice keeps an extra leading prefix field),
-/// yield `(0, 0)`.
+/// `hitType` for spell-prefixed `_DAMAGE`). The first suffix field is
+/// always `amount`, at offset 19 when the advanced block is present, else
+/// 0 (`docs/combat-log-format.md` §5/§7).
+///
+/// The `critical` flag is anchored from the *end*, not a fixed suffix
+/// index: the leading suffix fields vary across log versions (a
+/// `baseAmount` field is present in some 2026 captures, absent in
+/// others), but the tail is stable -- `..., critical, glancing, crushing`
+/// for every `_DAMAGE`, then one `hitType` (`ST`/`AOE`) for spell-family
+/// prefixes only, and `..., overhealing, absorbed, critical` (no
+/// hitType) for `_HEAL`. Reading a fixed offset silently missed every
+/// crit in a `baseAmount`-style log. `ENVIRONMENTAL_*` yields `(0, 0)`.
 fn extract_damage_heal(
     prefix: Prefix,
     suffix: Suffix,
@@ -624,29 +635,31 @@ fn extract_damage_heal(
         return (0, 0);
     }
     let off = if has_advanced { 19 } else { 0 };
-    let field = |i: usize| raw.get(off + i).map(|f| f.resolve_str(data));
+    let at = |i: usize| raw.get(i).map(|f| f.resolve_str(data));
     // Boolean suffix fields render as the bare token "1" / "0" / "nil"
     // in the file, never true/false (§3).
     let is_set = |s: Option<&str>| s == Some("1");
 
     match suffix {
         Suffix::Damage => {
-            let amount = field(0).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let amount = at(off).and_then(|s| s.parse().ok()).unwrap_or(0);
             let mut flags = 0u8;
-            if is_set(field(6)) {
+            // Spell-family `_DAMAGE` appends `hitType`; SWING does not.
+            let has_hit_type = is_spell_family(prefix)
+                && matches!(at(raw.len().wrapping_sub(1)), Some("ST") | Some("AOE"));
+            let crit_from_end = if has_hit_type { 4 } else { 3 };
+            if raw.len() >= off + crit_from_end && is_set(at(raw.len() - crit_from_end)) {
                 flags |= FLAG_CRIT;
             }
-            if is_set(field(9)) {
-                flags |= FLAG_OFFHAND;
-            }
-            if is_spell_family(prefix) && raw.last().map(|f| f.resolve_str(data)) == Some("AOE") {
+            if has_hit_type && at(raw.len() - 1) == Some("AOE") {
                 flags |= FLAG_AOE;
             }
             (amount, flags)
         }
         Suffix::Heal => {
-            let amount = field(0).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let flags = if is_set(field(3)) { FLAG_CRIT } else { 0 };
+            let amount = at(off).and_then(|s| s.parse().ok()).unwrap_or(0);
+            // `_HEAL` has no trailing hitType -- `critical` is the last field.
+            let flags = if is_set(at(raw.len().wrapping_sub(1))) { FLAG_CRIT } else { 0 };
             (amount, flags)
         }
         _ => (0, 0),
@@ -1009,25 +1022,42 @@ mod tests {
         assert_eq!(store.raw_fields(0).len(), 30);
         let hit_type = store.raw_fields(0).last().unwrap();
         assert_eq!(hit_type.resolve_str(&data), "ST");
-        // Promoted amount + flags: suffix field 0 is 8042, critical (field
-        // 6) is 0, hitType ST -> no flags.
+        // Promoted amount + flags: suffix field 0 is 8042; `critical` is
+        // the 4th-from-last field (`...,1,nil,nil,ST`) -> FLAG_CRIT.
         assert_eq!(store.amount[0], 8042);
-        assert_eq!(store.flags[0], 0);
+        assert_eq!(store.flags[0], FLAG_CRIT);
     }
 
     #[test]
     fn spell_damage_promotes_crit_and_aoe_flags() {
+        // Real `_DAMAGE` tail shape: `..., critical, glancing, crushing,
+        // hitType`. Here critical = 1, hitType = AOE.
         let (_, _, store) = parse(concat!(
             "SPELL_DAMAGE,Player-1-00000001,\"Mage-Realm-US\",0x511,0x0,",
             "Creature-0-0-0-0-1-0,\"Add\",0xa48,0x0,",
             "1449,\"Arcane Explosion\",0x40,",
             "Player-1-00000001,0000000000000000,100,100,0,0,0,0,0,0,0,0,100,0,0,0,0,0,0,",
-            "5000,0,64,0,0,0,1,nil,nil,nil,AOE"
+            "5000,0,-1,64,0,0,1,nil,nil,AOE"
         ));
         assert_eq!(store.len(), 1);
         assert!(store.has_advanced[0]);
         assert_eq!(store.amount[0], 5000);
         assert_eq!(store.flags[0], FLAG_CRIT | FLAG_AOE);
+    }
+
+    #[test]
+    fn swing_damage_crit_is_anchored_from_the_end_no_hit_type() {
+        // SWING_DAMAGE has no trailing hitType: `critical` is the
+        // 3rd-from-last field (`...,1,nil,nil`).
+        let (_, _, store) = parse(concat!(
+            "SWING_DAMAGE,Player-1-00000001,\"War-Realm-US\",0x511,0x0,",
+            "Creature-0-0-0-0-1-0,\"Add\",0xa48,0x0,",
+            "Player-1-00000001,0000000000000000,100,100,0,0,0,0,0,0,0,0,100,0,0,0,0,0,0,",
+            "1234,700,-1,1,0,0,1,nil,nil"
+        ));
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.amount[0], 1234);
+        assert_eq!(store.flags[0], FLAG_CRIT);
     }
 
     #[test]

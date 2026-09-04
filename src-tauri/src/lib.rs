@@ -1,3 +1,4 @@
+mod damage;
 mod parser;
 mod query;
 mod stats;
@@ -64,6 +65,9 @@ enum ViewKind {
     #[default]
     Encounters,
     Overview,
+    Character,
+    Damage,
+    Healing,
     Debug,
     Raw,
 }
@@ -71,8 +75,15 @@ enum ViewKind {
 // Every view in the radio group, in toolbar/menu display order -- the
 // single source of truth for `sync_view_menu`'s loop and anywhere else
 // that has to touch them all.
-const ALL_VIEWS: [ViewKind; 4] =
-    [ViewKind::Encounters, ViewKind::Overview, ViewKind::Debug, ViewKind::Raw];
+const ALL_VIEWS: [ViewKind; 7] = [
+    ViewKind::Encounters,
+    ViewKind::Overview,
+    ViewKind::Character,
+    ViewKind::Damage,
+    ViewKind::Healing,
+    ViewKind::Debug,
+    ViewKind::Raw,
+];
 
 impl ViewKind {
     fn from_id(s: &str) -> Option<ViewKind> {
@@ -87,6 +98,9 @@ impl ViewKind {
         match self {
             ViewKind::Encounters => "encounters",
             ViewKind::Overview => "overview",
+            ViewKind::Character => "character",
+            ViewKind::Damage => "damage",
+            ViewKind::Healing => "healing",
             ViewKind::Debug => "debug",
             ViewKind::Raw => "raw",
         }
@@ -96,6 +110,9 @@ impl ViewKind {
         match self {
             ViewKind::Encounters => "view_encounters",
             ViewKind::Overview => "view_overview",
+            ViewKind::Character => "view_character",
+            ViewKind::Damage => "view_damage",
+            ViewKind::Healing => "view_healing",
             ViewKind::Debug => "view_debug",
             ViewKind::Raw => "view_raw",
         }
@@ -114,6 +131,9 @@ struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 struct ViewMenu {
     encounters: CheckMenuItem<tauri::Wry>,
     overview: CheckMenuItem<tauri::Wry>,
+    character: CheckMenuItem<tauri::Wry>,
+    damage: CheckMenuItem<tauri::Wry>,
+    healing: CheckMenuItem<tauri::Wry>,
     debug: CheckMenuItem<tauri::Wry>,
     raw: CheckMenuItem<tauri::Wry>,
 }
@@ -123,6 +143,9 @@ impl ViewMenu {
         match view {
             ViewKind::Encounters => &self.encounters,
             ViewKind::Overview => &self.overview,
+            ViewKind::Character => &self.character,
+            ViewKind::Damage => &self.damage,
+            ViewKind::Healing => &self.healing,
             ViewKind::Debug => &self.debug,
             ViewKind::Raw => &self.raw,
         }
@@ -231,7 +254,7 @@ fn get_or_parse(app: &AppHandle, path: &Path) -> std::io::Result<Arc<ParsedLog>>
 
 /// Looks up `window`'s current log and hands back an owned `Arc`,
 /// dropping the `WindowLogs` lock immediately rather than holding it for
-/// whatever the caller does next. `debug_lists`/`raw_events` in
+/// whatever the caller does next. `log_lists`/`raw_events` in
 /// particular do real work after this lookup (row-building, string
 /// cloning across thousands of rows) -- holding the lock through that
 /// would block every other window's unrelated `WindowLogs` access
@@ -741,24 +764,90 @@ struct GearItemRow {
     gem_ids: Vec<u32>,
 }
 
-/// **Unverified against a real captured log** -- see
-/// `parser::reports::parse_equipped_items`'s doc comment. Built and tested
-/// against the wiki-sourced worked example in `docs/combat-log-format.md`
-/// §8, not our own fixture (which has zero `COMBATANT_INFO` lines).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CombatantStatsRow {
+    strength: u32,
+    agility: u32,
+    stamina: u32,
+    intellect: u32,
+    dodge: u32,
+    parry: u32,
+    block: u32,
+    crit: u32,
+    haste: u32,
+    mastery: u32,
+    versatility: u32,
+    leech: u32,
+    speed: u32,
+    avoidance: u32,
+    armor: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TalentRow {
+    node_id: u32,
+    entry_id: u32,
+    rank: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuraRow {
+    /// `log_lists.units` index of the caster, or null when the log
+    /// doesn't otherwise know that unit.
+    caster: Option<u32>,
+    caster_name: String,
+    spell_id: u32,
+}
+
+/// Spec + gear + stats + talents + buffs from `COMBATANT_INFO`. The parse
+/// (see `parser::reports`) is exercised by the wiki-sourced worked
+/// example in `docs/combat-log-format.md` §8 and checked against a real
+/// patch-12 log with 400+ `COMBATANT_INFO` lines (a local, gitignored
+/// fixture). `avg_item_level` / `item_count` cover only slots that hold
+/// real gear -- see `equipped_summary`. Talent / spell **names and
+/// icons** need lookup data we don't ship yet -- ids only for now.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CombatantRow {
+    /// Backend intern id (index into `log_lists.units`) -- lets the
+    /// character view join a selected player to their snapshot by id
+    /// rather than by a name that can collide across realms.
+    unit_id: u32,
     player_name: String,
     encounter_name: String,
     spec_id: u32,
     avg_item_level: Option<f64>,
     item_count: usize,
     gear: Vec<GearItemRow>,
+    /// `null` when the stat block wasn't the expected 22 fields.
+    stats: Option<CombatantStatsRow>,
+    talents: Vec<TalentRow>,
+    pvp_talents: Vec<u32>,
+    auras: Vec<AuraRow>,
+}
+
+/// `(equipped_item_count, average_item_level)` for a `COMBATANT_INFO` gear
+/// list. Non-counting slots are excluded: an unused slot logs as
+/// `(0,0,(),(),())` -> `item_level` 0, and a shirt / tabard / cosmetic
+/// logs a real item id but `item_level` 1 (WoW never folds those into
+/// average ilvl). Counting them tanks the average by ~50 (a full 15-16
+/// piece raider reads ~265 instead of ~315). We don't have slot ids yet,
+/// so the `<= 1` level is the tell.
+fn equipped_summary(gear: &[parser::reports::GearItem]) -> (usize, Option<f64>) {
+    let levels: Vec<u32> = gear.iter().map(|g| g.item_level).filter(|&l| l > 1).collect();
+    if levels.is_empty() {
+        return (0, None);
+    }
+    let avg = levels.iter().map(|&l| l as f64).sum::<f64>() / levels.len() as f64;
+    (levels.len(), Some(avg))
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DebugListsPayload {
+struct LogListsPayload {
     units: Vec<UnitRow>,
     spells: Vec<SpellRow>,
     zones: Vec<ZoneRow>,
@@ -773,7 +862,7 @@ struct DebugListsPayload {
 /// raw interned tables; `players`/`pets` are filtered from `units`
 /// client-side rather than duplicated here (kind == Player; owner != null).
 #[tauri::command]
-fn debug_lists(window: WebviewWindow) -> Option<DebugListsPayload> {
+fn log_lists(window: WebviewWindow) -> Option<LogListsPayload> {
     let log = current_log(&window)?;
     let data = log.data()?;
     let tables = &data.tables;
@@ -850,13 +939,9 @@ fn debug_lists(window: WebviewWindow) -> Option<DebugListsPayload> {
         .combatants
         .iter()
         .map(|c| {
-            let item_count = c.gear.len();
-            let avg_item_level = if item_count > 0 {
-                Some(c.gear.iter().map(|g| g.item_level as f64).sum::<f64>() / item_count as f64)
-            } else {
-                None
-            };
+            let (item_count, avg_item_level) = equipped_summary(&c.gear);
             CombatantRow {
+                unit_id: c.unit_id,
                 player_name: tables.strings.get(tables.guids.get(c.unit_id).name_id).to_string(),
                 encounter_name: encounter_name(c.encounter_index),
                 spec_id: c.spec_id,
@@ -872,11 +957,50 @@ fn debug_lists(window: WebviewWindow) -> Option<DebugListsPayload> {
                         gem_ids: g.gem_ids.clone(),
                     })
                     .collect(),
+                stats: c.stats.as_ref().map(|s| CombatantStatsRow {
+                    strength: s.strength,
+                    agility: s.agility,
+                    stamina: s.stamina,
+                    intellect: s.intellect,
+                    dodge: s.dodge,
+                    parry: s.parry,
+                    block: s.block,
+                    crit: s.crit,
+                    haste: s.haste,
+                    mastery: s.mastery,
+                    versatility: s.versatility,
+                    leech: s.leech,
+                    speed: s.speed,
+                    avoidance: s.avoidance,
+                    armor: s.armor,
+                }),
+                talents: c
+                    .talents
+                    .iter()
+                    .map(|t| TalentRow { node_id: t.node_id, entry_id: t.entry_id, rank: t.rank })
+                    .collect(),
+                pvp_talents: c.pvp_talents.clone(),
+                auras: c
+                    .auras
+                    .iter()
+                    .map(|a| {
+                        let known = a.caster_unit_id != NO_UNIT;
+                        AuraRow {
+                            caster: known.then_some(a.caster_unit_id),
+                            caster_name: if known {
+                                tables.strings.get(tables.guids.get(a.caster_unit_id).name_id).to_string()
+                            } else {
+                                String::new()
+                            },
+                            spell_id: a.spell_id,
+                        }
+                    })
+                    .collect(),
             }
         })
         .collect();
 
-    Some(DebugListsPayload {
+    Some(LogListsPayload {
         units,
         spells,
         zones,
@@ -887,7 +1011,7 @@ fn debug_lists(window: WebviewWindow) -> Option<DebugListsPayload> {
 }
 
 /// Carries raw intern ids rather than resolved name/GUID strings -- the
-/// frontend already holds the full unit/spell tables from `debug_lists`
+/// frontend already holds the full unit/spell tables from `log_lists`
 /// (fetched once per log, kept in memory), and those ids are dense and
 /// 0-indexed, i.e. exactly the array index into that payload's
 /// `units`/`spells` lists. Resolving here would mean re-cloning the same
@@ -918,7 +1042,7 @@ fn raw_event_count(window: WebviewWindow) -> Option<usize> {
 /// A page of raw events (`start..start+count`, clamped to the event
 /// count), in file order, for the raw view's virtual scroller -- never
 /// the whole event store at once, which for a multi-million-line log
-/// would be an enormous IPC payload. Unlike `debug_lists`, this returns
+/// would be an enormous IPC payload. Unlike `log_lists`, this returns
 /// raw intern ids rather than resolved strings (see `RawEventRow`), so
 /// there's no per-row table lookup or string cloning here at all -- just
 /// array indexing into the columnar `EventStore`.
@@ -984,7 +1108,7 @@ fn query_events(window: WebviewWindow, spec: query::QuerySpec) -> Option<serde_j
 }
 
 /// Carries raw intern ids (`unitId`) like `RawEventRow` -- the frontend
-/// already holds the unit table from `debug_lists` and resolves names +
+/// already holds the unit table from `log_lists` and resolves names +
 /// class/spec itself.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1046,6 +1170,105 @@ fn encounter_stats(window: WebviewWindow, encounter_index: usize) -> Option<Vec<
             })
             .collect(),
     )
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HitDistRow {
+    count: usize,
+    sum: i64,
+    min: i64,
+    max: i64,
+    mean: f64,
+    median: f64,
+    stddev: f64,
+}
+
+impl From<&damage::HitDist> for HitDistRow {
+    fn from(d: &damage::HitDist) -> Self {
+        HitDistRow {
+            count: d.count,
+            sum: d.sum,
+            min: d.min,
+            max: d.max,
+            mean: d.mean,
+            median: d.median,
+            stddev: d.stddev,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpellStatRow {
+    /// Intern-table spell index (resolve name/school via `log_lists.spells`),
+    /// or null for melee (`SWING_DAMAGE`).
+    spell_id: Option<u16>,
+    /// `log_lists.units` index of the acting unit -- the player or a pet.
+    source_unit: u32,
+    is_pet: bool,
+    total: i64,
+    hits: usize,
+    buckets: Vec<i64>,
+    normal: HitDistRow,
+    crit: HitDistRow,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpellBreakdownRow {
+    start_ms: i64,
+    end_ms: i64,
+    bucket_ms: i64,
+    total: i64,
+    spells: Vec<SpellStatRow>,
+}
+
+fn spell_breakdown_row(b: &damage::SpellBreakdown) -> SpellBreakdownRow {
+    SpellBreakdownRow {
+        start_ms: b.start_ms,
+        end_ms: b.end_ms,
+        bucket_ms: b.bucket_ms,
+        total: b.total,
+        spells: b
+            .spells
+            .iter()
+            .map(|s| SpellStatRow {
+                spell_id: s.spell_id,
+                source_unit: s.source_unit,
+                is_pet: s.is_pet,
+                total: s.total,
+                hits: s.hits,
+                buckets: s.buckets.clone(),
+                normal: (&s.normal).into(),
+                crit: (&s.crit).into(),
+            })
+            .collect(),
+    }
+}
+
+/// Per-spell damage **or** healing breakdown for `unit_id` (player + their
+/// pets) over `[start_ms, end_ms]`, split into `buckets` time slices --
+/// backs the Damage and Healing character views. `metric` is `"damage"`
+/// (default) or `"healing"`. `None` before parsing has finished. See
+/// `src/damage.rs`.
+#[tauri::command]
+fn spell_breakdown(
+    window: WebviewWindow,
+    unit_id: u32,
+    start_ms: i64,
+    end_ms: i64,
+    buckets: usize,
+    metric: Option<String>,
+) -> Option<SpellBreakdownRow> {
+    let log = current_log(&window)?;
+    let data = log.data()?;
+    let metric = match metric.as_deref() {
+        Some("healing") => damage::Metric::Healing,
+        _ => damage::Metric::Damage,
+    };
+    let b = damage::breakdown(&data.events, &data.tables, unit_id, start_ms, end_ms, buckets, metric);
+    Some(spell_breakdown_row(&b))
 }
 
 #[tauri::command]
@@ -1214,6 +1437,30 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    let character_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Character.menu_id(),
+        "Character",
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let damage_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Damage.menu_id(),
+        "Damage",
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let healing_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Healing.menu_id(),
+        "Healing",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let debug_view_item =
         CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
     let raw_view_item =
@@ -1235,6 +1482,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&encounters_view_item)
         .item(&overview_view_item)
+        .item(&character_view_item)
+        .item(&damage_view_item)
+        .item(&healing_view_item)
         .item(&developer_menu)
         .separator()
         .item(&zoom_in_item)
@@ -1309,6 +1559,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         view: ViewMenu {
             encounters: encounters_view_item,
             overview: overview_view_item,
+            character: character_view_item,
+            damage: damage_view_item,
+            healing: healing_view_item,
             debug: debug_view_item,
             raw: raw_view_item,
         },
@@ -1446,7 +1699,7 @@ pub fn run() {
             duplicate_window,
             take_pending_init,
             window_info,
-            debug_lists,
+            log_lists,
             current_view,
             set_current_view,
             set_history_nav,
@@ -1454,6 +1707,7 @@ pub fn run() {
             raw_events,
             query_events,
             encounter_stats,
+            spell_breakdown,
             zoom
         ])
         .build(tauri::generate_context!())
@@ -1612,5 +1866,34 @@ mod tests {
             "resolved all {} rows without panicking ({positioned} with a position)",
             events.len()
         );
+    }
+
+    fn gear(level: u32) -> parser::reports::GearItem {
+        parser::reports::GearItem {
+            item_id: if level == 0 { 0 } else { 1000 + level },
+            item_level: level,
+            enchant_id: 0,
+            gem_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn equipped_summary_ignores_empty_and_cosmetic_slots() {
+        // 13 real pieces at 315, one empty slot (0), a shirt and a tabard
+        // (real item ids, item_level 1). The average must be 315, over 13
+        // -- not dragged toward ~260 by the three non-counting slots.
+        let mut g: Vec<_> = std::iter::repeat_with(|| gear(315)).take(13).collect();
+        g.push(gear(0));
+        g.push(gear(1));
+        g.push(gear(1));
+        let (count, avg) = equipped_summary(&g);
+        assert_eq!(count, 13);
+        assert_eq!(avg, Some(315.0));
+    }
+
+    #[test]
+    fn equipped_summary_none_when_no_real_gear() {
+        assert_eq!(equipped_summary(&[]), (0, None));
+        assert_eq!(equipped_summary(&[gear(0), gear(1)]), (0, None));
     }
 }
