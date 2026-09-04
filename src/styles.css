@@ -546,6 +546,13 @@ body {
   gap: 24px;
 }
 
+/* Grid items default to min-width:auto, so a long unbreakable file path
+   (the rows are white-space:nowrap) blows the 1fr track past its share and
+   scrolls the page sideways. Let the track win; the text ellipsizes. */
+.launch-col {
+  min-width: 0;
+}
+
 @media (max-width: 620px) {
   .launch-cols {
     grid-template-columns: 1fr;
