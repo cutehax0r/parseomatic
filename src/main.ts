@@ -41,6 +41,7 @@ import { renderOverview } from "./views/overview";
 import { renderCharacter } from "./views/character";
 import { renderDamage } from "./views/damage";
 import { renderHealing } from "./views/healing";
+import { renderDamageTaken } from "./views/damage-taken";
 import { renderLaunch } from "./views/launch";
 import { renderEncounterGrid } from "./views/encounter-grid";
 
@@ -130,7 +131,15 @@ let spellsById: SpellRow[] = [];
 // by unit id). Set alongside `setLogData`.
 let lastCombatants: CombatantRow[] = [];
 
-type ViewMode = "encounters" | "overview" | "character" | "damage" | "healing" | "debug" | "raw";
+type ViewMode =
+  | "encounters"
+  | "overview"
+  | "character"
+  | "damage"
+  | "healing"
+  | "damage-taken"
+  | "debug"
+  | "raw";
 let currentViewMode: ViewMode = "encounters";
 
 const RAW_ROW_HEIGHT = 24;
@@ -1041,7 +1050,12 @@ function updatePlayerPickerLabel(): void {
 // only once a player is picked.
 function refreshCharacterViewButtons(): void {
   const disabled = getSelectedPlayer() === null;
-  for (const id of ["#view-character-btn", "#view-damage-btn", "#view-healing-btn"]) {
+  for (const id of [
+    "#view-character-btn",
+    "#view-damage-btn",
+    "#view-healing-btn",
+    "#view-damage-taken-btn",
+  ]) {
     const btn = document.querySelector<HTMLButtonElement>(id);
     if (btn) btn.disabled = disabled;
   }
@@ -1223,6 +1237,7 @@ function setupPlayerPicker(): void {
     if (currentViewMode === "character") renderCharacter();
     else if (currentViewMode === "damage") renderDamage();
     else if (currentViewMode === "healing") renderHealing();
+    else if (currentViewMode === "damage-taken") renderDamageTaken();
   });
 }
 
@@ -1358,11 +1373,13 @@ async function refreshStatus() {
   const characterView = document.querySelector<HTMLElement>("#character-view");
   const damageView = document.querySelector<HTMLElement>("#damage-view");
   const healingView = document.querySelector<HTMLElement>("#healing-view");
+  const damageTakenView = document.querySelector<HTMLElement>("#damage-taken-view");
   const encountersBtn = document.querySelector<HTMLButtonElement>("#view-encounters-btn");
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
   const characterBtn = document.querySelector<HTMLButtonElement>("#view-character-btn");
   const damageBtn = document.querySelector<HTMLButtonElement>("#view-damage-btn");
   const healingBtn = document.querySelector<HTMLButtonElement>("#view-healing-btn");
+  const damageTakenBtn = document.querySelector<HTMLButtonElement>("#view-damage-taken-btn");
   const newWindowBtn = document.querySelector<HTMLButtonElement>("#new-window-btn");
   const statusBar = document.querySelector<HTMLElement>("#status-bar");
   const statusBarFill = document.querySelector<HTMLElement>("#statusbar-fill");
@@ -1379,11 +1396,13 @@ async function refreshStatus() {
     !characterView ||
     !damageView ||
     !healingView ||
+    !damageTakenView ||
     !encountersBtn ||
     !overviewBtn ||
     !characterBtn ||
     !damageBtn ||
     !healingBtn ||
+    !damageTakenBtn ||
     !statusBar ||
     !statusBarFill ||
     !statusBarText
@@ -1395,16 +1414,19 @@ async function refreshStatus() {
     invoke<WindowInfo | null>("window_info"),
     invoke<string>("current_view"),
   ]);
-  currentViewMode = (["encounters", "overview", "character", "damage", "healing", "raw", "debug"].includes(viewId)
-    ? viewId
-    : "encounters") as ViewMode;
+  currentViewMode = (
+    ["encounters", "overview", "character", "damage", "healing", "damage-taken", "raw", "debug"].includes(viewId)
+      ? viewId
+      : "encounters"
+  ) as ViewMode;
   // The per-character views need a picked player -- fall back to Encounters
   // if one is somehow active without one (a Duplicate Window inheriting the
   // view, or the View menu item clicked with nothing selected).
   if (
     (currentViewMode === "character" ||
       currentViewMode === "damage" ||
-      currentViewMode === "healing") &&
+      currentViewMode === "healing" ||
+      currentViewMode === "damage-taken") &&
     getSelectedPlayer() === null
   ) {
     if (viewId !== "encounters") void invoke("set_current_view", { view: "encounters" });
@@ -1417,6 +1439,7 @@ async function refreshStatus() {
   characterBtn.setAttribute("aria-pressed", String(currentViewMode === "character"));
   damageBtn.setAttribute("aria-pressed", String(currentViewMode === "damage"));
   healingBtn.setAttribute("aria-pressed", String(currentViewMode === "healing"));
+  damageTakenBtn.setAttribute("aria-pressed", String(currentViewMode === "damage-taken"));
   refreshCharacterViewButtons();
   // "Duplicate window" needs a loaded log to copy from.
   if (newWindowBtn) newWindowBtn.disabled = !info || !info.done;
@@ -1555,6 +1578,7 @@ async function refreshStatus() {
   characterView.hidden = currentViewMode !== "character";
   damageView.hidden = currentViewMode !== "damage";
   healingView.hidden = currentViewMode !== "healing";
+  damageTakenView.hidden = currentViewMode !== "damage-taken";
   // The "X lines — Y players" line is parser-sanity-check context for
   // Debug/Raw; on the everyday views it's just noise.
   statusEl.hidden = currentViewMode !== "debug" && currentViewMode !== "raw";
@@ -1568,6 +1592,8 @@ async function refreshStatus() {
     renderDamage();
   } else if (currentViewMode === "healing") {
     renderHealing();
+  } else if (currentViewMode === "damage-taken") {
+    renderDamageTaken();
   } else if (currentViewMode === "raw") {
     await loadRawView();
   } else {
@@ -1632,6 +1658,10 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.querySelector("#view-healing-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "healing" });
+  });
+
+  document.querySelector("#view-damage-taken-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "damage-taken" });
   });
 
   document.querySelector("#zoom-out-btn")?.addEventListener("click", () => {

@@ -2,7 +2,15 @@ Parseomatic bundles the following third-party assets:
 
 Material Design Icons (https://pictogrammers.com/library/mdi/)
   The `sword` and `bow-arrow` glyph outlines used for role icons in the
-  Overview players table (src/ui/widgets/role-icon.ts).
+  Overview players table (src/ui/widgets/role-icon.ts), and the
+  `sword-cross` / `heart-plus` toolbar icons for the Damage / Healing
+  character views (index.html).
   Copyright Pictogrammers contributors.
   Licensed under the Apache License, Version 2.0
   (https://www.apache.org/licenses/LICENSE-2.0).
+
+Font Awesome Free (https://fontawesome.com)
+  The `bandage` glyph outline (Nerd Fonts alias `nf-fa-bandage`) used for
+  the Damage Taken character view's toolbar icon (index.html).
+  Copyright Fonticons, Inc.
+  Icons licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).

@@ -8,7 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { SpellBreakdown } from "../types";
 
-export type BreakdownMetric = "damage" | "healing";
+export type BreakdownMetric = "damage" | "healing" | "damageTaken";
 
 interface Args {
   unitId: number;

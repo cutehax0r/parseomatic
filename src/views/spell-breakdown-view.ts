@@ -13,21 +13,14 @@ import { buildView, type BuiltView } from "../ui/panel";
 import { getWidget } from "../ui/registry";
 import { createViewContext, type ViewContext } from "../ui/context";
 import { spellBreakdown, type BreakdownMetric } from "../ui/spell-breakdown";
+import { paletteColor } from "../ui/palette";
 import type { NodeSpec, Widget } from "../ui/spec";
 import type { HitDist, SpellBreakdown, SpellStat } from "../types";
 import { formatCompact, formatDuration, formatUnitName } from "../format";
 
-// 8 distinct hues for the top spells, then a grey for the "Other" roll-up.
-const PALETTE = [
-  "var(--ctp-blue)",
-  "var(--ctp-peach)",
-  "var(--ctp-green)",
-  "var(--ctp-mauve)",
-  "var(--ctp-yellow)",
-  "var(--ctp-teal)",
-  "var(--ctp-red)",
-  "var(--ctp-sky)",
-];
+// The chart/donut still cap at the top 8 (readability) -- everything past
+// that folds into one grey "Other" band/slice. The table has no such cap
+// (see paintTable): every row gets its own color from `paletteColor`.
 const OTHER_COLOR = "var(--text-faint)";
 const TOP_N = 8;
 
@@ -67,6 +60,23 @@ function cell(text: string, cls: string): HTMLElement {
   const e = document.createElement("div");
   e.className = cls;
   e.textContent = text;
+  return e;
+}
+
+// The name cell for a table row: a color swatch (from the same cycling
+// palette the chart/donut use for their top-N, continuing past it for
+// every row after) plus the label, truncating independently so a long
+// name doesn't push the swatch off.
+function nameCell(text: string, color: string): HTMLElement {
+  const e = document.createElement("div");
+  e.className = "spell-td spell-td-name";
+  const dot = document.createElement("i");
+  dot.className = "spell-td-swatch";
+  dot.style.background = color;
+  const label = document.createElement("span");
+  label.className = "spell-td-name-text";
+  label.textContent = text;
+  e.append(dot, label);
   return e;
 }
 
@@ -172,7 +182,7 @@ export function makeSpellBreakdownView(cfg: SpellBreakdownViewConfig): () => voi
     const rest = data.spells.slice(TOP_N);
     const n = data.spells[0]?.buckets.length ?? 0;
 
-    const series = top.map((s, i) => ({ key: `s${i}`, label: spellLabel(c, s), color: PALETTE[i] }));
+    const series = top.map((s, i) => ({ key: `s${i}`, label: spellLabel(c, s), color: paletteColor(i) }));
     if (rest.length > 0) series.push({ key: "other", label: `Other (${rest.length})`, color: OTHER_COLOR });
 
     const buckets: Array<{ tMid: number } & Record<string, number>> = [];
@@ -199,7 +209,7 @@ export function makeSpellBreakdownView(cfg: SpellBreakdownViewConfig): () => voi
     const c = ctx!;
     const top = data.spells.slice(0, TOP_N);
     const rest = data.spells.slice(TOP_N);
-    const slices = top.map((s, i) => ({ label: spellLabel(c, s), value: s.total, color: PALETTE[i] }));
+    const slices = top.map((s, i) => ({ label: spellLabel(c, s), value: s.total, color: paletteColor(i) }));
     if (rest.length > 0) {
       slices.push({
         label: `Other (${rest.length})`,
@@ -223,14 +233,14 @@ export function makeSpellBreakdownView(cfg: SpellBreakdownViewConfig): () => voi
     for (let i = 0; i < 4; i++) table.append(cell("", "spell-th spell-th-sub"));
     for (const h of [...HEAD_2, ...HEAD_2]) table.append(cell(h, "spell-th spell-th-sub"));
 
-    for (const s of data.spells) {
-      table.append(cell(spellLabel(c, s), "spell-td spell-td-name"));
+    data.spells.forEach((s, i) => {
+      table.append(nameCell(spellLabel(c, s), paletteColor(i)));
       table.append(cell(String(s.hits), "spell-td spell-td-num"));
       table.append(cell(formatCompact(s.total), "spell-td spell-td-num"));
       table.append(cell(formatCompact(s.total / seconds), "spell-td spell-td-num"));
       for (const v of distCells(s.normal)) table.append(cell(v, "spell-td spell-td-num"));
       for (const v of distCells(s.crit)) table.append(cell(v, "spell-td spell-td-num spell-td-crit"));
-    }
+    });
 
     host.append(table);
   }

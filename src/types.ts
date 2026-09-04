@@ -33,6 +33,7 @@ export interface EncounterRow {
 }
 
 export interface DeathRow {
+  unitId: number; // log_lists.units index -- id-based join, not name-based
   playerName: string;
   timestampMs: number;
   encounterName: string;

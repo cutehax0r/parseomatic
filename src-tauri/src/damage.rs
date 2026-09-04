@@ -32,7 +32,10 @@ pub struct HitDist {
 pub struct SpellStat {
     /// Intern-table spell index, or `None` for melee (`SWING_DAMAGE`).
     pub spell_id: Option<u16>,
-    /// The acting unit -- the player itself, or one of its pets/guardians.
+    /// The acting unit. For `Damage`/`Healing` this is the player or one of
+    /// their pets/guardians; for `DamageTaken` it's the attacker (usually
+    /// not the player at all -- `is_pet` is meaningless there, always
+    /// `true`, and the frontend doesn't read it for that metric).
     pub source_unit: u32,
     pub is_pet: bool,
     pub total: i64,
@@ -82,27 +85,34 @@ struct Group {
     total: i64,
 }
 
-/// Which composed-event suffix the breakdown counts.
+/// Which composed-event suffix the breakdown counts, and which side of the
+/// event it matches `unit_id` against.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
     Damage,
     Healing,
+    /// Damage the player (not their pets -- same direct-unit rule as the
+    /// Overview players table's "damage taken" column) took, grouped by
+    /// the attacker's `(spell, source)` instead of the player's own.
+    DamageTaken,
 }
 
 impl Metric {
     fn suffix(self) -> Suffix {
         match self {
-            Metric::Damage => Suffix::Damage,
+            Metric::Damage | Metric::DamageTaken => Suffix::Damage,
             Metric::Healing => Suffix::Heal,
         }
     }
 }
 
 /// Every composed event with the `metric`'s suffix in `[start_ms, end_ms]`
-/// whose source resolves (pet -> owner) to `unit_id`, grouped by
-/// `(spell, source_unit)`. `bucket_count` equal time slices, matching
-/// `query.rs`'s bucket maths so the frontend chart can treat these like a
-/// `query_events` bucketed series.
+/// matching `unit_id` -- for `Damage`/`Healing` the *source* resolved
+/// (pet -> owner) to `unit_id`; for `DamageTaken` the *target* unit
+/// (directly -- a pet taking damage doesn't count as its owner taking
+/// damage). Grouped by `(spell, source_unit)`. `bucket_count` equal time
+/// slices, matching `query.rs`'s bucket maths so the frontend chart can
+/// treat these like a `query_events` bucketed series.
 pub fn breakdown(
     events: &EventStore,
     tables: &InternTables,
@@ -142,7 +152,8 @@ pub fn breakdown(
             continue;
         }
         let src = events.source_unit[row];
-        if owner_of(src) != unit_id {
+        let matched = if metric == Metric::DamageTaken { events.dest_unit[row] } else { owner_of(src) };
+        if matched != unit_id {
             continue;
         }
         let amt = events.amount[row];
@@ -203,17 +214,27 @@ mod tests {
     // `ownerGUID` (field 2) is `owner_guid` -- the parser's `link_owner`
     // reads that to fold a pet into its player. Players pass their own
     // guid (or the nil guid); a pet passes its owner's.
-    fn spell_damage(
+    fn spell_damage_full(
         ts: &str, src_guid: &str, src_name: &str, owner_guid: &str,
+        dest_guid: &str, dest_name: &str,
         spell: u32, spell_name: &str, amount: i64, crit: bool,
     ) -> String {
         let critflag = if crit { 1 } else { 0 };
         // Damage suffix tail: ..., critical, glancing, crushing, hitType.
         format!(
             "{ts}  SPELL_DAMAGE,{src_guid},\"{src_name}\",0x511,0x0,\
-             Creature-0-0-0-0-99-0,\"Add\",0xa48,0x0,{spell},\"{spell_name}\",0x40,\
+             {dest_guid},\"{dest_name}\",0xa48,0x0,{spell},\"{spell_name}\",0x40,\
              {src_guid},{owner_guid},100,100,0,0,0,0,0,0,0,0,100,0,0,0,0,0,0,\
              {amount},0,-1,64,0,0,{critflag},nil,nil,ST"
+        )
+    }
+
+    fn spell_damage(
+        ts: &str, src_guid: &str, src_name: &str, owner_guid: &str,
+        spell: u32, spell_name: &str, amount: i64, crit: bool,
+    ) -> String {
+        spell_damage_full(
+            ts, src_guid, src_name, owner_guid, "Creature-0-0-0-0-99-0", "Add", spell, spell_name, amount, crit,
         )
     }
 
@@ -256,5 +277,48 @@ mod tests {
         assert!(fire.is_pet);
         assert_eq!(fire.source_unit, tables.guids.get_id(pet).unwrap());
         assert_eq!(fire.total, 5);
+    }
+
+    #[test]
+    fn breakdown_taken_matches_dest_unit_not_owner_fold() {
+        let player = "Player-1-00000001";
+        let pet = "Pet-0-1-1-1-1-0000000001";
+        let boss = "Creature-0-0-0-0-99-0000000002";
+        let nil = "0000000000000000";
+        let lines = vec![
+            // Boss hits the player directly -- counts.
+            spell_damage_full(
+                "4/14/2026 19:00:01.000-6", boss, "Boss", nil, player, "Warlock-Realm-US",
+                348, "Fireball", 100, false,
+            ),
+            spell_damage_full(
+                "4/14/2026 19:00:02.000-6", boss, "Boss", nil, player, "Warlock-Realm-US",
+                348, "Fireball", 300, true,
+            ),
+            // Boss hits the player's pet -- must NOT fold onto the player
+            // (damage taken is a direct-unit match, no owner fold).
+            spell_damage_full(
+                "4/14/2026 19:00:03.000-6", boss, "Boss", nil, pet, "Imp", 348, "Fireball", 999, false,
+            ),
+            // Player hits the boss -- irrelevant (that's the source side).
+            spell_damage("4/14/2026 19:00:04.000-6", player, "Warlock-Realm-US", nil, 686, "Shadow Bolt", 50, false),
+        ];
+        let (_, tables, store) = store_from(&lines);
+        let unit_id = tables.guids.get_id(player).expect("player interned");
+
+        let start = store.timestamp_ms[0];
+        let end = store.timestamp_ms[3];
+        let b = breakdown(&store, &tables, unit_id, start, end, 4, Metric::DamageTaken);
+
+        assert_eq!(b.total, 100 + 300);
+        assert_eq!(b.spells.len(), 1);
+        let fb = &b.spells[0];
+        assert_eq!(fb.spell_id, Some(store.spell[0]));
+        assert_eq!(fb.source_unit, tables.guids.get_id(boss).unwrap());
+        assert_eq!(fb.hits, 2);
+        assert_eq!(fb.normal.count, 1);
+        assert_eq!(fb.normal.sum, 100);
+        assert_eq!(fb.crit.count, 1);
+        assert_eq!(fb.crit.sum, 300);
     }
 }

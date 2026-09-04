@@ -11,7 +11,10 @@ sanity check, and this doc doesn't change them.
 > widgets/` (`encounter-title`, `section-heading`, `stat-tile`,
 > `player-table`, `line-chart`, `area-chart`, `pie-chart` (the last two
 > added for the Damage / Healing views; they share `line-chart`'s
-> axis/tick engine via `chart-util.ts`), plus the non-widget DOM helpers
+> axis/tick engine via `chart-util.ts`), `bar-chart` (added for Damage
+> Taken -- fixed-width stacked bars + death markers, same axis engine,
+> but pre-bucketed at display resolution rather than rolled up from fine
+> buckets), plus the non-widget DOM helpers
 > `metric-cell.ts` and `role-icon.ts` the player table composes),
 > `src/views/overview.ts` — the Overview view, wired to the
 > encounter picker — and the `query_events` aggregate DSL (`src-tauri/src/
@@ -240,7 +243,8 @@ count) worth making configurable. Not urgent.
 `src/ui/history.ts` — a per-window stack of the ranges/encounters the user
 has picked. **Back / Forward** (toolbar buttons in the `[open | duplicate
 window] · [back | forward | history▾] · [encounter picker] · [player
-picker] · [Encounters | Overview] · [Character | Damage | Healing] · … · [zoom− | zoom+]`
+picker] · [Encounters | Overview] · [Character | Damage | Healing | Damage
+Taken] · … · [zoom− | zoom+]`
 layout — Debug/Raw are menu-only now — plus a native
 **History** menu with `⌘[` / `⌘]` (also `⌘←` / `⌘→`, a frontend keydown
 handler) and Clear History) walk it;

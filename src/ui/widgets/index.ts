@@ -9,4 +9,5 @@ import "./stat-tile";
 import "./player-table";
 import "./line-chart";
 import "./area-chart";
+import "./bar-chart";
 import "./pie-chart";

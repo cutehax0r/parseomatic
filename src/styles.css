@@ -1952,13 +1952,23 @@ body {
   justify-content: flex-end;
 }
 
+/* bar-chart -- one stacked segment per series per fixed-width chunk,
+   `--c` set per-segment by the widget. */
+.chart-bar {
+  fill: var(--c);
+}
+
 /* ===========================================================================
-   Damage + Healing views -- area chart + by-spell distribution table +
-   share donut (src/views/spell-breakdown-view.ts). The two views share
-   the `.spell-*` inner classes; only the scroll container differs.
+   Damage + Healing + Damage Taken views -- a chart + by-spell/source
+   distribution table + share donut. Damage/Healing share
+   src/views/spell-breakdown-view.ts and an area chart; Damage Taken
+   (src/views/damage-taken.ts) uses a bar chart instead (see `.chart-bar`
+   above) but the table/donut/scroll-shell classes below are shared by
+   all three.
    =========================================================================== */
 .damage-view,
-.healing-view {
+.healing-view,
+.damage-taken-view {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -1967,12 +1977,14 @@ body {
 }
 
 .damage-view[hidden],
-.healing-view[hidden] {
+.healing-view[hidden],
+.damage-taken-view[hidden] {
   display: none;
 }
 
 .damage-hint,
-.healing-hint {
+.healing-hint,
+.damage-taken-hint {
   margin: 48px auto 0;
   text-align: center;
   color: var(--text-muted);
@@ -1980,7 +1992,8 @@ body {
 }
 
 .damage-hint[hidden],
-.healing-hint[hidden] {
+.healing-hint[hidden],
+.damage-taken-hint[hidden] {
   display: none;
 }
 
@@ -2053,10 +2066,27 @@ body {
 }
 
 .spell-td-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   text-align: left;
   color: var(--text);
+}
+
+/* Per-row color swatch -- every table row gets one (the cycling
+   `paletteColor` palette), not just the chart/donut's top 8. */
+.spell-td-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.spell-td-name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .spell-td-num {
