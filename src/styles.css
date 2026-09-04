@@ -2102,13 +2102,22 @@ body {
   color: var(--text-faint);
 }
 
-/* Deaths view: a lookback-window control, a per-death tab strip (only
-   shown for >1 death), then one death's HP chart + raw event table. */
+/* Deaths view: a toolbar row (per-death tab strip, empty when there's
+   only one death, + the lookback-window control pinned to the right via
+   `.deaths-tabs`'s flex:1), then one death's HP chart + raw event table. */
+.deaths-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
 .deaths-lookback {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 10px;
+  flex: 0 0 auto;
 }
 
 .deaths-lookback-label {
@@ -2152,8 +2161,9 @@ body {
 .deaths-tabs {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
-  margin-bottom: 14px;
+  flex: 1 1 auto;
 }
 
 .deaths-tab {

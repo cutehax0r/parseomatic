@@ -38,6 +38,21 @@ function formatClock(ms: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
+// Minutes:seconds since the encounter containing `ms` started -- how a
+// death is labeled (tab strip, block heading), so it reads relative to
+// the pull rather than as a wall-clock timestamp.
+function formatElapsed(ms: number): string {
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function encounterStartFor(ms: number): number {
+  const enc = ctx!.encounters.find((e) => e.startMs <= ms && ms <= e.endMs);
+  return enc ? enc.startMs : ctx!.range.startMs;
+}
+
 function cell(text: string, cls: string): HTMLElement {
   const e = document.createElement("div");
   e.className = cls;
@@ -56,7 +71,6 @@ const DEFAULT_LOOKBACK_SEC = 10;
 
 let ctx: ViewContext | null = null;
 let built: BuiltView | null = null;
-let lookbackHost: HTMLElement | null = null;
 let bodyHost: HTMLElement | null = null;
 let hpChart: Widget | null = null;
 let paintSeq = 0;
@@ -73,20 +87,23 @@ export function renderDeaths(): void {
   }
   if (!built) {
     built = buildView(spec, mount, ctx);
-    lookbackHost = buildLookbackControl();
     bodyHost = document.createElement("div");
     bodyHost.className = "deaths-body";
-    mount.append(lookbackHost, bodyHost);
+    mount.append(bodyHost);
   }
   void paint();
 }
 
+// Rebuilt fresh on every renderBody call (cheap -- a handful of buttons)
+// so its active state always matches `lookbackSec` without a separate
+// refresh path; a click re-renders via `paint()` before any awaited
+// fetch, so there's no visible lag.
 function buildLookbackControl(): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "deaths-lookback";
   const label = document.createElement("span");
   label.className = "deaths-lookback-label";
-  label.textContent = "Window";
+  label.textContent = "Time";
   wrap.append(label);
   for (const sec of LOOKBACK_OPTIONS_SEC) {
     const btn = document.createElement("button");
@@ -97,18 +114,11 @@ function buildLookbackControl(): HTMLElement {
     btn.addEventListener("click", () => {
       if (lookbackSec === sec) return;
       lookbackSec = sec;
-      refreshLookbackButtons();
       void paint();
     });
     wrap.append(btn);
   }
   return wrap;
-}
-
-function refreshLookbackButtons(): void {
-  lookbackHost?.querySelectorAll<HTMLButtonElement>(".deaths-lookback-btn").forEach((btn) => {
-    btn.classList.toggle("deaths-lookback-btn-active", Number(btn.dataset.sec) === lookbackSec);
-  });
 }
 
 async function paint(): Promise<void> {
@@ -165,23 +175,27 @@ async function renderBody(deaths: DeathRow[], unitId: number, seq: number): Prom
     return;
   }
 
+  const toolbar = document.createElement("div");
+  toolbar.className = "deaths-toolbar";
+
+  const tabsHost = document.createElement("div");
+  tabsHost.className = "deaths-tabs";
   if (deaths.length > 1) {
-    const tabs = document.createElement("div");
-    tabs.className = "deaths-tabs";
     deaths.forEach((d, i) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "deaths-tab" + (i === selectedDeathIdx ? " deaths-tab-active" : "");
-      btn.textContent = `Death ${i + 1} · ${formatClock(d.timestampMs)}`;
+      btn.textContent = `Death ${i + 1} · ${formatElapsed(d.timestampMs - encounterStartFor(d.timestampMs))}`;
       btn.addEventListener("click", () => {
         if (selectedDeathIdx === i) return;
         selectedDeathIdx = i;
         void renderBody(deaths, unitId, seq);
       });
-      tabs.append(btn);
+      tabsHost.append(btn);
     });
-    host.append(tabs);
   }
+  toolbar.append(tabsHost, buildLookbackControl());
+  host.append(toolbar);
 
   const death = deaths[selectedDeathIdx];
   const detail = await deathDetail(unitId, death.timestampMs, lookbackSec * 1000);
@@ -193,11 +207,10 @@ async function renderBody(deaths: DeathRow[], unitId: number, seq: number): Prom
 
   const lastDamage = [...detail.samples].reverse().find((s) => !s.isHeal);
   const killer = lastDamage ? ctx!.units[lastDamage.sourceUnit] : undefined;
+  const elapsed = formatElapsed(death.timestampMs - encounterStartFor(death.timestampMs));
   const heading = document.createElement("h3");
   heading.className = "death-block-heading";
-  heading.textContent = killer
-    ? `${formatClock(death.timestampMs)} — killed by ${formatUnitName(killer)}`
-    : formatClock(death.timestampMs);
+  heading.textContent = killer ? `${elapsed} — killed by ${formatUnitName(killer)}` : elapsed;
   block.append(heading);
 
   const chartHost = document.createElement("div");
