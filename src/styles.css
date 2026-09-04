@@ -1959,16 +1959,18 @@ body {
 }
 
 /* ===========================================================================
-   Damage + Healing + Damage Taken views -- a chart + by-spell/source
-   distribution table + share donut. Damage/Healing share
+   Damage + Healing + Damage Taken + Deaths views -- a chart + by-spell/
+   source distribution table + share donut (Deaths instead gets a per-death
+   HP chart + raw event table -- see below). Damage/Healing share
    src/views/spell-breakdown-view.ts and an area chart; Damage Taken
    (src/views/damage-taken.ts) uses a bar chart instead (see `.chart-bar`
-   above) but the table/donut/scroll-shell classes below are shared by
-   all three.
+   above); Deaths (src/views/deaths.ts) uses `hp-chart`, same `.chart-bar`
+   styling. The scroll-shell/hint classes below are shared by all four.
    =========================================================================== */
 .damage-view,
 .healing-view,
-.damage-taken-view {
+.damage-taken-view,
+.deaths-view {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -1978,13 +1980,15 @@ body {
 
 .damage-view[hidden],
 .healing-view[hidden],
-.damage-taken-view[hidden] {
+.damage-taken-view[hidden],
+.deaths-view[hidden] {
   display: none;
 }
 
 .damage-hint,
 .healing-hint,
-.damage-taken-hint {
+.damage-taken-hint,
+.deaths-hint {
   margin: 48px auto 0;
   text-align: center;
   color: var(--text-muted);
@@ -1993,7 +1997,8 @@ body {
 
 .damage-hint[hidden],
 .healing-hint[hidden],
-.damage-taken-hint[hidden] {
+.damage-taken-hint[hidden],
+.deaths-hint[hidden] {
   display: none;
 }
 
@@ -2094,6 +2099,95 @@ body {
 }
 
 .spell-td-crit {
+  color: var(--text-faint);
+}
+
+/* Deaths view: a per-death tab strip (only shown for >1 death), then one
+   death's HP chart + raw event table. */
+.deaths-body {
+  margin-top: 10px;
+}
+
+.deaths-empty {
+  margin: 24px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.deaths-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.deaths-tab {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background-color: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.deaths-tab:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.deaths-tab-active {
+  color: var(--text);
+  border-color: var(--accent);
+  background-color: var(--bg-hover);
+}
+
+.death-block + .death-block {
+  margin-top: 28px;
+}
+
+.death-block-heading {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.death-raw-table-wrap {
+  margin-top: 14px;
+  overflow-x: auto;
+}
+
+/* Plain and dense -- per the "customize how this looks later" note, this
+   table isn't trying to be pretty yet, just readable. */
+.death-raw-table {
+  display: grid;
+  grid-template-columns: 90px 140px minmax(90px, 1fr) minmax(90px, 1fr) minmax(90px, 1fr) 2fr;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--bg-elevated);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.death-raw-th {
+  padding: 4px 8px;
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.death-raw-td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.death-raw-td-details {
   color: var(--text-faint);
 }
 

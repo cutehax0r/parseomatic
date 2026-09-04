@@ -134,6 +134,26 @@ export interface SpellBreakdown {
   spells: SpellStat[]; // one per (spell, source), sorted by total desc
 }
 
+// One HP-affecting event (damage or heal) that touched the player during a
+// death's 15s lookback -- see src-tauri/src/deaths.rs. `currentHp`/`maxHp`
+// are read straight off the event's own advanced-params block, not derived.
+export interface HpSample {
+  timestampMs: number;
+  currentHp: number;
+  maxHp: number;
+  isHeal: boolean; // true = heal (HP up), false = damage (HP down)
+  amount: number;
+  spellId: number | null;
+  sourceUnit: number;
+  kindLabel: string; // e.g. "SPELL_DAMAGE"
+}
+
+export interface DeathDetail {
+  startMs: number;
+  endMs: number;
+  samples: HpSample[]; // time-ordered
+}
+
 // Per-player derived stats for one encounter, from the `encounter_stats`
 // command (see src-tauri/src/stats.rs, docs/activity-and-movement.md).
 // `unitId` is a dense intern id -- resolve names/spec against the `units`

@@ -1,4 +1,5 @@
 mod damage;
+mod deaths;
 mod parser;
 mod query;
 mod stats;
@@ -69,6 +70,7 @@ enum ViewKind {
     Damage,
     Healing,
     DamageTaken,
+    Deaths,
     Debug,
     Raw,
 }
@@ -76,13 +78,14 @@ enum ViewKind {
 // Every view in the radio group, in toolbar/menu display order -- the
 // single source of truth for `sync_view_menu`'s loop and anywhere else
 // that has to touch them all.
-const ALL_VIEWS: [ViewKind; 8] = [
+const ALL_VIEWS: [ViewKind; 9] = [
     ViewKind::Encounters,
     ViewKind::Overview,
     ViewKind::Character,
     ViewKind::Damage,
     ViewKind::Healing,
     ViewKind::DamageTaken,
+    ViewKind::Deaths,
     ViewKind::Debug,
     ViewKind::Raw,
 ];
@@ -104,6 +107,7 @@ impl ViewKind {
             ViewKind::Damage => "damage",
             ViewKind::Healing => "healing",
             ViewKind::DamageTaken => "damage-taken",
+            ViewKind::Deaths => "deaths",
             ViewKind::Debug => "debug",
             ViewKind::Raw => "raw",
         }
@@ -117,6 +121,7 @@ impl ViewKind {
             ViewKind::Damage => "view_damage",
             ViewKind::Healing => "view_healing",
             ViewKind::DamageTaken => "view_damage_taken",
+            ViewKind::Deaths => "view_deaths",
             ViewKind::Debug => "view_debug",
             ViewKind::Raw => "view_raw",
         }
@@ -139,6 +144,7 @@ struct ViewMenu {
     damage: CheckMenuItem<tauri::Wry>,
     healing: CheckMenuItem<tauri::Wry>,
     damage_taken: CheckMenuItem<tauri::Wry>,
+    deaths: CheckMenuItem<tauri::Wry>,
     debug: CheckMenuItem<tauri::Wry>,
     raw: CheckMenuItem<tauri::Wry>,
 }
@@ -152,6 +158,7 @@ impl ViewMenu {
             ViewKind::Damage => &self.damage,
             ViewKind::Healing => &self.healing,
             ViewKind::DamageTaken => &self.damage_taken,
+            ViewKind::Deaths => &self.deaths,
             ViewKind::Debug => &self.debug,
             ViewKind::Raw => &self.raw,
         }
@@ -1284,6 +1291,55 @@ fn spell_breakdown(
     Some(spell_breakdown_row(&b))
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HpSampleRow {
+    timestamp_ms: i64,
+    current_hp: i64,
+    max_hp: i64,
+    is_heal: bool,
+    amount: i64,
+    spell_id: Option<u16>,
+    source_unit: u32,
+    kind_label: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeathDetailRow {
+    start_ms: i64,
+    end_ms: i64,
+    samples: Vec<HpSampleRow>,
+}
+
+/// Health trace for the 15s leading up to one death -- backs the Deaths
+/// character view. `None` before parsing has finished. See `src/deaths.rs`.
+#[tauri::command]
+fn death_detail(window: WebviewWindow, unit_id: u32, death_ms: i64) -> Option<DeathDetailRow> {
+    let log = current_log(&window)?;
+    let data = log.data()?;
+    let mmap = log.mmap_bytes();
+    let d = deaths::death_detail(&data.events, mmap, unit_id, death_ms);
+    Some(DeathDetailRow {
+        start_ms: d.start_ms,
+        end_ms: d.end_ms,
+        samples: d
+            .samples
+            .into_iter()
+            .map(|s| HpSampleRow {
+                timestamp_ms: s.timestamp_ms,
+                current_hp: s.current_hp,
+                max_hp: s.max_hp,
+                is_heal: s.is_heal,
+                amount: s.amount,
+                spell_id: s.spell_id,
+                source_unit: s.source_unit,
+                kind_label: s.kind_label,
+            })
+            .collect(),
+    })
+}
+
 #[tauri::command]
 fn open_log_file(window: WebviewWindow) {
     pick_and_open_log(window);
@@ -1482,6 +1538,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    let deaths_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Deaths.menu_id(),
+        "Deaths",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let debug_view_item =
         CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
     let raw_view_item =
@@ -1507,6 +1571,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         .item(&damage_view_item)
         .item(&healing_view_item)
         .item(&damage_taken_view_item)
+        .item(&deaths_view_item)
         .item(&developer_menu)
         .separator()
         .item(&zoom_in_item)
@@ -1585,6 +1650,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             damage: damage_view_item,
             healing: healing_view_item,
             damage_taken: damage_taken_view_item,
+            deaths: deaths_view_item,
             debug: debug_view_item,
             raw: raw_view_item,
         },
@@ -1731,6 +1797,7 @@ pub fn run() {
             query_events,
             encounter_stats,
             spell_breakdown,
+            death_detail,
             zoom
         ])
         .build(tauri::generate_context!())

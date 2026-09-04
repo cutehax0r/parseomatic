@@ -14,7 +14,10 @@ sanity check, and this doc doesn't change them.
 > axis/tick engine via `chart-util.ts`), `bar-chart` (added for Damage
 > Taken -- fixed-width stacked bars + death markers, same axis engine,
 > but pre-bucketed at display resolution rather than rolled up from fine
-> buckets), plus the non-widget DOM helpers
+> buckets), `hp-chart` (added for Deaths -- one bar per HP-affecting
+> event at its own timestamp, not a fixed grid; fixed 0-100% axis;
+> green/red bars for heal/damage; death markers cover any player who died
+> in the window, not just this one), plus the non-widget DOM helpers
 > `metric-cell.ts` and `role-icon.ts` the player table composes),
 > `src/views/overview.ts` — the Overview view, wired to the
 > encounter picker — and the `query_events` aggregate DSL (`src-tauri/src/
@@ -244,7 +247,7 @@ count) worth making configurable. Not urgent.
 has picked. **Back / Forward** (toolbar buttons in the `[open | duplicate
 window] · [back | forward | history▾] · [encounter picker] · [player
 picker] · [Encounters | Overview] · [Character | Damage | Healing | Damage
-Taken] · … · [zoom− | zoom+]`
+Taken | Deaths] · … · [zoom− | zoom+]`
 layout — Debug/Raw are menu-only now — plus a native
 **History** menu with `⌘[` / `⌘]` (also `⌘←` / `⌘→`, a frontend keydown
 handler) and Clear History) walk it;
