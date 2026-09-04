@@ -2102,8 +2102,43 @@ body {
   color: var(--text-faint);
 }
 
-/* Deaths view: a per-death tab strip (only shown for >1 death), then one
-   death's HP chart + raw event table. */
+/* Deaths view: a lookback-window control, a per-death tab strip (only
+   shown for >1 death), then one death's HP chart + raw event table. */
+.deaths-lookback {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.deaths-lookback-label {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-right: 2px;
+}
+
+.deaths-lookback-btn {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background-color: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.deaths-lookback-btn:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.deaths-lookback-btn-active {
+  color: var(--text);
+  border-color: var(--accent);
+  background-color: var(--bg-hover);
+}
+
 .deaths-body {
   margin-top: 10px;
 }

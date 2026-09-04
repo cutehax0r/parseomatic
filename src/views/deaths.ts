@@ -1,10 +1,11 @@
 // Deaths -- per-character post-mortem: for each of the selected player's
-// deaths in the current range, a 15s-before-death HP trace (green bars =
+// deaths in the current range, a before-death HP trace (green bars =
 // healed, red = damaged, vertical rules = any death -- this player's own
 // or another player's, within the same window) plus the raw event
-// sequence leading up to it. More than one death in range gets a small
-// tab strip to switch between them, rather than stacking every death's
-// chart+table at once.
+// sequence leading up to it. The lookback window is user-selectable
+// (5/10/15/30s, default 10s -- see LOOKBACK_OPTIONS_SEC). More than one
+// death in range gets a small tab strip to switch between them, rather
+// than stacking every death's chart+table at once.
 
 import "../ui/widgets"; // registers hp-chart / encounter-title / ...
 
@@ -50,12 +51,17 @@ const spec: NodeSpec = {
   children: [{ kind: "widget", type: "encounter-title", id: "title", props: { name: "", badge: "" } }],
 };
 
+const LOOKBACK_OPTIONS_SEC = [5, 10, 15, 30] as const;
+const DEFAULT_LOOKBACK_SEC = 10;
+
 let ctx: ViewContext | null = null;
 let built: BuiltView | null = null;
+let lookbackHost: HTMLElement | null = null;
 let bodyHost: HTMLElement | null = null;
 let hpChart: Widget | null = null;
 let paintSeq = 0;
 let selectedDeathIdx = 0;
+let lookbackSec = DEFAULT_LOOKBACK_SEC;
 
 export function renderDeaths(): void {
   const mount = document.querySelector<HTMLElement>("#deaths-mount");
@@ -67,11 +73,42 @@ export function renderDeaths(): void {
   }
   if (!built) {
     built = buildView(spec, mount, ctx);
+    lookbackHost = buildLookbackControl();
     bodyHost = document.createElement("div");
     bodyHost.className = "deaths-body";
-    mount.append(bodyHost);
+    mount.append(lookbackHost, bodyHost);
   }
   void paint();
+}
+
+function buildLookbackControl(): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "deaths-lookback";
+  const label = document.createElement("span");
+  label.className = "deaths-lookback-label";
+  label.textContent = "Window";
+  wrap.append(label);
+  for (const sec of LOOKBACK_OPTIONS_SEC) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "deaths-lookback-btn" + (sec === lookbackSec ? " deaths-lookback-btn-active" : "");
+    btn.dataset.sec = String(sec);
+    btn.textContent = `${sec}s`;
+    btn.addEventListener("click", () => {
+      if (lookbackSec === sec) return;
+      lookbackSec = sec;
+      refreshLookbackButtons();
+      void paint();
+    });
+    wrap.append(btn);
+  }
+  return wrap;
+}
+
+function refreshLookbackButtons(): void {
+  lookbackHost?.querySelectorAll<HTMLButtonElement>(".deaths-lookback-btn").forEach((btn) => {
+    btn.classList.toggle("deaths-lookback-btn-active", Number(btn.dataset.sec) === lookbackSec);
+  });
 }
 
 async function paint(): Promise<void> {
@@ -147,7 +184,7 @@ async function renderBody(deaths: DeathRow[], unitId: number, seq: number): Prom
   }
 
   const death = deaths[selectedDeathIdx];
-  const detail = await deathDetail(unitId, death.timestampMs);
+  const detail = await deathDetail(unitId, death.timestampMs, lookbackSec * 1000);
   if (seq !== paintSeq) return; // a newer selection is painting
   if (!detail) return;
 

@@ -1312,14 +1312,15 @@ struct DeathDetailRow {
     samples: Vec<HpSampleRow>,
 }
 
-/// Health trace for the 15s leading up to one death -- backs the Deaths
-/// character view. `None` before parsing has finished. See `src/deaths.rs`.
+/// Health trace for the `lookback_ms` leading up to one death -- backs
+/// the Deaths character view (the UI offers 5/10/15/30s, default 10s).
+/// `None` before parsing has finished. See `src/deaths.rs`.
 #[tauri::command]
-fn death_detail(window: WebviewWindow, unit_id: u32, death_ms: i64) -> Option<DeathDetailRow> {
+fn death_detail(window: WebviewWindow, unit_id: u32, death_ms: i64, lookback_ms: i64) -> Option<DeathDetailRow> {
     let log = current_log(&window)?;
     let data = log.data()?;
     let mmap = log.mmap_bytes();
-    let d = deaths::death_detail(&data.events, mmap, unit_id, death_ms);
+    let d = deaths::death_detail(&data.events, mmap, unit_id, death_ms, lookback_ms);
     Some(DeathDetailRow {
         start_ms: d.start_ms,
         end_ms: d.end_ms,

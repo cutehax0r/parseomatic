@@ -1,7 +1,8 @@
 //! Per-death detail for the "Deaths" character view: for one player death,
-//! a health-over-time trace for the 15s leading up to it. A live windowed
-//! scan (the window is always tiny -- 15s of one player's rows -- so no
-//! precompute or caching is needed), in the spirit of `damage.rs`.
+//! a health-over-time trace for the user-chosen lookback window leading
+//! up to it (the view offers 5/10/15/30s, default 10s). A live windowed
+//! scan (the window is always tiny -- at most 30s of one player's rows --
+//! so no precompute or caching is needed), in the spirit of `damage.rs`.
 //!
 //! The health trace rides on WoW's "advanced combat logging" params
 //! block, which the parser already tokenizes as raw byte spans
@@ -23,10 +24,6 @@
 use crate::parser::event::{EventStore, LineKind, Suffix};
 use crate::parser::intern::NO_SPELL;
 use crate::query;
-
-/// How far back from a death to look. Matches the user-facing ask
-/// exactly; not exposed as a parameter for v1.
-pub const LOOKBACK_MS: i64 = 15_000;
 
 /// One HP-affecting event (damage or heal) that touched the player.
 /// `current_hp`/`max_hp` are read straight off the event's own
@@ -58,10 +55,10 @@ fn parse_i64(s: Option<&str>) -> i64 {
     s.and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
-/// Scans `[death_ms - LOOKBACK_MS, death_ms]` for HP samples touching
+/// Scans `[death_ms - lookback_ms, death_ms]` for HP samples touching
 /// `unit_id` as the dest unit.
-pub fn death_detail(events: &EventStore, mmap: &[u8], unit_id: u32, death_ms: i64) -> DeathDetail {
-    let start_ms = death_ms - LOOKBACK_MS;
+pub fn death_detail(events: &EventStore, mmap: &[u8], unit_id: u32, death_ms: i64, lookback_ms: i64) -> DeathDetail {
+    let start_ms = death_ms - lookback_ms;
     let (lo, hi) = query::window(events, start_ms, death_ms);
 
     let mut samples = Vec::new();
@@ -148,9 +145,9 @@ mod tests {
         let unit_id = tables.guids.get_id(player).expect("player interned");
         let death_ms = store.timestamp_ms[store.timestamp_ms.len() - 1];
 
-        let d = death_detail(&store, &data, unit_id, death_ms);
+        let d = death_detail(&store, &data, unit_id, death_ms, 15_000);
 
-        assert_eq!(d.start_ms, death_ms - LOOKBACK_MS);
+        assert_eq!(d.start_ms, death_ms - 15_000);
         assert_eq!(d.end_ms, death_ms);
 
         assert_eq!(d.samples.len(), 2);
@@ -161,5 +158,27 @@ mod tests {
         assert!(!d.samples[1].is_heal);
         assert_eq!(d.samples[1].current_hp, 0);
         assert_eq!(d.samples[1].source_unit, tables.guids.get_id(boss).unwrap());
+    }
+
+    #[test]
+    fn lookback_ms_is_respected() {
+        let player = "Player-1-00000001";
+        let healer = "Player-2-00000002";
+        let lines = vec![
+            hp_event("SPELL_HEAL", "4/14/2026 19:00:00.000-6", healer, "Healer", player, "Player-Realm-US", 200, "Heal", 700, 1000, 300),
+            hp_event("SPELL_DAMAGE", "4/14/2026 19:00:10.000-6", healer, "Healer", player, "Player-Realm-US", 1, "Claw", 0, 1000, 700),
+        ];
+        let (data, tables, store) = store_from(&lines);
+        let unit_id = tables.guids.get_id(player).expect("player interned");
+        let death_ms = store.timestamp_ms[1];
+
+        // 5s lookback: only the death-instant event, 10s earlier heal excluded.
+        let narrow = death_detail(&store, &data, unit_id, death_ms, 5_000);
+        assert_eq!(narrow.samples.len(), 1);
+        assert!(!narrow.samples[0].is_heal);
+
+        // 15s lookback: both events included.
+        let wide = death_detail(&store, &data, unit_id, death_ms, 15_000);
+        assert_eq!(wide.samples.len(), 2);
     }
 }
