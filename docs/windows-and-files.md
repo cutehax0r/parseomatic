@@ -87,19 +87,37 @@ pick never spawns a new window with data). See `show_open_error`.
   menu item; the launch screen's location rows pass a starting `dir`),
   remembers the chosen directory (`get_last_dir`/`set_last_dir`, persisted
   to `app_config_dir()`) for next time.
-- **New Window** (`spawn_sibling_window`) — looks up the calling window's
-  current `Arc<ParsedLog>` and attaches a freshly created window to the
-  *same* `Arc`. Zero re-parsing, just a refcount bump.
+- **File > New Window** (`⌘N`, menu id `new_window`) — a fresh *empty*
+  window on the launch screen. Just `create_empty_window` on a spawned
+  thread; no file, no state carried over. Always enabled.
+- **File > Duplicate Window** (`⌘⇧N`, menu id `duplicate_window`) — a copy
+  of the foreground window: same `Arc<ParsedLog>` (refcount bump, zero
+  re-parse) *plus* its current encounter/range selection and active view.
+  Zoom is global so it needs no carrying. **Disabled** when the focused
+  window has no log (`sync_duplicate_menu`, re-run on focus change and
+  after every open).
+  The selection + view live in the *frontend*, so this bounces through it:
+  the menu item `emit`s a `duplicate-window` event to the focused window →
+  its JS calls the `duplicate_window` command with `{ selection, view }` →
+  Rust runs `create_empty_window`, attaches the shared `Arc`, and stashes
+  the `{ selection, view }` blob in **`PendingInit`**
+  (`Mutex<HashMap<window label, serde_json::Value>>`, managed global). The
+  new window's frontend claims it exactly once on load via the
+  `take_pending_init` command (a plain `remove`), then applies the
+  selection and switches to the view. `register_close_cleanup` also drops
+  any stale `PendingInit` entry for a closing label.
 - **Window creation** (`create_empty_window`) always goes through
   `WebviewWindowBuilder`, with a counter-based label (`log-1`, `log-2`,
   ...), and always registers `register_close_cleanup`, `register_drag_drop`
-  and `register_focus_sync` on the new window before handing it back. It is
-  **not** resized or repositioned in code — every attempt to (center / fit
-  to ~80% of screen / cascade off the previous window) misbehaved on this
-  tao/wry across multi-monitor + Retina setups (windows landing on the
-  wrong display, at the wrong scale, or walking off-screen). The window
-  opens at the `tauri.conf.json` `inner_size`, wherever the OS places it.
-  The one AppKit tweak that stays is `setRestorable(false)` (in
+  and `register_focus_sync` on the new window before handing it back. It
+  sets `inner_size(1200.0, 800.0)` (CSS px, scale-independent) and, if the
+  global zoom is not 1.0, calls `set_zoom(level)` on the new window so it
+  matches the others. It is otherwise **not** repositioned in code — every
+  attempt to (center / fit to ~80% of screen / cascade off the previous
+  window) misbehaved on this tao/wry across multi-monitor + Retina setups
+  (windows landing on the wrong display, at the wrong scale, or walking
+  off-screen). The window opens wherever the OS places it. The one AppKit
+  tweak that stays is `setRestorable(false)` (in
   `set_represented_filename`): setting a proxy icon makes AppKit treat the
   window as a document window and re-run its own auto-cascade placement,
   which *did* walk the window off-screen after a file opened.

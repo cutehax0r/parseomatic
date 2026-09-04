@@ -153,11 +153,12 @@ player, spell, and target all come from the shared chain.
   already marks certain raw-view cells `raw-clickable` and knows their
   underlying id (currently just a tooltip) — extending that into an actual
   action is the same fact, used for real. Can apply in place, or spawn a
-  **new** window seeded with `currentChain + [newClause]`, extending
-  `spawn_sibling_window` (`windows-and-files.md`) to carry the chain as an
-  extra payload — the new window's chain then diverges independently, same
-  as `WindowLogs` already gives every window independent state off one
-  shared parsed log.
+  **new** window seeded with `currentChain + [newClause]` — the
+  `duplicate_window` / `PendingInit` path (`windows-and-files.md`) already
+  carries a `{ selection, view }` blob to the new window; adding `filters`
+  to it is the natural extension. The new window's chain then diverges
+  independently, same as `WindowLogs` already gives every window
+  independent state off one shared parsed log.
 
 **Backend note — a clause isn't always a flat per-event field compare:**
 - `encounter`: filter using the `start_row`/`end_row` index range already on
@@ -213,9 +214,11 @@ count) worth making configurable. Not urgent.
 ## Selection history (built)
 
 `src/ui/history.ts` — a per-window stack of the ranges/encounters the user
-has picked. **Back / Forward** (toolbar buttons in the `[open | new] ·
-[back | forward | history▾] · [picker] · [overview | debug | raw]` layout,
-plus a native **History** menu with `⌘[` / `⌘]` and Clear History) walk it;
+has picked. **Back / Forward** (toolbar buttons in the `[open | duplicate
+window] · [back | forward | history▾] · [picker] · [Encounters | Overview]
+· … · [zoom− | zoom+]` layout — Debug/Raw are menu-only now — plus a native
+**History** menu with `⌘[` / `⌘]` (also `⌘←` / `⌘→`, a frontend keydown
+handler) and Clear History) walk it;
 the `history▾` popup lists the session's selections newest-first, current
 one marked, click to jump. Browser-history semantics — picking something
 new after Back discards the forward entries. Recording is driven from the
@@ -235,9 +238,9 @@ Menu/label shape and how filter state is tracked: TBD.
 
 **TODO — show/hide debug features.** A Settings toggle that removes the Raw
 and Debug views entirely — their toolbar buttons and View-menu items — for
-users who don't want the parser-internals views. Overview (and future
-views) stay. `ViewKind::default()` would need to follow (fall to Overview
-when Debug is hidden).
+users who don't want the parser-internals views. Encounters/Overview (and
+future views) stay. `ViewKind::default()` is already `Encounters`, so it
+needs no change; only the View › Developer submenu and its items go away.
 
 **TODO — linked windows / a global toolbar.** Let windows *link* so a
 filter/range/playhead change in one propagates to the others — e.g. "player
