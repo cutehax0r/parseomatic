@@ -1940,12 +1940,16 @@ body {
   margin-right: 5px;
 }
 
-/* movement-path -- top-down "radar" of the player's route. Square plot,
-   capped, centred in its column. */
+/* movement-path -- top-down "radar" of the player's route. The whole
+   widget is a capped, centred square block (not a full-width strip). */
+.movement-path {
+  max-width: 560px;
+  margin-inline: auto;
+}
+
 .movement-path .chart-plot {
   aspect-ratio: 1 / 1;
   width: 100%;
-  max-width: 520px;
   margin-inline: auto;
   /* tooltip is positioned by both left AND top inside the plot */
   overflow: hidden;
@@ -1987,19 +1991,13 @@ body {
   opacity: 0.4;
 }
 
+/* Trail: `stroke` is set inline per-segment (the yellow->green->blue
+   time ramp). */
 .movement-trail {
   fill: none;
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-
-.movement-trail--still {
-  stroke: var(--success);
-}
-
-.movement-trail--move {
-  stroke: var(--accent);
 }
 
 /* Translucent circle at a spot the player parked; grows with the stay. */
@@ -2021,22 +2019,30 @@ body {
   fill: var(--text);
 }
 
+/* Death: a red disc at the death spot, radius set inline by time dead. */
 .movement-death {
-  stroke: var(--chart-death);
-  stroke-width: 2;
-  stroke-linecap: round;
+  fill: var(--danger);
+  fill-opacity: 0.16;
+  stroke: var(--danger);
+  stroke-opacity: 0.55;
+  stroke-width: 1.25;
 }
 
 .movement-hoverdot {
   fill: var(--text);
 }
 
-.chart-legend-item[data-series="still"] i {
-  background-color: var(--success);
+.chart-legend-item[data-series="trail"] i {
+  width: 18px;
+  background: linear-gradient(90deg, var(--ctp-yellow), var(--ctp-green), var(--ctp-blue));
 }
 
-.chart-legend-item[data-series="move"] i {
-  background-color: var(--accent);
+/* movement-path's Death is a red disc, not the line-chart's pink rule. */
+.movement-path .chart-legend-item[data-series="death"] i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background-color: var(--danger);
 }
 
 /* area-chart -- one translucent band per stacked series, `--c` set

@@ -28,7 +28,7 @@ const spec: NodeSpec = {
       type: "movement-path",
       id: "path",
       span: 1,
-      props: { samples: [], deaths: [], startMs: 0, fitBox: null, mapBox: null },
+      props: { samples: [], deathSpans: [], startMs: 0, endMs: 0, fitBox: null, mapBox: null },
     },
     {
       kind: "widget",
@@ -111,8 +111,9 @@ async function paint(): Promise<void> {
   });
   built.get("path")?.update({
     samples: series.samples,
-    deaths,
+    deathSpans: series.deathSpans,
     startMs: series.startMs,
+    endMs: series.endMs,
     fitBox: series.fitBox,
     mapBox: series.mapBox,
   });

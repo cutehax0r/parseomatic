@@ -2,14 +2,14 @@
 // encounter drawn as a smooth curved trail on a faint world-coordinate
 // grid. Inline SVG, no library.
 //
-// The trail is coloured by movement state -- GREEN where the player was
-// standing still (average speed between fixes below MOVE_SPEED_MIN, the
-// same threshold stats.rs uses), BLUE where moving. Every spot they
-// parked gets a translucent circle that grows the longer they stood
-// there (one notch per STAND_STEP_MS, capped at STAND_MAX_MULT x). Start
-// is a hollow ring, the last fix a filled dot, deaths are `--chart-death`
-// crosses at the fix nearest each death time. Gaps longer than GAP_MS
-// (a wipe reset / phase teleport) break the trail and the standstill run.
+// The trail runs a time GRADIENT head-to-tail -- yellow (oldest) ->
+// green -> blue (most recent) -- so direction reads without an
+// animation. Every spot the player parked gets a translucent circle that
+// grows the longer they stood there (one notch per STAND_STEP_MS, capped
+// at STAND_MAX_MULT x). Deaths are red circles scaled by how long they
+// were dead. Start is a hollow ring, the last fix a filled dot. Gaps
+// longer than GAP_MS (a wipe reset / phase teleport) break the trail and
+// the standstill run.
 //
 // Framing: `fitBox` -- the tight bounds over EVERY player's fixes in the
 // window ("the area the raid played in"), from the backend -- padded
@@ -30,15 +30,16 @@ export interface MovementPathSample {
   y: number;
 }
 
-export interface MovementPathDeath {
-  t: number;
-  label?: string;
+export interface MovementPathDeathSpan {
+  startMs: number;
+  endMs: number | null; // null = still dead at the window's end
 }
 
 export interface MovementPathProps {
   samples: MovementPathSample[];
-  deaths: MovementPathDeath[];
+  deathSpans: MovementPathDeathSpan[];
   startMs: number;
+  endMs: number;
   // Tight bounds over every player's fixes in the window -- the plot
   // frames on this (padded). Falls back to `mapBox`, then this player's
   // own fixes.
@@ -53,13 +54,35 @@ const GAP_MS = 5000; // matches stats.rs MOVE_GAP_MS -- break the trail across a
 const MAX_PTS = 500; // downsample cap for the drawn curve
 const MIN_SPAN = 20; // yards -- floor on the world span so a tiny path isn't over-zoomed
 const PAD_FRAC = 0.1; // buffer added around the framing box
-const MOVE_SPEED_MIN = 1; // yd/s -- mirrors stats.rs; at/below this a segment is "standing"
 const MARKER_R = 5; // px, base radius for start / end / standstill circles
 const STAND_EPS = 1.5; // yd -- fixes within this of the anchor keep a standstill run going
 const STAND_MIN_MS = 3000; // shortest stay that earns a circle
 const STAND_STEP_MS = 3000; // the circle grows one notch per this long parked
 const STAND_GROW = 0.4; // radius added (x base) per notch -> hits the cap at ~30 s
 const STAND_MAX_MULT = 5; // cap on the standstill circle radius
+const DEATH_GROW_S = 4; // death circle: +1x base radius per this many seconds dead
+const DEATH_MAX_MULT = 6; // cap on the death circle radius
+const TRAIL_CHUNK = 6; // fixes per gradient segment of the trail
+
+// The trail's yellow -> green -> blue time ramp, read once from the CSS
+// custom properties so it tracks the theme. `frac` 0..1 = oldest..newest.
+function rampColor(root: CSSStyleDeclaration, frac: number): string {
+  const hex = (name: string, fallback: string) => {
+    const v = root.getPropertyValue(name).trim();
+    return /^#[0-9a-f]{6}$/i.test(v) ? v : fallback;
+  };
+  const stops = [hex("--ctp-yellow", "#eed49f"), hex("--ctp-green", "#a6da95"), hex("--ctp-blue", "#8aadf4")];
+  const t = Math.min(1, Math.max(0, frac)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(t));
+  const m = t - i;
+  const [r0, g0, b0] = parseHex(stops[i]);
+  const [r1, g1, b1] = parseHex(stops[i + 1]);
+  const lerp = (a: number, b: number) => Math.round(a + (b - a) * m);
+  return `rgb(${lerp(r0, r1)},${lerp(g0, g1)},${lerp(b0, b1)})`;
+}
+function parseHex(h: string): [number, number, number] {
+  return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+}
 
 // Smallest 1/2/2.5/5 x 10^n that is >= v -- for a tidy grid step.
 function niceStep(v: number): number {
@@ -101,8 +124,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   const legend = document.createElement("div");
   legend.className = "chart-legend";
   legend.innerHTML =
-    '<span class="chart-legend-item" data-series="still"><i></i>Still</span>' +
-    '<span class="chart-legend-item" data-series="move"><i></i>Moving</span>' +
+    '<span class="chart-legend-item" data-series="trail"><i></i>Start → End</span>' +
     '<span class="chart-legend-item" data-series="death"><i></i>Death</span>';
   header.append(title, legend);
 
@@ -156,7 +178,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     svg.replaceChildren();
     hoverPts = [];
 
-    const { samples, deaths, fitBox, mapBox } = current;
+    const { samples, deathSpans, startMs, endMs, fitBox, mapBox } = current;
     const hasPath = samples.length >= 2;
     empty.hidden = hasPath;
     svg.style.visibility = hasPath ? "visible" : "hidden";
@@ -251,48 +273,42 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     }
     flushStand();
 
-    // --- downsample + split into gap-free runs, then colour by state ---
+    // --- downsample, then draw the trail as a head-to-tail time gradient
     const stride = Math.max(1, Math.ceil(samples.length / MAX_PTS));
     const pts: MovementPathSample[] = [];
     for (let i = 0; i < samples.length; i += stride) pts.push(samples[i]);
     if (pts[pts.length - 1] !== samples[samples.length - 1]) pts.push(samples[samples.length - 1]);
     for (const p of pts) hoverPts.push({ x: px(p.x), y: py(p.y), t: p.tMs });
 
-    // Per-segment moving state, then draw maximal same-state runs as one
-    // curve each (1-point overlap so colour changes butt-join cleanly).
-    let seg: Array<[number, number]> = [[px(pts[0].x), py(pts[0].y)]];
-    let segMoving: boolean | null = null;
-    const flushSeg = () => {
-      if (seg.length >= 2 && segMoving !== null) {
-        svg.appendChild(
-          el("path", {
-            d: curve(seg),
-            class: `movement-trail movement-trail--${segMoving ? "move" : "still"}`,
-          }),
-        );
-      }
+    const rootStyle = getComputedStyle(document.documentElement);
+    const span = Math.max(1, endMs - startMs);
+    // Chunks of ~TRAIL_CHUNK fixes, each a short curve in its own ramp
+    // colour; +1-fix overlap so chunk joins butt cleanly. A gap between
+    // two fixes ends the current chunk (no line across a teleport).
+    let chunk: MovementPathSample[] = [pts[0]];
+    const flushChunk = () => {
+      if (chunk.length < 2) return;
+      const midT = chunk[Math.floor(chunk.length / 2)].tMs;
+      const path = el("path", {
+        d: curve(chunk.map((p) => [px(p.x), py(p.y)] as [number, number])),
+        class: "movement-trail",
+      });
+      path.setAttribute("stroke", rampColor(rootStyle, (midT - startMs) / span));
+      svg.appendChild(path);
     };
     for (let i = 1; i < pts.length; i++) {
-      const a = pts[i - 1];
-      const b = pts[i];
-      if (b.tMs - a.tMs > GAP_MS) {
-        // Teleport / log gap: end the trail, don't draw across it.
-        flushSeg();
-        seg = [[px(b.x), py(b.y)]];
-        segMoving = null;
+      if (pts[i].tMs - pts[i - 1].tMs > GAP_MS) {
+        flushChunk();
+        chunk = [pts[i]];
         continue;
       }
-      const speed = Math.hypot(b.x - a.x, b.y - a.y) / Math.max(0.001, (b.tMs - a.tMs) / 1000);
-      const moving = speed > MOVE_SPEED_MIN;
-      if (segMoving === null) segMoving = moving;
-      if (moving !== segMoving) {
-        flushSeg();
-        seg = [[px(a.x), py(a.y)]]; // overlap point
-        segMoving = moving;
+      chunk.push(pts[i]);
+      if (chunk.length > TRAIL_CHUNK) {
+        flushChunk();
+        chunk = [pts[i]]; // overlap
       }
-      seg.push([px(b.x), py(b.y)]);
     }
-    flushSeg();
+    flushChunk();
 
     // --- markers ---------------------------------------------------------
     const first = samples[0];
@@ -304,21 +320,24 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       el("circle", { cx: px(last.x), cy: py(last.y), r: MARKER_R - 1, class: "movement-end" }),
     );
 
-    for (const d of deaths) {
+    // --- deaths: a red circle at the death spot, radius by time dead ---
+    const nearestFix = (t: number) => {
       let best = samples[0];
       let bestGap = Infinity;
       for (const s of samples) {
-        const g = Math.abs(s.tMs - d.t);
+        const g = Math.abs(s.tMs - t);
         if (g < bestGap) {
           bestGap = g;
           best = s;
         }
       }
-      const x = px(best.x);
-      const y = py(best.y);
-      const r = 4;
-      svg.appendChild(el("line", { x1: x - r, y1: y - r, x2: x + r, y2: y + r, class: "movement-death" }));
-      svg.appendChild(el("line", { x1: x - r, y1: y + r, x2: x + r, y2: y - r, class: "movement-death" }));
+      return best;
+    };
+    for (const d of deathSpans) {
+      const spot = nearestFix(d.startMs);
+      const deadSec = ((d.endMs ?? endMs) - d.startMs) / 1000;
+      const r = MARKER_R * Math.min(DEATH_MAX_MULT, 1 + Math.max(0, deadSec) / DEATH_GROW_S);
+      svg.appendChild(el("circle", { cx: px(spot.x), cy: py(spot.y), r, class: "movement-death" }));
     }
 
     hoverDot = el("circle", { cx: 0, cy: 0, r: 3.5, class: "movement-hoverdot" });
