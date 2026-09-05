@@ -1358,6 +1358,15 @@ struct MovementSampleRow {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct MovementActivityRow {
+    standing_ms: i64,
+    standing_active_ms: i64,
+    moving_ms: i64,
+    moving_active_ms: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct MovementSeriesRow {
     start_ms: i64,
     end_ms: i64,
@@ -1369,6 +1378,11 @@ struct MovementSeriesRow {
     samples: Vec<MovementSampleRow>,
     /// `MAP_CHANGE` box `[x0, x1, y0, y1]` (corners unsorted), or `null`.
     map_box: Option<[f32; 4]>,
+    /// Tight `[minX, maxX, minY, maxY]` over every player's fixes in the
+    /// window -- what the path plot frames on. `null` if none.
+    fit_box: Option<[f32; 4]>,
+    /// Standing / moving x idle / acting time split (the pie chart).
+    activity: MovementActivityRow,
 }
 
 /// Movement for `unit_id` across `[start_ms, end_ms]` -- distance binned
@@ -1386,7 +1400,15 @@ fn movement_series(
 ) -> Option<MovementSeriesRow> {
     let log = current_log(&window)?;
     let data = log.data()?;
-    let m = movement::series(&data.events, log.mmap_bytes(), unit_id, start_ms, end_ms, buckets);
+    let m = movement::series(
+        &data.events,
+        &data.tables,
+        log.mmap_bytes(),
+        unit_id,
+        start_ms,
+        end_ms,
+        buckets,
+    );
     Some(MovementSeriesRow {
         start_ms: m.start_ms,
         end_ms: m.end_ms,
@@ -1400,6 +1422,13 @@ fn movement_series(
             .map(|s| MovementSampleRow { t_ms: s.t_ms, x: s.x, y: s.y })
             .collect(),
         map_box: m.map_box,
+        fit_box: m.fit_box,
+        activity: MovementActivityRow {
+            standing_ms: m.activity.standing_ms,
+            standing_active_ms: m.activity.standing_active_ms,
+            moving_ms: m.activity.moving_ms,
+            moving_active_ms: m.activity.moving_active_ms,
+        },
     })
 }
 

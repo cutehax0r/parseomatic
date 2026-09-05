@@ -163,6 +163,15 @@ export interface MovementSample {
   y: number;
 }
 
+// Window time (ms) split over 1.5s slots: was the player moving in the
+// slot, and did they cast something in it. Backs the Movement pie.
+export interface MovementActivity {
+  standingMs: number;
+  standingActiveMs: number;
+  movingMs: number;
+  movingActiveMs: number;
+}
+
 export interface MovementSeries {
   startMs: number;
   endMs: number;
@@ -171,9 +180,14 @@ export interface MovementSeries {
   total: number;
   deaths: number[]; // this unit's death timestamps within the window, ascending
   samples: MovementSample[]; // ordered position fixes (the top-down path plot)
-  // MAP_CHANGE playable-area box [x0, x1, y0, y1] -- corners are NOT
-  // sorted; normalise with min/max. null if none precedes the window.
+  // MAP_CHANGE playable-area box [x0, x1, y0, y1] -- corners NOT sorted.
+  // Kept for reference; the path plot frames on `fitBox`.
   mapBox: [number, number, number, number] | null;
+  // Tight [minX, maxX, minY, maxY] over every player's fixes in the
+  // window -- "the area the raid played in". The path plot frames on
+  // this (padded). null if no player carried a position.
+  fitBox: [number, number, number, number] | null;
+  activity: MovementActivity;
 }
 
 // Per-player derived stats for one encounter, from the `encounter_stats`

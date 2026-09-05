@@ -8,11 +8,14 @@
 // nearest each death time. Gaps longer than GAP_MS (a wipe reset / phase
 // teleport) break the trail rather than drawing a long false line.
 //
-// Framing: the `MAP_CHANGE` playable-area box when we have one (a stable
-// frame across pulls on the same map), else an auto-fit to the fixes
-// with a minimum span so a player who barely moved isn't magnified into
-// noise. One uniform scale for both axes -- 1 yard east == 1 yard north
-// on screen -- so path shape isn't distorted. Screen: +x right, +y up.
+// Framing: `fitBox` -- the tight bounds over EVERY player's fixes in the
+// window ("the area the raid played in"), from the backend -- padded
+// 10%. Falls back to the `MAP_CHANGE` box, then to this player's own
+// fixes, with a minimum span so a barely-moving player isn't magnified
+// into noise. One uniform scale for both axes (1 yard east == 1 yard
+// north on screen) so path shape isn't distorted. Screen: +x right, +y
+// up. (All of this is a stopgap until a real map image + per-map lookup
+// replace it.)
 
 import { registerWidget } from "../registry";
 import { formatAxisTime } from "../../format";
@@ -33,14 +36,20 @@ export interface MovementPathProps {
   samples: MovementPathSample[];
   deaths: MovementPathDeath[];
   startMs: number;
+  // Tight bounds over every player's fixes in the window -- the plot
+  // frames on this (padded). Falls back to `mapBox`, then this player's
+  // own fixes.
+  fitBox: [number, number, number, number] | null;
   mapBox: [number, number, number, number] | null;
 }
 
-const H = 380; // fixed SVG height (keep in sync with styles.css)
+// vbW / vbH track the SVG's real pixel size (CSS makes .chart-plot
+// square, so these stay ~equal). 1 unit == 1px.
 const M = 12; // margin inside the SVG around the square plot region
 const GAP_MS = 5000; // matches stats.rs MOVE_GAP_MS -- break the trail across a bigger jump
 const MAX_PTS = 500; // downsample cap for the drawn curve
-const MIN_SPAN = 20; // yards -- floor on the auto-fit world span
+const MIN_SPAN = 20; // yards -- floor on the world span so a tiny path isn't over-zoomed
+const PAD_FRAC = 0.1; // buffer added around the framing box
 const TRAIL_CHUNK = 8; // points per gradient segment
 
 // Smallest 1/2/2.5/5 x 10^n that is >= v -- for a tidy grid step.
@@ -91,7 +100,8 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   const plot = document.createElement("div");
   plot.className = "chart-plot";
   let vbW = 900;
-  const svg = el("svg", { viewBox: `0 0 ${vbW} ${H}` });
+  let vbH = 380;
+  const svg = el("svg", { viewBox: `0 0 ${vbW} ${vbH}` });
   const empty = document.createElement("p");
   empty.className = "movement-path-empty";
   empty.textContent = "No movement recorded in this window.";
@@ -114,7 +124,10 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
 
   const resizeObserver = new ResizeObserver(() => {
     svgRect = svg.getBoundingClientRect();
-    if (svgRect.width > 0 && Math.abs(Math.round(svgRect.width) - vbW) >= 8 && !resizeRaf) {
+    const changed =
+      Math.abs(Math.round(svgRect.width) - vbW) >= 8 ||
+      Math.abs(Math.round(svgRect.height) - vbH) >= 8;
+    if (svgRect.width > 0 && changed && !resizeRaf) {
       resizeRaf = requestAnimationFrame(() => {
         resizeRaf = 0;
         render();
@@ -128,27 +141,31 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     if (rect.width > 0) {
       svgRect = rect;
       vbW = Math.round(rect.width);
+      if (rect.height > 0) vbH = Math.round(rect.height);
     }
-    svg.setAttribute("viewBox", `0 0 ${vbW} ${H}`);
+    svg.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
     svg.replaceChildren();
     hoverPts = [];
 
-    const { samples, deaths, startMs, mapBox } = current;
+    const { samples, deaths, startMs, fitBox, mapBox } = current;
     const hasPath = samples.length >= 2;
     empty.hidden = hasPath;
     svg.style.visibility = hasPath ? "visible" : "hidden";
     if (!hasPath) return;
 
-    // --- world bounds -------------------------------------------------
+    // --- world bounds ------------------------------------------------
+    // Prefer the raid-wide box, then the map box, then this player's
+    // own extent; pad whichever by PAD_FRAC.
     let minX: number;
     let maxX: number;
     let minY: number;
     let maxY: number;
-    if (mapBox) {
-      minX = Math.min(mapBox[0], mapBox[1]);
-      maxX = Math.max(mapBox[0], mapBox[1]);
-      minY = Math.min(mapBox[2], mapBox[3]);
-      maxY = Math.max(mapBox[2], mapBox[3]);
+    const box = fitBox ?? mapBox;
+    if (box) {
+      minX = Math.min(box[0], box[1]);
+      maxX = Math.max(box[0], box[1]);
+      minY = Math.min(box[2], box[3]);
+      maxY = Math.max(box[2], box[3]);
     } else {
       minX = Infinity;
       maxX = -Infinity;
@@ -160,19 +177,19 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
         if (s.y < minY) minY = s.y;
         if (s.y > maxY) maxY = s.y;
       }
-      const pad = 0.08 * Math.max(maxX - minX, maxY - minY, MIN_SPAN);
-      minX -= pad;
-      maxX += pad;
-      minY -= pad;
-      maxY += pad;
     }
+    const pad = PAD_FRAC * Math.max(maxX - minX, maxY - minY, MIN_SPAN);
+    minX -= pad;
+    maxX += pad;
+    minY -= pad;
+    maxY += pad;
     // Uniform scale about the world centre.
     const worldSpan = Math.max(maxX - minX, maxY - minY, MIN_SPAN);
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
-    const side = Math.max(40, Math.min(vbW - 2 * M, H - 2 * M));
+    const side = Math.max(40, Math.min(vbW - 2 * M, vbH - 2 * M));
     const regionCX = vbW / 2;
-    const regionCY = H / 2;
+    const regionCY = vbH / 2;
     const scale = side / worldSpan;
     const px = (x: number) => regionCX + (x - cx) * scale;
     const py = (y: number) => regionCY - (y - cy) * scale;
@@ -269,7 +286,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     if (!svgRect || svgRect.width === 0) svgRect = svg.getBoundingClientRect();
     if (svgRect.width === 0 || hoverPts.length === 0) return;
     const vx = ((pendingClient[0] - svgRect.left) / svgRect.width) * vbW;
-    const vy = ((pendingClient[1] - svgRect.top) / svgRect.height) * H;
+    const vy = ((pendingClient[1] - svgRect.top) / svgRect.height) * vbH;
 
     let best = hoverPts[0];
     let bestD = Infinity;
@@ -290,7 +307,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     tooltip.textContent = formatAxisTime(best.t - current.startMs, 1);
     tooltip.hidden = false;
     tooltip.style.left = `${(best.x / vbW) * 100}%`;
-    tooltip.style.top = `${(best.y / H) * 100}%`;
+    tooltip.style.top = `${(best.y / vbH) * 100}%`;
   }
 
   function hideHover() {

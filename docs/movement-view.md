@@ -152,14 +152,18 @@ Environmental field offset in `parse_composed`.
 
 `src/ui/widgets/movement-path.ts`: the selected player's `(x, y)` fixes
 drawn as a smooth **Catmull-Rom curve** (open, no value-band clamp —
-this is a spatial curve) on a faint world-coordinate grid. Square plot
-region, one uniform scale for both axes so the route shape isn't
-distorted; screen +x right, +y up.
+this is a spatial curve) on a faint world-coordinate grid. The plot is a
+**square** (CSS `aspect-ratio: 1`, capped ~460 px, centred in its
+column; the widget reads its real pixel width AND height), one uniform
+scale for both axes so the route shape isn't distorted; screen +x right,
++y up. Sits beside the activity pie (§7c).
 
-- **Framing:** the `MAP_CHANGE` box (§5, corners min/max-normalised) when
-  the window has one — a stable frame across pulls on the same map —
-  else an auto-fit to the fixes with an 8 % pad and a 20-yard minimum
-  span so a player who barely moved isn't magnified into noise.
+- **Framing:** `fit_box` — the tight bounds over **every player's** fixes
+  in the window ("the area the raid played in"), from `movement_series`
+  — padded 10 %. Falls back to the `MAP_CHANGE` box (§5, corners
+  min/max-normalised), then to this player's own extent, with a 20-yard
+  minimum span so a barely-moving player isn't magnified into noise.
+  (All a stopgap until a real map image + per-map lookup replace it.)
 - **Grid:** lines at round world coordinates (`niceStep(worldSpan/6)`),
   clipped to the region, plus a frame rect.
 - **Trail direction:** the curve is drawn in ~8-point chunks with
@@ -200,6 +204,27 @@ The view (`src/views/movement.ts`) gates like Overview/Deaths — a
 player must be picked and the range must be a bounded window, not the
 whole log — and shows total distance as the title badge.
 
+### 7c. Activity pie — **built**
+
+Reuses the `pie-chart` widget. The window is stepped in `BIN_MS` (1.5 s)
+slots — shared with `stats.rs` — and each slot is classed two ways:
+
+- **moving** if the majority of the slot was spent above
+  `MOVE_SPEED_MIN` (1 yd/s), from the fix-to-fix intervals spread across
+  the slots they cover; else **standing**.
+- **acting** if a `SPELL_CAST_START` / `_SUCCESS` of the player's own
+  landed in the slot (checked before the position gate — `CAST_START`
+  has no advanced block); else idle.
+
+→ four slices: **Standing** (grey), **Standing + acting** (green),
+**Moving** (amber), **Moving + acting** (blue), as seconds.
+`movement_series.activity` (`ActivitySplit`) carries the four ms totals.
+
+This is a coarser cousin of `stats.rs`'s `ApsActivityModel` — it keys
+only off cast events landing in a slot, not channel/empower spans or
+mid-cast slots — enough for "did they press a button roughly every GCD
+while moving". Refine against `ApsActivityModel` if it reads wrong.
+
 **Later:** per-bin state colouring (green still / blue moving+casting /
 red moving raw), matching 7a. Needs the cast/aura spans (§8); the
 shipped `movement_series` is distance + fixes only.
@@ -220,22 +245,26 @@ Overview row sparkline.
   ```
   MovementSeries {
       start_ms, end_ms, bucket_ms: i64,
-      buckets: Vec<f64>,        // distance (~yd) per equal time slice -- the line graph
+      buckets: Vec<f64>,          // distance (~yd) per equal time slice -- the line graph
       total:   f64,
-      deaths:  Vec<i64>,        // this unit's UNIT_DIED timestamps in the window
-      samples: Vec<Sample>,     // ordered (t_ms, x, y) fixes -- the path plot
-      map_box: Option<[f32; 4]>,// MAP_CHANGE [x0,x1,y0,y1] (corners unsorted)
+      deaths:  Vec<i64>,          // this unit's UNIT_DIED timestamps in the window
+      samples: Vec<Sample>,       // ordered (t_ms, x, y) fixes -- the path plot
+      map_box: Option<[f32; 4]>,  // MAP_CHANGE [x0,x1,y0,y1] (corners unsorted), reference only
+      fit_box: Option<[f32; 4]>,  // tight [minX,maxX,minY,maxY] over EVERY player's fixes -- the path frame
+      activity: ActivitySplit,    // standing / moving x idle / acting ms -- the pie (§7c)
   }
   ```
 
-  `query::window` binary-searches the row range, then one linear pass:
-  `hypot` between consecutive `pos_unit == unitId` fixes into
-  `query.rs`-style buckets (`dt > MOVE_GAP_MS` steps don't count toward
-  distance but the fix is still recorded), and each fix pushed to
-  `samples`. `map_box` comes from a backward scan for the nearest
-  `MAP_CHANGE` at/before the window (raw fields 3–6, resolved against
-  the mmap). Bucket count matches the Overview chart (~1/s, capped 800).
-  Fetched + cached in `src/ui/movement-series.ts` (keyed
+  `query::window` binary-searches the row range, then **one linear pass**
+  does everything: `hypot` between consecutive `pos_unit == unitId` fixes
+  into `query.rs`-style buckets (`dt > MOVE_GAP_MS` steps don't count
+  toward distance but the fix is still recorded to `samples`); every
+  player's fix widens `fit_box`; cast events fill the per-slot "acted"
+  bitmap and moving intervals fill the per-slot "moving ms", folded into
+  `activity` after the loop. `map_box` comes from a backward scan for the
+  nearest `MAP_CHANGE` at/before the window (raw fields 3–6, resolved
+  against the mmap). Bucket count matches the Overview chart (~1/s,
+  capped 800). Fetched + cached in `src/ui/movement-series.ts` (keyed
   `unitId:start:end:buckets`, cleared on log change).
 
 - **Still missing for §7a's colour states:** the cast spans

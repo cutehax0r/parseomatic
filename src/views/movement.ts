@@ -2,18 +2,22 @@
 // moved over an encounter, reconstructed from the x/y on their combat-log
 // events (see `docs/movement-view.md` for the data model).
 //
-// First graph: distance moved over time, styled like the Overview page's
-// DPS/HPS line chart -- a single "yards per second" line with the
-// player's death timestamps as vertical rules. A top-down path plot with
-// a playback scrubber is still to come.
+// Top row: a square top-down "radar" of the player's route, and beside
+// it a pie of the window's time split -- standing / standing+acting /
+// moving / moving+acting (a slot "acts" when the player cast something
+// in it). Below: distance moved over time, styled like the Overview
+// DPS/HPS line chart -- a "yards per second" line with the player's
+// death timestamps as vertical rules. Playback scrubber still to come.
 
-import "../ui/widgets"; // registers movement-chart / encounter-title / ...
+import "../ui/widgets"; // registers movement-path / movement-chart / pie-chart / ...
 
 import { buildView, type BuiltView } from "../ui/panel";
 import { createViewContext, type ViewContext } from "../ui/context";
 import { movementSeries } from "../ui/movement-series";
 import type { NodeSpec } from "../ui/spec";
+import type { MovementActivity } from "../types";
 import type { MovementChartDeath } from "../ui/widgets/movement-chart";
+import type { PieSlice } from "../ui/widgets/pie-chart";
 import { formatCompact, formatUnitName } from "../format";
 
 const spec: NodeSpec = {
@@ -22,11 +26,24 @@ const spec: NodeSpec = {
   children: [
     { kind: "widget", type: "encounter-title", id: "title", props: { name: "", badge: "" } },
     {
-      kind: "widget",
-      type: "movement-path",
-      id: "path",
-      span: 1,
-      props: { samples: [], deaths: [], startMs: 0, mapBox: null },
+      kind: "panel",
+      columns: 2,
+      children: [
+        {
+          kind: "widget",
+          type: "movement-path",
+          id: "path",
+          span: 1,
+          props: { samples: [], deaths: [], startMs: 0, fitBox: null, mapBox: null },
+        },
+        {
+          kind: "widget",
+          type: "pie-chart",
+          id: "activity",
+          span: 1,
+          props: { title: "Time", slices: [] },
+        },
+      ],
     },
     {
       kind: "widget",
@@ -37,6 +54,15 @@ const spec: NodeSpec = {
     },
   ],
 };
+
+// Pie slices, in draw order. Grey idle -> green productive-still ->
+// amber mobile-idle -> blue mobile-and-acting.
+const ACTIVITY_SLICES: Array<{ key: keyof MovementActivity; label: string; color: string }> = [
+  { key: "standingMs", label: "Standing", color: "var(--text-faint)" },
+  { key: "standingActiveMs", label: "Standing + acting", color: "var(--ctp-green)" },
+  { key: "movingMs", label: "Moving", color: "var(--ctp-peach)" },
+  { key: "movingActiveMs", label: "Moving + acting", color: "var(--ctp-blue)" },
+];
 
 let ctx: ViewContext | null = null;
 let built: BuiltView | null = null;
@@ -108,8 +134,15 @@ async function paint(): Promise<void> {
     samples: series.samples,
     deaths,
     startMs: series.startMs,
+    fitBox: series.fitBox,
     mapBox: series.mapBox,
   });
+  const slices: PieSlice[] = ACTIVITY_SLICES.map((s) => ({
+    label: s.label,
+    value: Math.round(series.activity[s.key] / 1000), // seconds
+    color: s.color,
+  }));
+  built.get("activity")?.update({ title: "Time", slices });
   built.get("chart")?.update({
     buckets,
     deaths,
