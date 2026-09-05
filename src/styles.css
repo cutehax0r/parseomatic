@@ -1999,7 +1999,7 @@ body {
 }
 
 .movement-trail--move {
-  stroke: var(--danger);
+  stroke: var(--accent);
 }
 
 /* Translucent circle at a spot the player parked; grows with the stay. */
@@ -2036,7 +2036,7 @@ body {
 }
 
 .chart-legend-item[data-series="move"] i {
-  background-color: var(--danger);
+  background-color: var(--accent);
 }
 
 /* area-chart -- one translucent band per stacked series, `--c` set

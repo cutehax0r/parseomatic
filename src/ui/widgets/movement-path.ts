@@ -4,7 +4,7 @@
 //
 // The trail is coloured by movement state -- GREEN where the player was
 // standing still (average speed between fixes below MOVE_SPEED_MIN, the
-// same threshold stats.rs uses), RED where moving. Every spot they
+// same threshold stats.rs uses), BLUE where moving. Every spot they
 // parked gets a translucent circle that grows the longer they stood
 // there (one notch per STAND_STEP_MS, capped at STAND_MAX_MULT x). Start
 // is a hollow ring, the last fix a filled dot, deaths are `--chart-death`

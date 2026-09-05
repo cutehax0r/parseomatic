@@ -167,8 +167,8 @@ so the route shape isn't distorted; screen +x right, +y up.
   clipped to the region, plus a frame rect.
 - **Trail colour = movement state:** each fix-to-fix segment is **green**
   (`--success`) when the average speed over it is at/below
-  `MOVE_SPEED_MIN` (1 yd/s, mirrored from `stats.rs` in TS), **red**
-  (`--danger`) when above. Maximal same-state runs draw as one curve
+  `MOVE_SPEED_MIN` (1 yd/s, mirrored from `stats.rs` in TS), **blue**
+  (`--accent`) when above. Maximal same-state runs draw as one curve
   each (1-fix overlap so the colour change butt-joins).
 - **Standstill circles:** walking the *full* fix list, a run of fixes
   within `STAND_EPS` (1.5 yd) of an anchor is one stay; stays of
