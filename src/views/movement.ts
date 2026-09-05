@@ -102,6 +102,5 @@ async function paint(): Promise<void> {
     deaths,
     startMs: series.startMs,
     endMs: series.endMs,
-    displaySeconds: 8,
   });
 }

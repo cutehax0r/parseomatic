@@ -174,12 +174,20 @@ increment per additional second parked — a quick read of "camped here".
 ### 7b. Movement-over-time line graph — **built**
 
 `src/ui/widgets/movement-chart.ts`, a single-series sibling of the
-Overview `line-chart` (same geometry, axis/tick engine, roll-up-for-
-smoothness, hover). One `--accent` line of **distance rate (yd/s)** over
-time; the selected player's `UNIT_DIED` timestamps are `--chart-death`
-vertical rules. Fed by the `movement_series` command (§8); fine ~1 s
-buckets for the hover tooltip, rolled up to ~8 s draw buckets for the
-line. The view (`src/views/movement.ts`) gates like Overview/Deaths — a
+Overview `line-chart` (same geometry, axis/tick engine, hover). One
+`--accent` line of **distance rate (yd/s)** over time; the selected
+player's `UNIT_DIED` timestamps are `--chart-death` vertical rules. Fed
+by the `movement_series` command (§8).
+
+Unlike `line-chart` it draws a **straight polyline through every fine
+bucket — no Catmull-Rom, no draw-bucket roll-up.** Movement is spiky by
+nature (stand still = 0, dodge = burst) and the bursts are the point;
+the smoothing + 8 s roll-up that read well for a DPS trend turned a
+real `3/6/2/0/25/7` bounce into a smooth steep ramp (the spline
+overshooting toward the spike). The line and the hover tooltip now read
+the same fine-bucket array the same way, so they can't disagree.
+
+The view (`src/views/movement.ts`) gates like Overview/Deaths — a
 player must be picked and the range must be a bounded window, not the
 whole log — and shows total distance as the title badge.
 

@@ -1,14 +1,18 @@
 // Distance moved over time, deaths as vertical rules. Inline SVG, no
 // library -- the single-series sibling of `line-chart.ts` (same geometry,
-// axis/tick maths, roll-up-for-smoothness, hover machinery, and CSS
-// classes), for the Movement character view.
+// axis/tick maths, hover machinery, and CSS classes), for the Movement
+// character view. Unlike `line-chart` it does NOT smooth or roll up
+// (see below).
 //
 // Input is PRE-BUCKETED and resolution-independent: the caller aggregates
-// distance into N fine buckets (N ~= chart pixel width). The plotted line
-// is rolled up to ~displaySeconds-wide draw buckets so it reads smooth;
-// hover still resolves the fine buckets. The Y axis is a *rate* --
-// distance per second (~yards/s) -- while the tooltip shows the raw
-// distance for the hovered slice.
+// distance into N fine buckets (N ~= chart pixel width). Unlike
+// `line-chart`, the line is drawn STRAIGHT through every fine bucket --
+// no Catmull-Rom, no draw-bucket roll-up. Movement is inherently spiky
+// (stand still = 0, dodge = burst) and the point is to see those bursts;
+// the smoothing + roll-up that suit a DPS trend turned a bouncing
+// 3/6/2/0/25/7 sequence into a smooth steep ramp (Catmull-Rom overshoot
+// toward the spike). The Y axis is a *rate* -- distance per second
+// (~yards/s); the tooltip shows the raw distance for the hovered slice.
 //
 // One series (`--accent`), one left axis. Deaths are `--chart-death`
 // rules, same as the Overview chart.
@@ -26,8 +30,16 @@ import {
   pickTimeMajor,
   pickTimeMinor,
   el,
-  smoothPath,
 } from "./chart-util";
+
+// Straight polyline through the points (no smoothing) -- movement wants
+// the real bucket-to-bucket shape, not a trend curve.
+function linePath(pts: Array<[number, number]>): string {
+  if (pts.length === 0) return "";
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 1; i < pts.length; i++) d += `L${pts[i][0]},${pts[i][1]}`;
+  return d;
+}
 
 export interface MovementBucket {
   tMid: number;
@@ -44,9 +56,6 @@ export interface MovementChartProps {
   deaths: MovementChartDeath[];
   startMs: number;
   endMs: number;
-  // Target width, in seconds, of a *drawn* bucket (the fine `buckets`
-  // stay as-is for hover). Optional; defaults to 8s.
-  displaySeconds?: number;
 }
 
 registerWidget<MovementChartProps>("movement-chart", (props) => {
@@ -132,20 +141,12 @@ registerWidget<MovementChartProps>("movement-chart", (props) => {
     const fineSec = Math.max(0.001, span / (buckets.length || 1) / 1000);
     bucketSec = fineSec;
 
-    // Roll fine buckets up into ~displaySeconds-wide draw buckets, each
-    // holding a rate (summed distance / the group's real seconds).
-    const targetSec = current.displaySeconds && current.displaySeconds > 0 ? current.displaySeconds : 8;
-    let group = Math.max(1, Math.round(targetSec / fineSec));
-    group = Math.min(group, Math.max(1, Math.floor(buckets.length / 20)));
+    // One plotted point per fine bucket, holding that slice's rate
+    // (distance / its own seconds -- so a long-encounter's wider buckets
+    // still read as yd/s). No roll-up, no smoothing: the line is the
+    // real per-slice movement.
     type Plot = { tMid: number; rate: number };
-    const plotPts: Plot[] = [];
-    for (let i = 0; i < buckets.length; i += group) {
-      const end = Math.min(i + group, buckets.length);
-      const secs = fineSec * (end - i);
-      let dist = 0;
-      for (let j = i; j < end; j++) dist += buckets[j].distance;
-      plotPts.push({ tMid: (buckets[i].tMid + buckets[end - 1].tMid) / 2, rate: dist / secs });
-    }
+    const plotPts: Plot[] = buckets.map((b) => ({ tMid: b.tMid, rate: b.distance / fineSec }));
 
     let peak = 1;
     for (const p of plotPts) peak = Math.max(peak, p.rate);
@@ -236,7 +237,7 @@ registerWidget<MovementChartProps>("movement-chart", (props) => {
 
     if (plotPts.length > 0) {
       const pts = plotPts.map((p) => [xOf(p.tMid), yOf(p.rate)] as [number, number]);
-      svg.appendChild(el("path", { d: smoothPath(pts), class: "chart-line chart-line--movement" }));
+      svg.appendChild(el("path", { d: linePath(pts), class: "chart-line chart-line--movement" }));
     }
 
     const crosshair = el("line", { x1: 0, y1: PAD.top, x2: 0, y2: PAD.top + PLOT_H, class: "chart-crosshair" });
