@@ -2,14 +2,14 @@
 // encounter drawn as a smooth curved trail on a faint world-coordinate
 // grid. Inline SVG, no library.
 //
-// The trail runs a time GRADIENT head-to-tail -- yellow (oldest) ->
-// green -> blue (most recent) -- so direction reads without an
-// animation. Every spot the player parked gets a translucent circle that
-// grows the longer they stood there (one notch per STAND_STEP_MS, capped
-// at STAND_MAX_MULT x). Deaths are red circles scaled by how long they
-// were dead. Start is a hollow ring, the last fix a filled dot. Gaps
-// longer than GAP_MS (a wipe reset / phase teleport) break the trail and
-// the standstill run.
+// The trail runs a RAINBOW head-to-tail -- hue swept red (oldest) through
+// to violet (most recent) -- so direction reads without an animation.
+// Every spot the player parked gets a translucent circle that grows the
+// longer they stood there (one notch per STAND_STEP_MS, capped at
+// STAND_MAX_MULT x). Deaths are red squares scaled by how long they were
+// dead. Start is a hollow ring, the last fix a filled dot. Gaps longer
+// than GAP_MS (a wipe reset / phase teleport) break the trail and the
+// standstill run.
 //
 // Framing: `fitBox` -- the tight bounds over EVERY player's fixes in the
 // window ("the area the raid played in"), from the backend -- padded
@@ -64,24 +64,11 @@ const DEATH_GROW_S = 4; // death circle: +1x base radius per this many seconds d
 const DEATH_MAX_MULT = 6; // cap on the death circle radius
 const TRAIL_CHUNK = 6; // fixes per gradient segment of the trail
 
-// The trail's yellow -> green -> blue time ramp, read once from the CSS
-// custom properties so it tracks the theme. `frac` 0..1 = oldest..newest.
-function rampColor(root: CSSStyleDeclaration, frac: number): string {
-  const hex = (name: string, fallback: string) => {
-    const v = root.getPropertyValue(name).trim();
-    return /^#[0-9a-f]{6}$/i.test(v) ? v : fallback;
-  };
-  const stops = [hex("--ctp-yellow", "#eed49f"), hex("--ctp-green", "#a6da95"), hex("--ctp-blue", "#8aadf4")];
-  const t = Math.min(1, Math.max(0, frac)) * (stops.length - 1);
-  const i = Math.min(stops.length - 2, Math.floor(t));
-  const m = t - i;
-  const [r0, g0, b0] = parseHex(stops[i]);
-  const [r1, g1, b1] = parseHex(stops[i + 1]);
-  const lerp = (a: number, b: number) => Math.round(a + (b - a) * m);
-  return `rgb(${lerp(r0, r1)},${lerp(g0, g1)},${lerp(b0, b1)})`;
-}
-function parseHex(h: string): [number, number, number] {
-  return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+// Rainbow time ramp: `frac` 0..1 (oldest..newest) -> hue 0deg (red)
+// through HUE_SWEEP. Fixed sat/light so it stays vivid but not neon.
+const HUE_SWEEP = 300; // degrees -- red -> orange -> ... -> magenta
+function rampColor(frac: number): string {
+  return `hsl(${Math.round(Math.min(1, Math.max(0, frac)) * HUE_SWEEP)} 78% 62%)`;
 }
 
 // Smallest 1/2/2.5/5 x 10^n that is >= v -- for a tidy grid step.
@@ -280,7 +267,6 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     if (pts[pts.length - 1] !== samples[samples.length - 1]) pts.push(samples[samples.length - 1]);
     for (const p of pts) hoverPts.push({ x: px(p.x), y: py(p.y), t: p.tMs });
 
-    const rootStyle = getComputedStyle(document.documentElement);
     const span = Math.max(1, endMs - startMs);
     // Chunks of ~TRAIL_CHUNK fixes, each a short curve in its own ramp
     // colour; +1-fix overlap so chunk joins butt cleanly. A gap between
@@ -293,7 +279,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
         d: curve(chunk.map((p) => [px(p.x), py(p.y)] as [number, number])),
         class: "movement-trail",
       });
-      path.setAttribute("stroke", rampColor(rootStyle, (midT - startMs) / span));
+      path.setAttribute("stroke", rampColor((midT - startMs) / span));
       svg.appendChild(path);
     };
     for (let i = 1; i < pts.length; i++) {
@@ -320,7 +306,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       el("circle", { cx: px(last.x), cy: py(last.y), r: MARKER_R - 1, class: "movement-end" }),
     );
 
-    // --- deaths: a red circle at the death spot, radius by time dead ---
+    // --- deaths: a red square at the death spot, sized by time dead ---
     const nearestFix = (t: number) => {
       let best = samples[0];
       let bestGap = Infinity;
@@ -337,7 +323,9 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       const spot = nearestFix(d.startMs);
       const deadSec = ((d.endMs ?? endMs) - d.startMs) / 1000;
       const r = MARKER_R * Math.min(DEATH_MAX_MULT, 1 + Math.max(0, deadSec) / DEATH_GROW_S);
-      svg.appendChild(el("circle", { cx: px(spot.x), cy: py(spot.y), r, class: "movement-death" }));
+      svg.appendChild(
+        el("rect", { x: px(spot.x) - r, y: py(spot.y) - r, width: 2 * r, height: 2 * r, class: "movement-death" }),
+      );
     }
 
     hoverDot = el("circle", { cx: 0, cy: 0, r: 3.5, class: "movement-hoverdot" });

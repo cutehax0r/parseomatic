@@ -173,28 +173,34 @@ so the route shape isn't distorted; screen +x right, +y up.
   (All a stopgap until a real map image + per-map lookup replace it.)
 - **Grid:** lines at round world coordinates (`niceStep(worldSpan/6)`),
   clipped to the region, plus a frame rect.
-- **Trail colour = movement state:** each fix-to-fix segment is **green**
-  (`--success`) when the average speed over it is at/below
-  `MOVE_SPEED_MIN` (1 yd/s, mirrored from `stats.rs` in TS), **blue**
-  (`--accent`) when above. Maximal same-state runs draw as one curve
-  each (1-fix overlap so the colour change butt-joins).
+- **Trail colour = time.** A **rainbow** hue sweep, `hsl(frac·300 78%
+  62%)` — red at the oldest fix through to magenta at the newest — drawn
+  in ~6-fix chunks (1-fix overlap). Direction reads without an
+  animation; Start/End markers confirm which way. (An earlier green/blue
+  still-vs-moving colouring was dropped — the standstill circles already
+  carry "stopped here", and per-segment state on top of the time ramp
+  was muddy.)
 - **Standstill circles:** walking the *full* fix list, a run of fixes
   within `STAND_EPS` (1.5 yd) of an anchor is one stay; stays of
   `STAND_MIN_MS` (3 s)+ get a translucent green circle at the anchor,
   radius `MARKER_R · min(5, 1 + 0.4·⌊held / 3 s⌋)` — grows a notch every
   3 s parked, capping at 5×. Drawn under the trail.
+- **Deaths:** a translucent **red square** at the fix nearest `UNIT_DIED`
+  (`death_spans`), side `MARKER_R · min(6, 1 + deadSec/4)` — bigger the
+  longer they were dead (`UNIT_DIED` → `SPELL_RESURRECT`, or the window
+  end).
 - **Markers:** hollow ring at the first fix, filled dot at the last
-  (both `--text`, neutral against the green/red trail), `--chart-death`
-  crosses at the fix nearest each `UNIT_DIED`.
+  (both `--text`, neutral against the rainbow).
 - **Gaps:** consecutive fixes more than `GAP_MS` (5 s) apart break the
   trail *and* the standstill run rather than drawing across a wipe reset
   / phase teleport.
 - Hover snaps to the nearest fix and shows its elapsed time.
 
-**Still to add:** the **casting**-aware states from the original plan
-(blue = moving+casting, purple = moving under a boss debuff) — those
-need cast / enemy-aura spans that `movement_series` doesn't carry.
-A **playback scrubber** is also future.
+**Still to add:** a **playhead** on the trail (click / ◀ ▶ / keyboard)
+driving a scrollable side table of the player's cast / damage / heal /
+taken events around that moment, with a "stood here 12 s" header when
+parked — needs a new `movement_events` command. A **playback scrubber**
+and the casting-aware trail states are also future.
 
 ### 7b. Movement-over-time line graph — **built**
 
