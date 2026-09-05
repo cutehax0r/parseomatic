@@ -3,9 +3,9 @@ Parseomatic bundles the following third-party assets:
 Material Design Icons (https://pictogrammers.com/library/mdi/)
   The `sword` and `bow-arrow` glyph outlines used for role icons in the
   Overview players table (src/ui/widgets/role-icon.ts), and the
-  `sword-cross` / `heart-plus` / `grave-stone` (Nerd Fonts alias
-  `nf-md-grave_stone`) toolbar icons for the Damage / Healing / Deaths
-  character views (index.html).
+  `sword-cross` / `heart-plus` / `grave-stone` / `shoe-print` (Nerd Fonts
+  aliases `nf-md-grave_stone` / `nf-md-shoe_print`) toolbar icons for the
+  Damage / Healing / Deaths / Movement character views (index.html).
   Copyright Pictogrammers contributors.
   Licensed under the Apache License, Version 2.0
   (https://www.apache.org/licenses/LICENSE-2.0).

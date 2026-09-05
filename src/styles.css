@@ -1970,7 +1970,8 @@ body {
 .damage-view,
 .healing-view,
 .damage-taken-view,
-.deaths-view {
+.deaths-view,
+.movement-view {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -1981,14 +1982,16 @@ body {
 .damage-view[hidden],
 .healing-view[hidden],
 .damage-taken-view[hidden],
-.deaths-view[hidden] {
+.deaths-view[hidden],
+.movement-view[hidden] {
   display: none;
 }
 
 .damage-hint,
 .healing-hint,
 .damage-taken-hint,
-.deaths-hint {
+.deaths-hint,
+.movement-hint {
   margin: 48px auto 0;
   text-align: center;
   color: var(--text-muted);
@@ -1998,8 +2001,16 @@ body {
 .damage-hint[hidden],
 .healing-hint[hidden],
 .damage-taken-hint[hidden],
-.deaths-hint[hidden] {
+.deaths-hint[hidden],
+.movement-hint[hidden] {
   display: none;
+}
+
+.movement-subnote {
+  margin: 32px auto 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .spell-detail {

@@ -81,6 +81,16 @@ standalones, and unrecognized lines. ~8 bytes/event (~14 MB for the
 total) — within budget. `raw_events` reads the column instead of
 re-parsing; `extract_position` goes away.
 
+**Whose position it is — `infoGUID`, not always the source.** The
+advanced block describes its `infoGUID` field, which the fixtures show is
+the event's **dest** for every damage / heal / energize effect and the
+**source** only for `SPELL_CAST_SUCCESS`. So `pos_x`/`pos_y` on a
+player's outgoing `SPELL_DAMAGE` row are the *target's* coordinates, not
+the player's. `EventStore::pos_unit(row)` returns the unit each row's
+position actually belongs to; anything building a *player's own* track
+must key off that. Full breakdown and the movement/path view design:
+`docs/movement-view.md`.
+
 ---
 
 ## Active time
@@ -164,7 +174,10 @@ shown as the metric cell's sub-line or a toggle.
 
 ## Movement
 
-In the per-encounter pass, per player, walk positioned events in order:
+In the per-encounter pass, per player, walk that player's positioned
+events in order — the rows where `pos_unit(row)` **is that player**, not
+where they're the source (see "Whose position it is" above; keying off
+`source_unit` counted the boss's coordinates as the DPS's):
 
 - `distance += hypot(dx, dy)` between consecutive positioned events.
 - `movement_ms += Δt` for steps whose speed (`dist / Δt`, Δt small)
@@ -174,9 +187,14 @@ In the per-encounter pass, per player, walk positioned events in order:
 - Keep a coarse `(t, speed)` series for a velocity graph on the character
   page.
 
-**"Jesus footsteps" path view** is just the raw `(t, x, y)` polyline per
-unit, downsampled client-side from `raw_events` — no precompute; build it
-with the spatial/replay view.
+Coordinates are ~1 unit = 1 yard (a moving player clocks ~8 units/s,
+matching run speed), so `distance` is already in yards without a
+per-map lookup.
+
+**"Jesus footsteps" path view** is the `(t, x, y)` polyline of the rows
+where `pos_unit == unit`, in time order. Design (colour states, playback
+scrubber, the velocity bar graph, map bounding box) is its own doc:
+`docs/movement-view.md`.
 
 ---
 
@@ -225,6 +243,10 @@ active-fraction over a short alive window explodes). **Not building now**
 1. ~~`pos_x` / `pos_y` columns; `raw_events` + tests moved onto them.~~ Done.
 2. ~~`stats.rs`: `EncounterStats`, `ActivityModel` + `ApsActivityModel`,
    the per-encounter pass (lazy via `ParsedData::encounter_stats()`).~~ Done.
+   **Movement bug fixed later:** the pass keyed distance off `source_unit`
+   + a "source position" assumption; it now walks `EventStore::pos_unit`
+   (`infoGUID`'s unit) so a DPS's distance stops tracking the boss they're
+   standing on. See `docs/movement-view.md`.
 3. ~~`encounter_stats` Tauri command + `src/ui/encounter-stats.ts`
    fetch/cache.~~ Done.
 4. ~~Overview "Active" column.~~ Done. **Still open:** migrate the whole

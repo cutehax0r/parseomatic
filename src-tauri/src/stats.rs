@@ -288,10 +288,18 @@ fn build_one(
             _ => {}
         }
 
-        // Movement: the player's own positioned events.
-        if !events.pos_x[row].is_nan() && is_player(src) {
+        // Movement: walk the events that record THIS player's own
+        // position. The advanced-block coords belong to `infoGUID` --
+        // the event's dest for damage/heal effects, its source only for
+        // `SPELL_CAST_SUCCESS` -- so key off `pos_unit`, never the row's
+        // source: for a DPS tunnelling a boss, `source` is the player
+        // holding still while the boss's coordinates stream past every
+        // `SPELL_DAMAGE` line (`docs/movement-view.md`). Player only, no
+        // pet fold -- a pet's position isn't its owner's.
+        let pos_unit = events.pos_unit(row);
+        if pos_unit != NO_UNIT && is_player(pos_unit) {
             let (x, y) = (events.pos_x[row], events.pos_y[row]);
-            let a = accs.entry(src).or_default();
+            let a = accs.entry(pos_unit).or_default();
             if let Some((lt, lx, ly)) = a.last_pos {
                 let dt = ts - lt;
                 if dt > 0 && dt <= MOVE_GAP_MS {

@@ -249,12 +249,16 @@ pub struct EventStore {
     pub amount: Vec<i64>,
     /// `FLAG_CRIT | FLAG_AOE | FLAG_OFFHAND`, 0 for non-damage/heal rows.
     pub flags: Vec<u8>,
-    /// Source-unit world position from the advanced-params block (indices
-    /// 14/15, `docs/combat-log-format.md` §5). `f32::NAN` on every row
-    /// that carries no advanced block (swings without it, all standalones,
+    /// World position from the advanced-params block (indices 14/15,
+    /// `docs/combat-log-format.md` §5). `f32::NAN` on every row that
+    /// carries no advanced block (swings without it, all standalones,
     /// unrecognized lines). Promoted from `raw_fields` because movement
-    /// metrics (`docs/activity-and-movement.md`) walk it per event and
-    /// can't afford to re-parse the raw span each time.
+    /// metrics (`docs/activity-and-movement.md`, `docs/movement-view.md`)
+    /// walk it per event and can't afford to re-parse the raw span each
+    /// time.
+    ///
+    /// This is `infoGUID`'s position, **not always the source's** -- see
+    /// `pos_unit` for which unit each row describes.
     pub pos_x: Vec<f32>,
     pub pos_y: Vec<f32>,
     raw_field_ranges: Vec<(u32, u32)>,
@@ -274,6 +278,29 @@ impl EventStore {
     pub fn raw_fields(&self, row: usize) -> &[FieldSpan] {
         let (start, len) = self.raw_field_ranges[row];
         &self.raw_field_arena[start as usize..(start + len) as usize]
+    }
+
+    /// The unit `pos_x[row]`/`pos_y[row]` actually describe -- the
+    /// advanced block's `infoGUID` (`docs/combat-log-format.md` §5).
+    /// Verified against the real fixtures (`docs/movement-view.md`):
+    /// `infoGUID` is the event's **dest** for every damage / heal /
+    /// energize effect, and the **source** only for `SPELL_CAST_SUCCESS`
+    /// (the caster's own position, even when the cast lands on someone
+    /// else). Returns `NO_UNIT` when the row carries no position
+    /// (`pos_x[row]` is `NaN`), or when the relevant unit didn't intern.
+    ///
+    /// Consumers that want a *player's own* track (movement distance, the
+    /// path view) must key off this, not `source_unit` -- for outgoing
+    /// damage the source is the player standing still while the target's
+    /// coordinates stream past.
+    pub fn pos_unit(&self, row: usize) -> u32 {
+        if self.pos_x[row].is_nan() {
+            return intern::NO_UNIT;
+        }
+        match self.kind[row] {
+            LineKind::Composed { suffix: Suffix::CastSuccess, .. } => self.source_unit[row],
+            _ => self.dest_unit[row],
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1077,6 +1104,57 @@ mod tests {
         ));
         assert_eq!(store.amount[0], 12000);
         assert_eq!(store.flags[0], FLAG_CRIT);
+    }
+
+    // Real fixture line (WoWCombatLog-090326_192352.txt): a player's
+    // outgoing spell hit on the boss. The advanced block's infoGUID is
+    // the boss (dest) -- so `pos_unit` must be the dest, and the coords
+    // are the boss's, not the caster's.
+    #[test]
+    fn pos_unit_is_dest_for_outgoing_damage() {
+        let (_, _, store) = parse(concat!(
+            "SPELL_DAMAGE,Player-3684-0E66B757,\"Yoinkk-Mal'Ganis-US\",0x514,0x80000000,",
+            "Creature-0-4231-3004-52754-257347-00001A1C53,\"Sszorak\",0x10a48,0x80000000,",
+            "445736,\"Blackened Soul\",0x24,",
+            "Creature-0-4231-3004-52754-257347-00001A1C53,0000000000000000,544237214,782266500,",
+            "0,0,1470,0,0,0,3,0,100,0,387.14,403.95,2609,1.9640,93,27531,9363,-1,36,0,0,0,1,nil,nil,ST"
+        ));
+        assert_eq!(store.len(), 1);
+        assert!(store.has_advanced[0]);
+        assert_eq!(store.pos_unit(0), store.dest_unit[0]);
+        assert_ne!(store.pos_unit(0), store.source_unit[0]);
+        assert_eq!(store.pos_x[0], 387.14);
+    }
+
+    // Real fixture line: a healer casting Holy Shock ON another player.
+    // infoGUID is the caster (source), so `pos_unit` is the source even
+    // though the cast has a different dest -- this is the one suffix
+    // where the advanced block describes the source, not the dest.
+    #[test]
+    fn pos_unit_is_source_for_cast_success() {
+        let (_, _, store) = parse(concat!(
+            "SPELL_CAST_SUCCESS,Player-3694-0AE7F0F7,\"Breylla-Lightbringer-US\",0x512,0x80000000,",
+            "Player-60-0EAB9EC3,\"Jmackascends-Stormrage-US\",0x514,0x80000000,",
+            "20473,\"Holy Shock\",0x2,",
+            "Player-3694-0AE7F0F7,0000000000000000,825260,825260,3502,3367,4060,924,391,49515,0,",
+            "250000,250000,5000,566.51,3.16,2607,4.6092,317"
+        ));
+        assert_eq!(store.len(), 1);
+        assert!(store.has_advanced[0]);
+        assert_eq!(store.pos_unit(0), store.source_unit[0]);
+        assert_ne!(store.pos_unit(0), store.dest_unit[0]);
+        assert_eq!(store.pos_x[0], 566.51);
+    }
+
+    #[test]
+    fn pos_unit_is_no_unit_without_a_position() {
+        let (_, _, store) = parse(concat!(
+            "SPELL_CAST_START,Player-60-0EAB9EC3,\"Jmackascends-Stormrage-US\",0x512,0x80000000,",
+            "0000000000000000,nil,0x80000000,0x80000000,188196,\"Lightning Bolt\",0x8"
+        ));
+        assert_eq!(store.len(), 1);
+        assert!(store.pos_x[0].is_nan());
+        assert_eq!(store.pos_unit(0), intern::NO_UNIT);
     }
 
     #[test]

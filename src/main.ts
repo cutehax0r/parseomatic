@@ -43,6 +43,7 @@ import { renderDamage } from "./views/damage";
 import { renderHealing } from "./views/healing";
 import { renderDamageTaken } from "./views/damage-taken";
 import { renderDeaths } from "./views/deaths";
+import { renderMovement } from "./views/movement";
 import { renderLaunch } from "./views/launch";
 import { renderEncounterGrid } from "./views/encounter-grid";
 
@@ -140,6 +141,7 @@ type ViewMode =
   | "healing"
   | "damage-taken"
   | "deaths"
+  | "movement"
   | "debug"
   | "raw";
 let currentViewMode: ViewMode = "encounters";
@@ -1058,6 +1060,7 @@ function refreshCharacterViewButtons(): void {
     "#view-healing-btn",
     "#view-damage-taken-btn",
     "#view-deaths-btn",
+    "#view-movement-btn",
   ]) {
     const btn = document.querySelector<HTMLButtonElement>(id);
     if (btn) btn.disabled = disabled;
@@ -1242,6 +1245,7 @@ function setupPlayerPicker(): void {
     else if (currentViewMode === "healing") renderHealing();
     else if (currentViewMode === "damage-taken") renderDamageTaken();
     else if (currentViewMode === "deaths") renderDeaths();
+    else if (currentViewMode === "movement") renderMovement();
   });
 }
 
@@ -1379,6 +1383,7 @@ async function refreshStatus() {
   const healingView = document.querySelector<HTMLElement>("#healing-view");
   const damageTakenView = document.querySelector<HTMLElement>("#damage-taken-view");
   const deathsView = document.querySelector<HTMLElement>("#deaths-view");
+  const movementView = document.querySelector<HTMLElement>("#movement-view");
   const encountersBtn = document.querySelector<HTMLButtonElement>("#view-encounters-btn");
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
   const characterBtn = document.querySelector<HTMLButtonElement>("#view-character-btn");
@@ -1386,6 +1391,7 @@ async function refreshStatus() {
   const healingBtn = document.querySelector<HTMLButtonElement>("#view-healing-btn");
   const damageTakenBtn = document.querySelector<HTMLButtonElement>("#view-damage-taken-btn");
   const deathsBtn = document.querySelector<HTMLButtonElement>("#view-deaths-btn");
+  const movementBtn = document.querySelector<HTMLButtonElement>("#view-movement-btn");
   const newWindowBtn = document.querySelector<HTMLButtonElement>("#new-window-btn");
   const statusBar = document.querySelector<HTMLElement>("#status-bar");
   const statusBarFill = document.querySelector<HTMLElement>("#statusbar-fill");
@@ -1404,6 +1410,7 @@ async function refreshStatus() {
     !healingView ||
     !damageTakenView ||
     !deathsView ||
+    !movementView ||
     !encountersBtn ||
     !overviewBtn ||
     !characterBtn ||
@@ -1411,6 +1418,7 @@ async function refreshStatus() {
     !healingBtn ||
     !damageTakenBtn ||
     !deathsBtn ||
+    !movementBtn ||
     !statusBar ||
     !statusBarFill ||
     !statusBarText
@@ -1431,6 +1439,7 @@ async function refreshStatus() {
       "healing",
       "damage-taken",
       "deaths",
+      "movement",
       "raw",
       "debug",
     ].includes(viewId)
@@ -1445,7 +1454,8 @@ async function refreshStatus() {
       currentViewMode === "damage" ||
       currentViewMode === "healing" ||
       currentViewMode === "damage-taken" ||
-      currentViewMode === "deaths") &&
+      currentViewMode === "deaths" ||
+      currentViewMode === "movement") &&
     getSelectedPlayer() === null
   ) {
     if (viewId !== "encounters") void invoke("set_current_view", { view: "encounters" });
@@ -1460,6 +1470,7 @@ async function refreshStatus() {
   healingBtn.setAttribute("aria-pressed", String(currentViewMode === "healing"));
   damageTakenBtn.setAttribute("aria-pressed", String(currentViewMode === "damage-taken"));
   deathsBtn.setAttribute("aria-pressed", String(currentViewMode === "deaths"));
+  movementBtn.setAttribute("aria-pressed", String(currentViewMode === "movement"));
   refreshCharacterViewButtons();
   // "Duplicate window" needs a loaded log to copy from.
   if (newWindowBtn) newWindowBtn.disabled = !info || !info.done;
@@ -1600,6 +1611,7 @@ async function refreshStatus() {
   healingView.hidden = currentViewMode !== "healing";
   damageTakenView.hidden = currentViewMode !== "damage-taken";
   deathsView.hidden = currentViewMode !== "deaths";
+  movementView.hidden = currentViewMode !== "movement";
   // The "X lines — Y players" line is parser-sanity-check context for
   // Debug/Raw; on the everyday views it's just noise.
   statusEl.hidden = currentViewMode !== "debug" && currentViewMode !== "raw";
@@ -1617,6 +1629,8 @@ async function refreshStatus() {
     renderDamageTaken();
   } else if (currentViewMode === "deaths") {
     renderDeaths();
+  } else if (currentViewMode === "movement") {
+    renderMovement();
   } else if (currentViewMode === "raw") {
     await loadRawView();
   } else {
@@ -1689,6 +1703,10 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.querySelector("#view-deaths-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "deaths" });
+  });
+
+  document.querySelector("#view-movement-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "movement" });
   });
 
   document.querySelector("#zoom-out-btn")?.addEventListener("click", () => {

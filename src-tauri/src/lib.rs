@@ -71,6 +71,7 @@ enum ViewKind {
     Healing,
     DamageTaken,
     Deaths,
+    Movement,
     Debug,
     Raw,
 }
@@ -78,7 +79,7 @@ enum ViewKind {
 // Every view in the radio group, in toolbar/menu display order -- the
 // single source of truth for `sync_view_menu`'s loop and anywhere else
 // that has to touch them all.
-const ALL_VIEWS: [ViewKind; 9] = [
+const ALL_VIEWS: [ViewKind; 10] = [
     ViewKind::Encounters,
     ViewKind::Overview,
     ViewKind::Character,
@@ -86,6 +87,7 @@ const ALL_VIEWS: [ViewKind; 9] = [
     ViewKind::Healing,
     ViewKind::DamageTaken,
     ViewKind::Deaths,
+    ViewKind::Movement,
     ViewKind::Debug,
     ViewKind::Raw,
 ];
@@ -108,6 +110,7 @@ impl ViewKind {
             ViewKind::Healing => "healing",
             ViewKind::DamageTaken => "damage-taken",
             ViewKind::Deaths => "deaths",
+            ViewKind::Movement => "movement",
             ViewKind::Debug => "debug",
             ViewKind::Raw => "raw",
         }
@@ -122,6 +125,7 @@ impl ViewKind {
             ViewKind::Healing => "view_healing",
             ViewKind::DamageTaken => "view_damage_taken",
             ViewKind::Deaths => "view_deaths",
+            ViewKind::Movement => "view_movement",
             ViewKind::Debug => "view_debug",
             ViewKind::Raw => "view_raw",
         }
@@ -145,6 +149,7 @@ struct ViewMenu {
     healing: CheckMenuItem<tauri::Wry>,
     damage_taken: CheckMenuItem<tauri::Wry>,
     deaths: CheckMenuItem<tauri::Wry>,
+    movement: CheckMenuItem<tauri::Wry>,
     debug: CheckMenuItem<tauri::Wry>,
     raw: CheckMenuItem<tauri::Wry>,
 }
@@ -159,6 +164,7 @@ impl ViewMenu {
             ViewKind::Healing => &self.healing,
             ViewKind::DamageTaken => &self.damage_taken,
             ViewKind::Deaths => &self.deaths,
+            ViewKind::Movement => &self.movement,
             ViewKind::Debug => &self.debug,
             ViewKind::Raw => &self.raw,
         }
@@ -1547,6 +1553,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    let movement_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Movement.menu_id(),
+        "Movement",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let debug_view_item =
         CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
     let raw_view_item =
@@ -1573,6 +1587,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         .item(&healing_view_item)
         .item(&damage_taken_view_item)
         .item(&deaths_view_item)
+        .item(&movement_view_item)
         .item(&developer_menu)
         .separator()
         .item(&zoom_in_item)
@@ -1652,6 +1667,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             healing: healing_view_item,
             damage_taken: damage_taken_view_item,
             deaths: deaths_view_item,
+            movement: movement_view_item,
             debug: debug_view_item,
             raw: raw_view_item,
         },
