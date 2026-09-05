@@ -1,27 +1,31 @@
 // Top-down "radar" of where the player went: their (x, y) fixes over the
 // encounter drawn as a smooth curved trail on a faint world-coordinate
-// grid. Inline SVG, no library.
+// grid, plus a movable playhead and a per-moment event table. Inline
+// SVG, no library.
 //
-// The trail runs a RAINBOW head-to-tail -- hue swept red (oldest) through
-// to violet (most recent) -- so direction reads without an animation.
-// Every spot the player parked gets a translucent circle that grows the
-// longer they stood there (one notch per STAND_STEP_MS, capped at
-// STAND_MAX_MULT x). Deaths are red squares scaled by how long they were
-// dead. Start is a hollow ring, the last fix a filled dot. Gaps longer
-// than GAP_MS (a wipe reset / phase teleport) break the trail and the
-// standstill run.
+// The trail runs a RAINBOW head-to-tail -- hue swept red (oldest)
+// through to violet (most recent) -- so direction reads without an
+// animation. Every spot the player parked gets a translucent circle
+// that grows the longer they stood there. Deaths are red squares scaled
+// by how long they were dead. Start is a hollow ring, the last fix a
+// filled dot.
+//
+// A PLAYHEAD marks one moment on the trail: click the plot, use the
+// arrow buttons under it, or the keyboard (the plot is focusable). The
+// side table then lists the player's cast / damage / heal events in a
+// window around that moment -- the whole standstill span when the
+// playhead is parked, otherwise +/- HALF_WINDOW_MS. Scrollable, fixed
+// height, so it doesn't jump as you scrub.
 //
 // Framing: `fitBox` -- the tight bounds over EVERY player's fixes in the
-// window ("the area the raid played in"), from the backend -- padded
-// 10%. Falls back to the `MAP_CHANGE` box, then to this player's own
-// fixes, with a minimum span so a barely-moving player isn't magnified
-// into noise. One uniform scale for both axes (1 yard east == 1 yard
-// north on screen) so path shape isn't distorted. Screen: +x right, +y
-// up. (All of this is a stopgap until a real map image + per-map lookup
-// replace it.)
+// window ("the area the raid played in") -- padded 10%. Falls back to
+// the `MAP_CHANGE` box, then this player's own fixes, with a minimum
+// span so a barely-moving player isn't magnified into noise. One
+// uniform scale for both axes (1 yard east == 1 yard north) so shape
+// isn't distorted. Screen: +x right, +y up.
 
 import { registerWidget } from "../registry";
-import { formatAxisTime } from "../../format";
+import { formatAxisTime, formatCompact } from "../../format";
 import { el } from "./chart-util";
 
 export interface MovementPathSample {
@@ -35,22 +39,29 @@ export interface MovementPathDeathSpan {
   endMs: number | null; // null = still dead at the window's end
 }
 
+export type MovementEventKind = "cast" | "damageDone" | "damageTaken" | "healDone" | "healTaken";
+
+// Resolved by the view (names already looked up) so the widget stays dumb.
+export interface MovementPathEvent {
+  tMs: number;
+  kind: MovementEventKind;
+  name: string; // spell name, or "Melee"
+  other: string; // resolved unit name, or ""
+  amount: number; // 0 for a cast
+}
+
 export interface MovementPathProps {
   samples: MovementPathSample[];
   deathSpans: MovementPathDeathSpan[];
+  events: MovementPathEvent[]; // time-ordered
   startMs: number;
   endMs: number;
-  // Tight bounds over every player's fixes in the window -- the plot
-  // frames on this (padded). Falls back to `mapBox`, then this player's
-  // own fixes.
   fitBox: [number, number, number, number] | null;
   mapBox: [number, number, number, number] | null;
 }
 
-// vbW / vbH track the SVG's real pixel size (CSS makes .chart-plot
-// square, so these stay ~equal). 1 unit == 1px.
 const M = 12; // margin inside the SVG around the square plot region
-const GAP_MS = 5000; // matches stats.rs MOVE_GAP_MS -- break the trail across a bigger jump
+const GAP_MS = 5000; // break the trail across a bigger jump (teleport / wipe reset)
 const MAX_PTS = 500; // downsample cap for the drawn curve
 const MIN_SPAN = 20; // yards -- floor on the world span so a tiny path isn't over-zoomed
 const PAD_FRAC = 0.1; // buffer added around the framing box
@@ -58,15 +69,15 @@ const MARKER_R = 5; // px, base radius for start / end / standstill circles
 const STAND_EPS = 1.5; // yd -- fixes within this of the anchor keep a standstill run going
 const STAND_MIN_MS = 3000; // shortest stay that earns a circle
 const STAND_STEP_MS = 3000; // the circle grows one notch per this long parked
-const STAND_GROW = 0.4; // radius added (x base) per notch -> hits the cap at ~30 s
+const STAND_GROW = 0.4; // radius added (x base) per notch
 const STAND_MAX_MULT = 5; // cap on the standstill circle radius
-const DEATH_GROW_S = 4; // death circle: +1x base radius per this many seconds dead
-const DEATH_MAX_MULT = 6; // cap on the death circle radius
+const DEATH_GROW_S = 4; // death square: +1x base per this many seconds dead
+const DEATH_MAX_MULT = 6; // cap on the death square radius
 const TRAIL_CHUNK = 6; // fixes per gradient segment of the trail
+const HUE_SWEEP = 300; // degrees -- red -> ... -> magenta
+const PLAYHEAD_STEP_MS = 1000; // arrow-button / arrow-key step
+const HALF_WINDOW_MS = 3000; // side-table window is +/- this around a non-parked playhead
 
-// Rainbow time ramp: `frac` 0..1 (oldest..newest) -> hue 0deg (red)
-// through HUE_SWEEP. Fixed sat/light so it stays vivid but not neon.
-const HUE_SWEEP = 300; // degrees -- red -> orange -> ... -> magenta
 function rampColor(frac: number): string {
   return `hsl(${Math.round(Math.min(1, Math.max(0, frac)) * HUE_SWEEP)} 78% 62%)`;
 }
@@ -79,8 +90,7 @@ function niceStep(v: number): number {
   return 10 * mag;
 }
 
-// Open Catmull-Rom -> cubic bezier path (no clamping -- this is a
-// spatial curve, not a value-in-a-band line).
+// Open Catmull-Rom -> cubic bezier path (no clamping -- spatial curve).
 function curve(pts: Array<[number, number]>): string {
   if (pts.length === 0) return "";
   if (pts.length === 1) return `M${pts[0][0]},${pts[0][1]}`;
@@ -99,6 +109,21 @@ function curve(pts: Array<[number, number]>): string {
   return d;
 }
 
+function fmtDur(ms: number): string {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${Math.round(s - m * 60)}s`;
+}
+
+const KIND_LABEL: Record<MovementEventKind, string> = {
+  cast: "Cast",
+  damageDone: "Hit",
+  damageTaken: "Took",
+  healDone: "Heal",
+  healTaken: "Healed",
+};
+
 registerWidget<MovementPathProps>("movement-path", (props) => {
   const element = document.createElement("div");
   element.className = "chart movement-path";
@@ -115,8 +140,14 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     '<span class="chart-legend-item" data-series="death"><i></i>Death</span>';
   header.append(title, legend);
 
+  const body = document.createElement("div");
+  body.className = "movement-path-body";
+
+  const main = document.createElement("div");
+  main.className = "movement-path-main";
   const plot = document.createElement("div");
   plot.className = "chart-plot";
+  plot.tabIndex = 0;
   let vbW = 900;
   let vbH = 380;
   const svg = el("svg", { viewBox: `0 0 ${vbW} ${vbH}` });
@@ -128,23 +159,54 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   tooltip.className = "chart-tooltip";
   tooltip.hidden = true;
   plot.append(svg, empty, tooltip);
-  element.append(header, plot);
+
+  const controls = document.createElement("div");
+  controls.className = "movement-path-controls";
+  const prevBtn = document.createElement("button");
+  prevBtn.type = "button";
+  prevBtn.className = "movement-path-step";
+  prevBtn.textContent = "◀";
+  prevBtn.title = "Step back (←)";
+  const readout = document.createElement("span");
+  readout.className = "movement-path-readout";
+  const nextBtn = document.createElement("button");
+  nextBtn.type = "button";
+  nextBtn.className = "movement-path-step";
+  nextBtn.textContent = "▶";
+  nextBtn.title = "Step forward (→)";
+  controls.append(prevBtn, readout, nextBtn);
+  main.append(plot, controls);
+
+  const side = document.createElement("div");
+  side.className = "movement-path-side";
+  const sideHead = document.createElement("div");
+  sideHead.className = "movement-path-side-head";
+  const sideList = document.createElement("div");
+  sideList.className = "movement-path-events";
+  side.append(sideHead, sideList);
+
+  body.append(main, side);
+  element.append(header, body);
 
   let current: MovementPathProps = props;
-  // Downsampled screen points + their timestamps, rebuilt each render;
-  // hover picks the nearest.
+  let playT: number | null = null;
+  // Downsampled screen points + timestamps, rebuilt each render.
   let hoverPts: Array<{ x: number; y: number; t: number }> = [];
+  // Standstill spans (ms) + their anchor world point, for the side header.
+  let standSpans: Array<{ s: number; e: number; x: number; y: number }> = [];
   let hoverDot: SVGCircleElement | null = null;
   let svgRect: DOMRect | null = null;
   let hoverRaf = 0;
   let resizeRaf = 0;
   let pendingClient: [number, number] = [0, 0];
+  // px() / py() from the last render, so click / playhead can map back.
+  let px = (x: number) => x;
+  let py = (y: number) => y;
 
   const resizeObserver = new ResizeObserver(() => {
     svgRect = svg.getBoundingClientRect();
     const changed =
-      Math.abs(Math.round(svgRect.width) - vbW) >= 8 ||
-      Math.abs(Math.round(svgRect.height) - vbH) >= 8;
+      Math.abs(Math.round(svgRect.width) - vbW) >= 8 || Math.abs(Math.round(svgRect.height) - vbH) >= 8;
     if (svgRect.width > 0 && changed && !resizeRaf) {
       resizeRaf = requestAnimationFrame(() => {
         resizeRaf = 0;
@@ -153,6 +215,21 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     }
   });
   resizeObserver.observe(svg);
+
+  function fixNearestTime(t: number): MovementPathSample | null {
+    const ss = current.samples;
+    if (ss.length === 0) return null;
+    let best = ss[0];
+    let bestGap = Infinity;
+    for (const s of ss) {
+      const g = Math.abs(s.tMs - t);
+      if (g < bestGap) {
+        bestGap = g;
+        best = s;
+      }
+    }
+    return best;
+  }
 
   function render() {
     const rect = svg.getBoundingClientRect();
@@ -164,16 +241,18 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     svg.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
     svg.replaceChildren();
     hoverPts = [];
+    standSpans = [];
 
     const { samples, deathSpans, startMs, endMs, fitBox, mapBox } = current;
     const hasPath = samples.length >= 2;
     empty.hidden = hasPath;
     svg.style.visibility = hasPath ? "visible" : "hidden";
-    if (!hasPath) return;
+    if (!hasPath) {
+      renderSide();
+      return;
+    }
 
     // --- world bounds ------------------------------------------------
-    // Prefer the raid-wide box, then the map box, then this player's
-    // own extent; pad whichever by PAD_FRAC.
     let minX: number;
     let maxX: number;
     let minY: number;
@@ -201,22 +280,21 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     maxX += pad;
     minY -= pad;
     maxY += pad;
-    // Uniform scale about the world centre.
     const worldSpan = Math.max(maxX - minX, maxY - minY, MIN_SPAN);
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
-    const side = Math.max(40, Math.min(vbW - 2 * M, vbH - 2 * M));
+    const side_ = Math.max(40, Math.min(vbW - 2 * M, vbH - 2 * M));
     const regionCX = vbW / 2;
     const regionCY = vbH / 2;
-    const scale = side / worldSpan;
-    const px = (x: number) => regionCX + (x - cx) * scale;
-    const py = (y: number) => regionCY - (y - cy) * scale;
-    const left = regionCX - side / 2;
-    const right = regionCX + side / 2;
-    const topY = regionCY - side / 2;
-    const botY = regionCY + side / 2;
+    const scale = side_ / worldSpan;
+    px = (x: number) => regionCX + (x - cx) * scale;
+    py = (y: number) => regionCY - (y - cy) * scale;
+    const left = regionCX - side_ / 2;
+    const right = regionCX + side_ / 2;
+    const topY = regionCY - side_ / 2;
+    const botY = regionCY + side_ / 2;
 
-    // --- grid + frame ----------------------------------------------------
+    // --- grid + frame ---------------------------------------------------
     const step = niceStep(worldSpan / 6);
     for (let gx = Math.ceil(minX / step) * step; gx <= maxX + 1e-6; gx += step) {
       const x = px(gx);
@@ -229,23 +307,20 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       svg.appendChild(el("line", { x1: left, y1: y, x2: right, y2: y, class: "movement-grid" }));
     }
     svg.appendChild(
-      el("rect", { x: left, y: topY, width: side, height: side, rx: 4, class: "movement-frame" }),
+      el("rect", { x: left, y: topY, width: side_, height: side_, rx: 4, class: "movement-frame" }),
     );
 
-    // --- standstill circles (under the trail) --------------------------
-    // Walk the FULL sample list so camp timing is exact. A run of fixes
-    // within STAND_EPS of an anchor is one stay; a big time gap ends it.
+    // --- standstill spans + circles (under the trail) -----------------
     let anchor = samples[0];
     let runStart = samples[0].tMs;
     let runLast = samples[0].tMs;
     const flushStand = () => {
       const held = runLast - runStart;
       if (held < STAND_MIN_MS) return;
+      standSpans.push({ s: runStart, e: runLast, x: anchor.x, y: anchor.y });
       const notches = Math.floor(held / STAND_STEP_MS);
       const r = MARKER_R * Math.min(STAND_MAX_MULT, 1 + STAND_GROW * notches);
-      svg.appendChild(
-        el("circle", { cx: px(anchor.x), cy: py(anchor.y), r, class: "movement-standstill" }),
-      );
+      svg.appendChild(el("circle", { cx: px(anchor.x), cy: py(anchor.y), r, class: "movement-standstill" }));
     };
     for (let i = 1; i < samples.length; i++) {
       const s = samples[i];
@@ -260,7 +335,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     }
     flushStand();
 
-    // --- downsample, then draw the trail as a head-to-tail time gradient
+    // --- trail: rainbow, head-to-tail --------------------------------
     const stride = Math.max(1, Math.ceil(samples.length / MAX_PTS));
     const pts: MovementPathSample[] = [];
     for (let i = 0; i < samples.length; i += stride) pts.push(samples[i]);
@@ -268,9 +343,6 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     for (const p of pts) hoverPts.push({ x: px(p.x), y: py(p.y), t: p.tMs });
 
     const span = Math.max(1, endMs - startMs);
-    // Chunks of ~TRAIL_CHUNK fixes, each a short curve in its own ramp
-    // colour; +1-fix overlap so chunk joins butt cleanly. A gap between
-    // two fixes ends the current chunk (no line across a teleport).
     let chunk: MovementPathSample[] = [pts[0]];
     const flushChunk = () => {
       if (chunk.length < 2) return;
@@ -291,36 +363,22 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       chunk.push(pts[i]);
       if (chunk.length > TRAIL_CHUNK) {
         flushChunk();
-        chunk = [pts[i]]; // overlap
+        chunk = [pts[i]];
       }
     }
     flushChunk();
 
-    // --- markers ---------------------------------------------------------
+    // --- markers -----------------------------------------------------
     const first = samples[0];
     const last = samples[samples.length - 1];
     svg.appendChild(
       el("circle", { cx: px(first.x), cy: py(first.y), r: MARKER_R - 0.5, class: "movement-start" }),
     );
-    svg.appendChild(
-      el("circle", { cx: px(last.x), cy: py(last.y), r: MARKER_R - 1, class: "movement-end" }),
-    );
+    svg.appendChild(el("circle", { cx: px(last.x), cy: py(last.y), r: MARKER_R - 1, class: "movement-end" }));
 
-    // --- deaths: a red square at the death spot, sized by time dead ---
-    const nearestFix = (t: number) => {
-      let best = samples[0];
-      let bestGap = Infinity;
-      for (const s of samples) {
-        const g = Math.abs(s.tMs - t);
-        if (g < bestGap) {
-          bestGap = g;
-          best = s;
-        }
-      }
-      return best;
-    };
     for (const d of deathSpans) {
-      const spot = nearestFix(d.startMs);
+      const spot = fixNearestTime(d.startMs);
+      if (!spot) continue;
       const deadSec = ((d.endMs ?? endMs) - d.startMs) / 1000;
       const r = MARKER_R * Math.min(DEATH_MAX_MULT, 1 + Math.max(0, deadSec) / DEATH_GROW_S);
       svg.appendChild(
@@ -328,10 +386,131 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       );
     }
 
+    // --- playhead --------------------------------------------------
+    if (playT !== null) {
+      const at = fixNearestTime(playT);
+      if (at) {
+        svg.appendChild(el("circle", { cx: px(at.x), cy: py(at.y), r: 7, class: "movement-playhead-ring" }));
+        svg.appendChild(el("circle", { cx: px(at.x), cy: py(at.y), r: 2.5, class: "movement-playhead-dot" }));
+      }
+    }
+
     hoverDot = el("circle", { cx: 0, cy: 0, r: 3.5, class: "movement-hoverdot" });
     hoverDot.setAttribute("visibility", "hidden");
     svg.appendChild(hoverDot);
+
+    renderSide();
   }
+
+  function renderSide() {
+    const { events, startMs, endMs } = current;
+
+    if (playT === null) {
+      readout.textContent = current.samples.length >= 2 ? "no moment picked" : "";
+      sideHead.textContent = "Click the path (or use ◀ ▶ / arrow keys) to inspect a moment.";
+      sideList.replaceChildren();
+      return;
+    }
+
+    readout.textContent = formatAxisTime(playT - startMs, 0.1);
+
+    const parked = standSpans.find((s) => playT! >= s.s && playT! <= s.e);
+    let winStart: number;
+    let winEnd: number;
+    if (parked) {
+      winStart = parked.s;
+      winEnd = parked.e;
+      sideHead.textContent =
+        `Stood here ${fmtDur(parked.e - parked.s)} · ` +
+        `${formatAxisTime(parked.s - startMs, 0)}–${formatAxisTime(parked.e - startMs, 0)}`;
+    } else {
+      winStart = Math.max(startMs, playT - HALF_WINDOW_MS);
+      winEnd = Math.min(endMs, playT + HALF_WINDOW_MS);
+      sideHead.textContent = `${formatAxisTime(playT - startMs, 0.1)} · ±${HALF_WINDOW_MS / 1000}s`;
+    }
+
+    const rows = events.filter((e) => e.tMs >= winStart && e.tMs <= winEnd);
+    sideList.replaceChildren();
+    if (rows.length === 0) {
+      const p = document.createElement("p");
+      p.className = "movement-path-events-empty";
+      p.textContent = "No events in this window.";
+      sideList.append(p);
+      return;
+    }
+    for (const e of rows) {
+      const row = document.createElement("div");
+      row.className = "movement-path-event";
+      row.dataset.kind = e.kind;
+      const t = document.createElement("span");
+      t.className = "mpe-time";
+      t.textContent = formatAxisTime(e.tMs - startMs, 0.1);
+      const name = document.createElement("span");
+      name.className = "mpe-name";
+      name.textContent = `${KIND_LABEL[e.kind]} · ${e.name}`;
+      const amt = document.createElement("span");
+      amt.className = "mpe-amt";
+      amt.textContent = e.amount ? formatCompact(e.amount) : "";
+      const other = document.createElement("span");
+      other.className = "mpe-other";
+      other.textContent = e.other
+        ? (e.kind === "damageTaken" || e.kind === "healTaken" ? "← " : "→ ") + e.other
+        : "";
+      row.append(t, name, amt, other);
+      sideList.append(row);
+    }
+    sideList.scrollTop = 0;
+  }
+
+  function setPlayT(t: number | null) {
+    if (t !== null) {
+      t = Math.max(current.startMs, Math.min(current.endMs, t));
+    }
+    playT = t;
+    render();
+  }
+
+  function step(dir: 1 | -1) {
+    const base = playT ?? (dir === 1 ? current.startMs : current.endMs);
+    setPlayT(base + dir * PLAYHEAD_STEP_MS);
+  }
+
+  prevBtn.addEventListener("click", () => step(-1));
+  nextBtn.addEventListener("click", () => step(1));
+  plot.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowLeft") {
+      ev.preventDefault();
+      step(-1);
+    } else if (ev.key === "ArrowRight") {
+      ev.preventDefault();
+      step(1);
+    } else if (ev.key === "Home") {
+      ev.preventDefault();
+      setPlayT(current.startMs);
+    } else if (ev.key === "End") {
+      ev.preventDefault();
+      setPlayT(current.endMs);
+    }
+  });
+
+  svg.addEventListener("click", (ev) => {
+    if (!svgRect || svgRect.width === 0) svgRect = svg.getBoundingClientRect();
+    if (svgRect.width === 0 || hoverPts.length === 0) return;
+    const vx = ((ev.clientX - svgRect.left) / svgRect.width) * vbW;
+    const vy = ((ev.clientY - svgRect.top) / svgRect.height) * vbH;
+    let best = hoverPts[0];
+    let bestD = Infinity;
+    for (const p of hoverPts) {
+      const dd = (p.x - vx) ** 2 + (p.y - vy) ** 2;
+      if (dd < bestD) {
+        bestD = dd;
+        best = p;
+      }
+    }
+    if (bestD > 40 * 40) return; // clicked well off the trail -- ignore
+    setPlayT(best.t);
+    plot.focus();
+  });
 
   function onMove(ev: PointerEvent) {
     pendingClient = [ev.clientX, ev.clientY];
@@ -361,10 +540,12 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       hideHover();
       return;
     }
+    const near = current.events.filter((e) => Math.abs(e.tMs - best.t) < 1500).length;
     hoverDot?.setAttribute("cx", String(best.x));
     hoverDot?.setAttribute("cy", String(best.y));
     hoverDot?.setAttribute("visibility", "visible");
-    tooltip.textContent = formatAxisTime(best.t - current.startMs, 1);
+    tooltip.textContent =
+      formatAxisTime(best.t - current.startMs, 0.1) + (near ? ` · ${near} event${near > 1 ? "s" : ""}` : "");
     tooltip.hidden = false;
     tooltip.style.left = `${(best.x / vbW) * 100}%`;
     tooltip.style.top = `${(best.y / vbH) * 100}%`;
@@ -397,7 +578,9 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
     },
     update(next) {
+      const sameWindow = next.startMs === current.startMs && next.endMs === current.endMs;
       current = next;
+      if (!sameWindow) playT = null; // a new encounter/range -- drop the playhead
       render();
     },
   };

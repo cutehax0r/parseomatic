@@ -174,6 +174,91 @@ pub fn series(
     out
 }
 
+/// A row for the Movement view's per-moment side table: one of the
+/// player's cast / damage / heal events. Kinds are strings on the wire
+/// (`lib.rs`), an enum here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Cast,
+    DamageDone,
+    DamageTaken,
+    HealDone,
+    HealTaken,
+}
+
+impl EventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EventKind::Cast => "cast",
+            EventKind::DamageDone => "damageDone",
+            EventKind::DamageTaken => "damageTaken",
+            EventKind::HealDone => "healDone",
+            EventKind::HealTaken => "healTaken",
+        }
+    }
+}
+
+pub struct EventRow {
+    pub t_ms: i64,
+    pub kind: EventKind,
+    /// Intern id, or `NO_SPELL` for a melee swing.
+    pub spell_id: u16,
+    /// 0 for a `Cast` row.
+    pub amount: i64,
+    /// The other party -- target for `*Done` / `Cast`, source for `*Taken`.
+    pub other_unit: u32,
+}
+
+/// Every cast / damage / heal event involving `unit_id` in
+/// `[start_ms, end_ms]`, in file order. `SPELL_CAST_SUCCESS` only for
+/// casts (start events carry no useful detail here). Adjacent exact
+/// duplicates are dropped -- that collapses the `SWING_DAMAGE` /
+/// `SWING_DAMAGE_LANDED` pair the parser can't tell apart.
+pub fn events(events: &EventStore, unit_id: u32, start_ms: i64, end_ms: i64) -> Vec<EventRow> {
+    let mut out = Vec::new();
+    if unit_id == NO_UNIT || end_ms <= start_ms {
+        return out;
+    }
+    let (lo, hi) = query::window(events, start_ms, end_ms);
+    // Last kept (ts, kind, source, dest, spell, amount) for dedup.
+    let mut prev: Option<(i64, EventKind, u32, u32, u16, i64)> = None;
+    for row in lo..hi {
+        let ts = events.timestamp_ms[row];
+        if ts < start_ms || ts > end_ms {
+            continue;
+        }
+        let src = events.source_unit[row];
+        let dst = events.dest_unit[row];
+        let (kind, other) = match events.kind[row] {
+            LineKind::Composed { suffix: Suffix::CastSuccess, .. } if src == unit_id => {
+                (EventKind::Cast, dst)
+            }
+            LineKind::Composed { suffix: Suffix::Damage, .. } if src == unit_id => {
+                (EventKind::DamageDone, dst)
+            }
+            LineKind::Composed { suffix: Suffix::Damage, .. } if dst == unit_id => {
+                (EventKind::DamageTaken, src)
+            }
+            LineKind::Composed { suffix: Suffix::Heal, .. } if src == unit_id => {
+                (EventKind::HealDone, dst)
+            }
+            LineKind::Composed { suffix: Suffix::Heal, .. } if dst == unit_id => {
+                (EventKind::HealTaken, src)
+            }
+            _ => continue,
+        };
+        let spell = events.spell[row];
+        let amount = events.amount[row];
+        let key = (ts, kind, src, dst, spell, amount);
+        if prev == Some(key) {
+            continue;
+        }
+        prev = Some(key);
+        out.push(EventRow { t_ms: ts, kind, spell_id: spell, amount, other_unit: other });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +359,34 @@ mod tests {
         assert_eq!(s.fit_box, Some([10.0, 13.0, 20.0, 24.0]));
         // 3-4-5 triangle between the two fixes.
         assert!((s.total - 5.0).abs() < 1e-6, "got {}", s.total);
+    }
+
+    #[test]
+    fn events_classifies_by_direction_and_dedups_the_swing_pair() {
+        // Shared buffer + hand-set timestamps so the SWING pair lands on
+        // the same millisecond, as it does in real logs.
+        let lines = [
+            "9/3/2026 19:23:00.000-6  SPELL_CAST_SUCCESS,Player-1-1,\"Mv-R-US\",0x512,0x0,Creature-0-0-0-0-1-0,\"Boss\",0x10a48,0x0,100,\"Zap\",0x1,Player-1-1,0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,0,0,2607,0,1",
+            "9/3/2026 19:23:00.500-6  SPELL_DAMAGE,Player-1-1,\"Mv-R-US\",0x512,0x0,Creature-0-0-0-0-1-0,\"Boss\",0x10a48,0x0,100,\"Zap\",0x1,Creature-0-0-0-0-1-0,0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,0,0,2607,0,93,900,0,-1,1,0,0,0,nil,nil,ST",
+            "9/3/2026 19:23:01.000-6  SWING_DAMAGE,Creature-0-0-0-0-1-0,\"Boss\",0x10a48,0x0,Player-1-1,\"Mv-R-US\",0x512,0x0,Creature-0-0-0-0-1-0,0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,0,0,2607,0,93,500,0,-1,1,0,0,0,nil,nil,nil",
+            "9/3/2026 19:23:01.000-6  SWING_DAMAGE_LANDED,Creature-0-0-0-0-1-0,\"Boss\",0x10a48,0x0,Player-1-1,\"Mv-R-US\",0x512,0x0,Player-1-1,0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,0,0,2607,0,93,500,0,-1,1,0,0,0,nil,nil,nil",
+        ];
+        let data = lines.join("\n").into_bytes();
+        let mut tables = InternTables::default();
+        let mut store = EventStore::default();
+        let mut off = 0usize;
+        for line in data.split(|&b| b == b'\n') {
+            parse_line(&data, off, line, &mut tables, &mut store);
+            off += line.len() + 1;
+        }
+
+        let unit = store.source_unit[0];
+        let ev = events(&store, unit, store.timestamp_ms[0] - 1, store.timestamp_ms[3] + 1);
+        let kinds: Vec<_> = ev.iter().map(|e| e.kind.as_str()).collect();
+        // the same-ms SWING pair collapses to one DamageTaken row.
+        assert_eq!(kinds, vec!["cast", "damageDone", "damageTaken"]);
+        assert_eq!(ev[1].amount, 900);
+        assert_eq!(ev[2].amount, 500);
+        assert_eq!(ev[2].other_unit, store.source_unit[2]); // the boss
     }
 }

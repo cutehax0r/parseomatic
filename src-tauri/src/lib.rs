@@ -1428,6 +1428,48 @@ fn movement_series(
     })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MovementEventRow {
+    t_ms: i64,
+    /// `cast` | `damageDone` | `damageTaken` | `healDone` | `healTaken`.
+    kind: &'static str,
+    /// `None` for a melee swing.
+    spell_id: Option<u16>,
+    /// 0 for a `cast` row.
+    amount: i64,
+    /// Target for `*Done`/`cast`, source for `*Taken`; `None` if unset.
+    other_unit: Option<u32>,
+}
+
+/// Every cast / damage / heal event involving `unit_id` in
+/// `[start_ms, end_ms]` -- backs the Movement view's per-moment side
+/// table. Fetched once for the window and filtered client-side as the
+/// playhead moves. `None` before parsing has finished. See
+/// `src/movement.rs`.
+#[tauri::command]
+fn movement_events(
+    window: WebviewWindow,
+    unit_id: u32,
+    start_ms: i64,
+    end_ms: i64,
+) -> Option<Vec<MovementEventRow>> {
+    let log = current_log(&window)?;
+    let data = log.data()?;
+    Some(
+        movement::events(&data.events, unit_id, start_ms, end_ms)
+            .into_iter()
+            .map(|e| MovementEventRow {
+                t_ms: e.t_ms,
+                kind: e.kind.as_str(),
+                spell_id: (e.spell_id != NO_SPELL).then_some(e.spell_id),
+                amount: e.amount,
+                other_unit: (e.other_unit != NO_UNIT).then_some(e.other_unit),
+            })
+            .collect(),
+    )
+}
+
 #[tauri::command]
 fn open_log_file(window: WebviewWindow) {
     pick_and_open_log(window);
@@ -1897,6 +1939,7 @@ pub fn run() {
             spell_breakdown,
             death_detail,
             movement_series,
+            movement_events,
             zoom
         ])
         .build(tauri::generate_context!())

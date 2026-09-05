@@ -168,6 +168,19 @@ export interface MovementDeathSpan {
   endMs: number | null; // null = still dead at the window's end
 }
 
+export type MovementEventKind = "cast" | "damageDone" | "damageTaken" | "healDone" | "healTaken";
+
+// One of the player's cast/damage/heal events, from `movement_events`
+// (src-tauri/src/movement.rs). `otherUnit` is the target for *Done/cast,
+// the source for *Taken. Resolve ids against the `units`/`spells` arrays.
+export interface MovementEvent {
+  tMs: number;
+  kind: MovementEventKind;
+  spellId: number | null; // null = melee swing
+  amount: number; // 0 for a cast
+  otherUnit: number | null;
+}
+
 export interface MovementSeries {
   startMs: number;
   endMs: number;

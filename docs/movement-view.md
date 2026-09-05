@@ -194,13 +194,22 @@ so the route shape isn't distorted; screen +x right, +y up.
 - **Gaps:** consecutive fixes more than `GAP_MS` (5 s) apart break the
   trail *and* the standstill run rather than drawing across a wipe reset
   / phase teleport.
-- Hover snaps to the nearest fix and shows its elapsed time.
+- **Hover** snaps to the nearest fix, shows its time + a nearby-event
+  count.
+- **Playhead + side table.** A ring marks one moment on the trail — set
+  it by clicking the plot, the ◀ ▶ buttons under it, or the arrow keys
+  (the plot is focusable; Home/End jump to the ends), `PLAYHEAD_STEP_MS`
+  (1 s) per step. The side table then lists the player's cast / damage /
+  heal / taken events (`movement_events`, §8) in a window around the
+  playhead — the **whole standstill span** when it's parked (header:
+  "Stood here 12.4 s · m:ss–m:ss"), else `± HALF_WINDOW_MS` (3 s). The
+  list is `max-height` + `overflow-y: auto` so it doesn't jump while
+  scrubbing; names/spells are resolved in `views/movement.ts` so the
+  widget stays dumb. Event fetch is decoupled from the path render (the
+  path draws first, the table fills in when its larger payload lands).
 
-**Still to add:** a **playhead** on the trail (click / ◀ ▶ / keyboard)
-driving a scrollable side table of the player's cast / damage / heal /
-taken events around that moment, with a "stood here 12 s" header when
-parked — needs a new `movement_events` command. A **playback scrubber**
-and the casting-aware trail states are also future.
+**Still to add:** a **playback scrubber** (auto-advance the playhead),
+and the casting-aware trail states.
 
 ### 7b. Movement-over-time line graph — **built**
 
@@ -253,7 +262,7 @@ Overview row sparkline.
       start_ms, end_ms, bucket_ms: i64,
       buckets: Vec<f64>,          // distance (~yd) per equal time slice -- the line graph
       total:   f64,
-      deaths:  Vec<i64>,          // this unit's UNIT_DIED timestamps in the window
+      death_spans: Vec<DeathSpan>,// UNIT_DIED -> SPELL_RESURRECT (or window end)
       samples: Vec<Sample>,       // ordered (t_ms, x, y) fixes -- the path plot
       map_box: Option<[f32; 4]>,  // MAP_CHANGE [x0,x1,y0,y1] (corners unsorted), reference only
       fit_box: Option<[f32; 4]>,  // tight [minX,maxX,minY,maxY] over EVERY player's fixes -- the path frame
@@ -268,8 +277,17 @@ Overview row sparkline.
   nearest `MAP_CHANGE` at/before the window (raw fields 3–6, resolved
   against the mmap). Bucket count matches the Overview chart (~1/s,
   capped 800). Fetched + cached in `src/ui/movement-series.ts` (keyed
-  `unitId:start:end:buckets`, cleared on log change). The green/red trail
-  colouring is entirely client-side (`MOVE_SPEED_MIN` mirrored in TS).
+  `unitId:start:end:buckets`, cleared on log change). The rainbow trail
+  colouring is entirely client-side.
+
+- **`movement_events` command** (**built**) — every cast /
+  damage-done / damage-taken / heal-done / heal-taken event involving
+  the unit in the window, `{t_ms, kind, spell_id, amount, other_unit}`
+  rows in file order. `SPELL_CAST_SUCCESS` for casts; adjacent exact
+  dups dropped (collapses the `SWING_DAMAGE`/`_LANDED` pair). One fetch
+  per `(unit, window)` (`src/ui/movement-events.ts`), filtered
+  client-side as the playhead moves — could be thousands of rows for an
+  AoE fight, so it's decoupled from the path render.
 
 - **Still missing for §7a's casting-aware states:** the cast spans
   (`SPELL_CAST_START`…`_SUCCESS`) and enemy-aura spans. Add them to

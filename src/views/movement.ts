@@ -2,20 +2,20 @@
 // moved over an encounter, reconstructed from the x/y on their combat-log
 // events (see `docs/movement-view.md` for the data model).
 //
-// A square top-down "radar" of the player's route -- the line green
-// where they were standing still, red where moving; a growing circle at
-// each spot they parked. Below it: distance moved over time, styled
-// like the Overview DPS/HPS line chart -- a "yards per second" line with
-// the player's death timestamps as vertical rules. Playback scrubber
-// still to come.
+// A square top-down "radar" of the player's route (rainbow trail =
+// time), a movable playhead, and a side table of the player's
+// cast/damage/heal events around the playhead moment. Below it:
+// distance moved over time, styled like the Overview DPS/HPS line chart.
 
 import "../ui/widgets"; // registers movement-path / movement-chart / ...
 
 import { buildView, type BuiltView } from "../ui/panel";
 import { createViewContext, type ViewContext } from "../ui/context";
 import { movementSeries } from "../ui/movement-series";
+import { movementEvents } from "../ui/movement-events";
 import type { NodeSpec } from "../ui/spec";
 import type { MovementChartDeath } from "../ui/widgets/movement-chart";
+import type { MovementPathEvent } from "../ui/widgets/movement-path";
 import { formatCompact, formatUnitName } from "../format";
 
 const spec: NodeSpec = {
@@ -28,7 +28,7 @@ const spec: NodeSpec = {
       type: "movement-path",
       id: "path",
       span: 1,
-      props: { samples: [], deathSpans: [], startMs: 0, endMs: 0, fitBox: null, mapBox: null },
+      props: { samples: [], deathSpans: [], events: [], startMs: 0, endMs: 0, fitBox: null, mapBox: null },
     },
     {
       kind: "widget",
@@ -104,23 +104,34 @@ async function paint(): Promise<void> {
     t: d.startMs,
     label: formatUnitName(unit),
   }));
-
-  built.get("title")?.update({
-    name: formatUnitName(unit),
-    badge: `${formatCompact(series.total)} yd`,
-  });
-  built.get("path")?.update({
+  const pathBase = {
     samples: series.samples,
     deathSpans: series.deathSpans,
     startMs: series.startMs,
     endMs: series.endMs,
     fitBox: series.fitBox,
     mapBox: series.mapBox,
+  };
+
+  built.get("title")?.update({
+    name: formatUnitName(unit),
+    badge: `${formatCompact(series.total)} yd`,
   });
-  built.get("chart")?.update({
-    buckets,
-    deaths,
-    startMs: series.startMs,
-    endMs: series.endMs,
-  });
+  built.get("path")?.update({ ...pathBase, events: [] });
+  built.get("chart")?.update({ buckets, deaths, startMs: series.startMs, endMs: series.endMs });
+
+  // The side table's events are a separate (often larger) fetch -- don't
+  // block the path on them; fill in when they arrive.
+  const rawEvents = await movementEvents(unitId, startMs, endMs);
+  if (seq !== paintSeq || !rawEvents) return;
+  const spells = ctx.spells;
+  const units = ctx.units;
+  const events: MovementPathEvent[] = rawEvents.map((e) => ({
+    tMs: e.tMs,
+    kind: e.kind,
+    name: e.spellId != null ? (spells[e.spellId]?.name ?? `#${e.spellId}`) : "Melee",
+    other: e.otherUnit != null ? (units[e.otherUnit]?.name ?? "?") : "",
+    amount: e.amount,
+  }));
+  built.get("path")?.update({ ...pathBase, events });
 }
