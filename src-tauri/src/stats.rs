@@ -20,15 +20,15 @@ use crate::parser::reports::Encounter;
 /// Width of one activity slot. 1.5 s ~= one global cooldown -- a lone
 /// instant cast (or an unresolvable channel start) then fills its whole
 /// slot rather than reading as mostly-idle, which 1 s slots did.
-/// Shared with `movement.rs`'s standing/moving x active split.
-pub(crate) const BIN_MS: i64 = 1500;
+const BIN_MS: i64 = 1500;
 /// Ignore a position delta spanning a bigger time gap than this -- a gap
 /// in the log, a teleport, or a phase transition, not real running.
 /// Shared with `movement.rs` (the live series for the Movement view).
 pub(crate) const MOVE_GAP_MS: i64 = 5000;
-/// World-units/sec below which a step counts as standing still, not moving.
-/// Shared with `movement.rs`.
-pub(crate) const MOVE_SPEED_MIN: f64 = 1.0;
+/// World-units/sec below which a step counts as standing still, not
+/// moving. The Movement view's path plot mirrors this value in TS for
+/// its green (still) / red (moving) line colouring.
+const MOVE_SPEED_MIN: f64 = 1.0;
 /// A single step contributes at most this much to "moving time" (guards
 /// against one long stride across a sparse stretch of the log).
 const MOVE_STEP_CAP_MS: i64 = 2000;

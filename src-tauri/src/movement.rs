@@ -16,10 +16,10 @@
 //! `query_events` bucketed series. The unit's death timestamps within the
 //! window ride along for the chart's death rules.
 
-use crate::parser::event::{EventStore, LineKind, StandaloneKind, Suffix};
+use crate::parser::event::{EventStore, LineKind, StandaloneKind};
 use crate::parser::intern::{InternTables, UnitKind, NO_UNIT};
 use crate::query;
-use crate::stats::{BIN_MS, MOVE_GAP_MS, MOVE_SPEED_MIN};
+use crate::stats::MOVE_GAP_MS;
 
 /// One `(t, x, y)` fix for the unit -- an event that carried the unit's
 /// own advanced-block position, in file order.
@@ -27,19 +27,6 @@ pub struct Sample {
     pub t_ms: i64,
     pub x: f32,
     pub y: f32,
-}
-
-/// Time (ms) split four ways over the window's `BIN_MS` slots: was the
-/// player *moving* in the slot (majority of it spent above
-/// `MOVE_SPEED_MIN`), and did they *act* in it (a `SPELL_CAST_START` /
-/// `_SUCCESS` of their own landed in the slot)? Backs the Movement
-/// view's pie chart.
-#[derive(Default)]
-pub struct ActivitySplit {
-    pub standing_ms: i64,
-    pub standing_active_ms: i64,
-    pub moving_ms: i64,
-    pub moving_active_ms: i64,
 }
 
 pub struct MovementSeries {
@@ -69,8 +56,6 @@ pub struct MovementSeries {
     /// playable map. `None` if no player carried a position in the window.
     /// Stopgap until a real map image + a per-map lookup replace it.
     pub fit_box: Option<[f32; 4]>,
-    /// Standing / moving x idle / acting time split (see `ActivitySplit`).
-    pub activity: ActivitySplit,
 }
 
 /// Walk the positioned events that describe `unit_id` in
@@ -101,21 +86,11 @@ pub fn series(
         samples: Vec::new(),
         map_box: None,
         fit_box: None,
-        activity: ActivitySplit::default(),
     };
     if unit_id == NO_UNIT || end_ms <= start_ms {
         return out;
     }
     let is_player = |id: u32| id != NO_UNIT && tables.guids.get(id).kind == UnitKind::Player;
-
-    // BIN_MS slots for the standing/moving x idle/acting split.
-    let n_slots = (((end_ms - start_ms) + BIN_MS - 1) / BIN_MS).max(1) as usize;
-    let slot_bounds = |i: usize| {
-        let s = start_ms + i as i64 * BIN_MS;
-        (s, (s + BIN_MS).min(end_ms))
-    };
-    let mut slot_moving_ms = vec![0i64; n_slots]; // ms of the slot spent above MOVE_SPEED_MIN
-    let mut slot_acted = vec![false; n_slots]; // a cast of the player's landed in the slot
 
     let (lo, hi) = query::window(events, start_ms, end_ms);
 
@@ -149,17 +124,6 @@ pub fn series(
             }
             continue;
         }
-        // "Acting" in a slot: the player started or completed a cast in
-        // it. Checked before the position gate because CAST_START carries
-        // no advanced block (no position).
-        if matches!(
-            events.kind[row],
-            LineKind::Composed { suffix: Suffix::CastStart | Suffix::CastSuccess, .. }
-        ) && events.source_unit[row] == unit_id
-        {
-            let si = (((ts - start_ms) / BIN_MS).max(0) as usize).min(n_slots - 1);
-            slot_acted[si] = true;
-        }
         // `pos_unit` already screens out rows with no position (NaN ->
         // NO_UNIT), so a non-NO_UNIT result guarantees a real coord pair.
         let pos_unit = events.pos_unit(row);
@@ -185,47 +149,10 @@ pub fn series(
                 let idx = (((ts - start_ms) / width) as usize).min(count - 1);
                 out.buckets[idx] += d;
                 out.total += d;
-
-                // Spread this interval's ms across the slots it covers if
-                // the player was moving over it (average speed above the
-                // stand/walk threshold).
-                if d / (dt as f64 / 1000.0) >= MOVE_SPEED_MIN {
-                    let a = lt.max(start_ms);
-                    let b = ts.min(end_ms);
-                    let mut si = ((a - start_ms) / BIN_MS).max(0) as usize;
-                    while si < n_slots {
-                        let (ss, se) = slot_bounds(si);
-                        if ss >= b {
-                            break;
-                        }
-                        let overlap = se.min(b) - ss.max(a);
-                        if overlap > 0 {
-                            slot_moving_ms[si] += overlap;
-                        }
-                        si += 1;
-                    }
-                }
             }
         }
         last = Some((ts, x, y));
         out.samples.push(Sample { t_ms: ts, x, y });
-    }
-
-    // Fold the slots into the four-way split: a slot counts as "moving"
-    // when the majority of it was spent above the threshold.
-    for i in 0..n_slots {
-        let (ss, se) = slot_bounds(i);
-        let slot_ms = se - ss;
-        if slot_ms <= 0 {
-            continue;
-        }
-        let moving = slot_moving_ms[i] * 2 >= slot_ms;
-        match (moving, slot_acted[i]) {
-            (false, false) => out.activity.standing_ms += slot_ms,
-            (false, true) => out.activity.standing_active_ms += slot_ms,
-            (true, false) => out.activity.moving_ms += slot_ms,
-            (true, true) => out.activity.moving_active_ms += slot_ms,
-        }
     }
 
     out
@@ -267,32 +194,6 @@ mod tests {
         assert!((s.buckets.iter().sum::<f64>() - 2.0).abs() < 1e-6);
         // fit_box spans every player fix: x in [0,1], y in [0,1].
         assert_eq!(s.fit_box, Some([0.0, 1.0, 0.0, 1.0]));
-        // Moving at exactly the 1 yd/s threshold the whole 2 s, casting
-        // in every slot -> all time is "moving + acting".
-        let a = &s.activity;
-        assert_eq!(
-            (a.standing_ms, a.standing_active_ms, a.moving_ms, a.moving_active_ms),
-            (0, 0, 0, 2000)
-        );
-    }
-
-    #[test]
-    fn still_while_casting_is_standing_and_acting() {
-        // Same position at 0 s and 2 s, a cast at each -> no movement,
-        // every slot has an action.
-        let base = "SPELL_CAST_SUCCESS,Player-1-1,\"Mv-R-US\",0x512,0x0,0000000000000000,nil,0x80000000,0x80000000,\
-                    100,\"Spell\",0x1,Player-1-1,0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,";
-        let (tables, store) = store_from(&[
-            &format!("{base}5.00,5.00,2607,0,1"),
-            &format!("{base}5.00,5.00,2607,0,1"),
-            &format!("{base}5.00,5.00,2607,0,1"),
-        ]);
-        let unit = store.source_unit[0];
-        let s = series(&store, &tables, &[], unit, store.timestamp_ms[0], store.timestamp_ms[2], 2);
-        let a = &s.activity;
-        assert_eq!(a.moving_ms + a.moving_active_ms, 0, "never moved");
-        assert_eq!(a.standing_active_ms, 2000, "cast in both slots, standing");
-        assert_eq!(a.standing_ms, 0);
     }
 
     // Outgoing damage carries the TARGET's position -- it must not be

@@ -163,15 +163,6 @@ export interface MovementSample {
   y: number;
 }
 
-// Window time (ms) split over 1.5s slots: was the player moving in the
-// slot, and did they cast something in it. Backs the Movement pie.
-export interface MovementActivity {
-  standingMs: number;
-  standingActiveMs: number;
-  movingMs: number;
-  movingActiveMs: number;
-}
-
 export interface MovementSeries {
   startMs: number;
   endMs: number;
@@ -187,7 +178,6 @@ export interface MovementSeries {
   // window -- "the area the raid played in". The path plot frames on
   // this (padded). null if no player carried a position.
   fitBox: [number, number, number, number] | null;
-  activity: MovementActivity;
 }
 
 // Per-player derived stats for one encounter, from the `encounter_stats`

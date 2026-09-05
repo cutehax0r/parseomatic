@@ -1358,15 +1358,6 @@ struct MovementSampleRow {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct MovementActivityRow {
-    standing_ms: i64,
-    standing_active_ms: i64,
-    moving_ms: i64,
-    moving_active_ms: i64,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 struct MovementSeriesRow {
     start_ms: i64,
     end_ms: i64,
@@ -1381,8 +1372,6 @@ struct MovementSeriesRow {
     /// Tight `[minX, maxX, minY, maxY]` over every player's fixes in the
     /// window -- what the path plot frames on. `null` if none.
     fit_box: Option<[f32; 4]>,
-    /// Standing / moving x idle / acting time split (the pie chart).
-    activity: MovementActivityRow,
 }
 
 /// Movement for `unit_id` across `[start_ms, end_ms]` -- distance binned
@@ -1423,12 +1412,6 @@ fn movement_series(
             .collect(),
         map_box: m.map_box,
         fit_box: m.fit_box,
-        activity: MovementActivityRow {
-            standing_ms: m.activity.standing_ms,
-            standing_active_ms: m.activity.standing_active_ms,
-            moving_ms: m.activity.moving_ms,
-            moving_active_ms: m.activity.moving_active_ms,
-        },
     })
 }
 

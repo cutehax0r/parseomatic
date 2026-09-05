@@ -1945,7 +1945,7 @@ body {
 .movement-path .chart-plot {
   aspect-ratio: 1 / 1;
   width: 100%;
-  max-width: 460px;
+  max-width: 520px;
   margin-inline: auto;
   /* tooltip is positioned by both left AND top inside the plot */
   overflow: hidden;
@@ -1989,20 +1989,36 @@ body {
 
 .movement-trail {
   fill: none;
-  stroke: var(--accent);
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
+.movement-trail--still {
+  stroke: var(--success);
+}
+
+.movement-trail--move {
+  stroke: var(--danger);
+}
+
+/* Translucent circle at a spot the player parked; grows with the stay. */
+.movement-standstill {
+  fill: var(--success);
+  fill-opacity: 0.14;
+  stroke: var(--success);
+  stroke-opacity: 0.4;
+  stroke-width: 1;
+}
+
 .movement-start {
   fill: none;
-  stroke: var(--text-muted);
+  stroke: var(--text);
   stroke-width: 1.5;
 }
 
 .movement-end {
-  fill: var(--accent);
+  fill: var(--text);
 }
 
 .movement-death {
@@ -2012,18 +2028,15 @@ body {
 }
 
 .movement-hoverdot {
-  fill: var(--accent);
+  fill: var(--text);
 }
 
-.chart-legend-item[data-series="start"] i {
-  background: none;
-  border: 1.5px solid var(--text-muted);
-  border-radius: 50%;
+.chart-legend-item[data-series="still"] i {
+  background-color: var(--success);
 }
 
-.chart-legend-item[data-series="end"] i {
-  background-color: var(--accent);
-  border-radius: 50%;
+.chart-legend-item[data-series="move"] i {
+  background-color: var(--danger);
 }
 
 /* area-chart -- one translucent band per stacked series, `--c` set

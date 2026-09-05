@@ -2,11 +2,14 @@
 // encounter drawn as a smooth curved trail on a faint world-coordinate
 // grid. Inline SVG, no library.
 //
-// The trail fades head-to-tail (old = faint, recent = bright) so it
-// reads directionally without an animation. Start is a hollow ring, the
-// last fix a filled dot, deaths are `--chart-death` crosses at the fix
-// nearest each death time. Gaps longer than GAP_MS (a wipe reset / phase
-// teleport) break the trail rather than drawing a long false line.
+// The trail is coloured by movement state -- GREEN where the player was
+// standing still (average speed between fixes below MOVE_SPEED_MIN, the
+// same threshold stats.rs uses), RED where moving. Every spot they
+// parked gets a translucent circle that grows the longer they stood
+// there (one notch per STAND_STEP_MS, capped at STAND_MAX_MULT x). Start
+// is a hollow ring, the last fix a filled dot, deaths are `--chart-death`
+// crosses at the fix nearest each death time. Gaps longer than GAP_MS
+// (a wipe reset / phase teleport) break the trail and the standstill run.
 //
 // Framing: `fitBox` -- the tight bounds over EVERY player's fixes in the
 // window ("the area the raid played in"), from the backend -- padded
@@ -50,7 +53,13 @@ const GAP_MS = 5000; // matches stats.rs MOVE_GAP_MS -- break the trail across a
 const MAX_PTS = 500; // downsample cap for the drawn curve
 const MIN_SPAN = 20; // yards -- floor on the world span so a tiny path isn't over-zoomed
 const PAD_FRAC = 0.1; // buffer added around the framing box
-const TRAIL_CHUNK = 8; // points per gradient segment
+const MOVE_SPEED_MIN = 1; // yd/s -- mirrors stats.rs; at/below this a segment is "standing"
+const MARKER_R = 5; // px, base radius for start / end / standstill circles
+const STAND_EPS = 1.5; // yd -- fixes within this of the anchor keep a standstill run going
+const STAND_MIN_MS = 3000; // shortest stay that earns a circle
+const STAND_STEP_MS = 3000; // the circle grows one notch per this long parked
+const STAND_GROW = 0.4; // radius added (x base) per notch -> hits the cap at ~30 s
+const STAND_MAX_MULT = 5; // cap on the standstill circle radius
 
 // Smallest 1/2/2.5/5 x 10^n that is >= v -- for a tidy grid step.
 function niceStep(v: number): number {
@@ -92,8 +101,8 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   const legend = document.createElement("div");
   legend.className = "chart-legend";
   legend.innerHTML =
-    '<span class="chart-legend-item" data-series="start"><i></i>Start</span>' +
-    '<span class="chart-legend-item" data-series="end"><i></i>End</span>' +
+    '<span class="chart-legend-item" data-series="still"><i></i>Still</span>' +
+    '<span class="chart-legend-item" data-series="move"><i></i>Moving</span>' +
     '<span class="chart-legend-item" data-series="death"><i></i>Death</span>';
   header.append(title, legend);
 
@@ -147,7 +156,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     svg.replaceChildren();
     hoverPts = [];
 
-    const { samples, deaths, startMs, fitBox, mapBox } = current;
+    const { samples, deaths, fitBox, mapBox } = current;
     const hasPath = samples.length >= 2;
     empty.hidden = hasPath;
     svg.style.visibility = hasPath ? "visible" : "hidden";
@@ -214,42 +223,86 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       el("rect", { x: left, y: topY, width: side, height: side, rx: 4, class: "movement-frame" }),
     );
 
-    // --- downsample + split into gap-free runs -------------------------
+    // --- standstill circles (under the trail) --------------------------
+    // Walk the FULL sample list so camp timing is exact. A run of fixes
+    // within STAND_EPS of an anchor is one stay; a big time gap ends it.
+    let anchor = samples[0];
+    let runStart = samples[0].tMs;
+    let runLast = samples[0].tMs;
+    const flushStand = () => {
+      const held = runLast - runStart;
+      if (held < STAND_MIN_MS) return;
+      const notches = Math.floor(held / STAND_STEP_MS);
+      const r = MARKER_R * Math.min(STAND_MAX_MULT, 1 + STAND_GROW * notches);
+      svg.appendChild(
+        el("circle", { cx: px(anchor.x), cy: py(anchor.y), r, class: "movement-standstill" }),
+      );
+    };
+    for (let i = 1; i < samples.length; i++) {
+      const s = samples[i];
+      const gap = s.tMs - samples[i - 1].tMs;
+      const drift = Math.hypot(s.x - anchor.x, s.y - anchor.y);
+      if (gap > GAP_MS || drift > STAND_EPS) {
+        flushStand();
+        anchor = s;
+        runStart = s.tMs;
+      }
+      runLast = s.tMs;
+    }
+    flushStand();
+
+    // --- downsample + split into gap-free runs, then colour by state ---
     const stride = Math.max(1, Math.ceil(samples.length / MAX_PTS));
     const pts: MovementPathSample[] = [];
     for (let i = 0; i < samples.length; i += stride) pts.push(samples[i]);
     if (pts[pts.length - 1] !== samples[samples.length - 1]) pts.push(samples[samples.length - 1]);
+    for (const p of pts) hoverPts.push({ x: px(p.x), y: py(p.y), t: p.tMs });
 
-    const runs: MovementPathSample[][] = [[]];
-    for (let i = 0; i < pts.length; i++) {
-      if (i > 0 && pts[i].tMs - pts[i - 1].tMs > GAP_MS) runs.push([]);
-      runs[runs.length - 1].push(pts[i]);
-      hoverPts.push({ x: px(pts[i].x), y: py(pts[i].y), t: pts[i].tMs });
-    }
-
-    // --- trail, faded head-to-tail -----------------------------------
-    const lastT = samples[samples.length - 1].tMs;
-    const tSpan = Math.max(1, lastT - startMs);
-    for (const run of runs) {
-      if (run.length < 2) continue;
-      const screen = run.map((s) => [px(s.x), py(s.y)] as [number, number]);
-      for (let i = 0; i < screen.length - 1; i += TRAIL_CHUNK) {
-        // +1 overlap so consecutive chunks join without a visible seam.
-        const chunk = screen.slice(i, Math.min(i + TRAIL_CHUNK + 1, screen.length));
-        if (chunk.length < 2) break;
-        const midT = run[Math.min(i + Math.floor(TRAIL_CHUNK / 2), run.length - 1)].tMs;
-        const frac = Math.min(1, Math.max(0, (midT - startMs) / tSpan));
-        const path = el("path", { d: curve(chunk), class: "movement-trail" });
-        path.setAttribute("stroke-opacity", (0.22 + 0.78 * frac).toFixed(3));
-        svg.appendChild(path);
+    // Per-segment moving state, then draw maximal same-state runs as one
+    // curve each (1-point overlap so colour changes butt-join cleanly).
+    let seg: Array<[number, number]> = [[px(pts[0].x), py(pts[0].y)]];
+    let segMoving: boolean | null = null;
+    const flushSeg = () => {
+      if (seg.length >= 2 && segMoving !== null) {
+        svg.appendChild(
+          el("path", {
+            d: curve(seg),
+            class: `movement-trail movement-trail--${segMoving ? "move" : "still"}`,
+          }),
+        );
       }
+    };
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      if (b.tMs - a.tMs > GAP_MS) {
+        // Teleport / log gap: end the trail, don't draw across it.
+        flushSeg();
+        seg = [[px(b.x), py(b.y)]];
+        segMoving = null;
+        continue;
+      }
+      const speed = Math.hypot(b.x - a.x, b.y - a.y) / Math.max(0.001, (b.tMs - a.tMs) / 1000);
+      const moving = speed > MOVE_SPEED_MIN;
+      if (segMoving === null) segMoving = moving;
+      if (moving !== segMoving) {
+        flushSeg();
+        seg = [[px(a.x), py(a.y)]]; // overlap point
+        segMoving = moving;
+      }
+      seg.push([px(b.x), py(b.y)]);
     }
+    flushSeg();
 
     // --- markers ---------------------------------------------------------
     const first = samples[0];
     const last = samples[samples.length - 1];
-    svg.appendChild(el("circle", { cx: px(first.x), cy: py(first.y), r: 4.5, class: "movement-start" }));
-    svg.appendChild(el("circle", { cx: px(last.x), cy: py(last.y), r: 4, class: "movement-end" }));
+    svg.appendChild(
+      el("circle", { cx: px(first.x), cy: py(first.y), r: MARKER_R - 0.5, class: "movement-start" }),
+    );
+    svg.appendChild(
+      el("circle", { cx: px(last.x), cy: py(last.y), r: MARKER_R - 1, class: "movement-end" }),
+    );
 
     for (const d of deaths) {
       let best = samples[0];
