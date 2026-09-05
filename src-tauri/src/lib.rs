@@ -1,5 +1,6 @@
 mod damage;
 mod deaths;
+mod movement;
 mod parser;
 mod query;
 mod stats;
@@ -1347,6 +1348,42 @@ fn death_detail(window: WebviewWindow, unit_id: u32, death_ms: i64, lookback_ms:
     })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MovementSeriesRow {
+    start_ms: i64,
+    end_ms: i64,
+    bucket_ms: i64,
+    buckets: Vec<f64>,
+    total: f64,
+    deaths: Vec<i64>,
+}
+
+/// Distance moved over time for `unit_id` across `[start_ms, end_ms]`,
+/// split into `buckets` equal time slices -- backs the Movement character
+/// view's line graph (distance rate + death rules). `None` before parsing
+/// has finished. See `src/movement.rs`.
+#[tauri::command]
+fn movement_series(
+    window: WebviewWindow,
+    unit_id: u32,
+    start_ms: i64,
+    end_ms: i64,
+    buckets: usize,
+) -> Option<MovementSeriesRow> {
+    let log = current_log(&window)?;
+    let data = log.data()?;
+    let m = movement::series(&data.events, unit_id, start_ms, end_ms, buckets);
+    Some(MovementSeriesRow {
+        start_ms: m.start_ms,
+        end_ms: m.end_ms,
+        bucket_ms: m.bucket_ms,
+        buckets: m.buckets,
+        total: m.total,
+        deaths: m.deaths,
+    })
+}
+
 #[tauri::command]
 fn open_log_file(window: WebviewWindow) {
     pick_and_open_log(window);
@@ -1815,6 +1852,7 @@ pub fn run() {
             encounter_stats,
             spell_breakdown,
             death_detail,
+            movement_series,
             zoom
         ])
         .build(tauri::generate_context!())

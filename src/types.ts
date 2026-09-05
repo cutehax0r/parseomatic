@@ -154,6 +154,19 @@ export interface DeathDetail {
   samples: HpSample[]; // time-ordered
 }
 
+// Distance-moved-over-time for one player, from the `movement_series`
+// command (see src-tauri/src/movement.rs, docs/movement-view.md). Fine
+// equal-width buckets so the chart's hover keeps ~1s detail; the line is
+// rolled up client-side. Coordinates are ~1 unit = 1 yard.
+export interface MovementSeries {
+  startMs: number;
+  endMs: number;
+  bucketMs: number;
+  buckets: number[]; // distance travelled in each slice
+  total: number;
+  deaths: number[]; // this unit's death timestamps within the window, ascending
+}
+
 // Per-player derived stats for one encounter, from the `encounter_stats`
 // command (see src-tauri/src/stats.rs, docs/activity-and-movement.md).
 // `unitId` is a dense intern id -- resolve names/spec against the `units`

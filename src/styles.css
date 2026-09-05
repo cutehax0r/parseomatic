@@ -1759,7 +1759,8 @@ body {
   background-color: var(--text-faint);
 }
 
-.chart-legend-item[data-series="player"] i {
+.chart-legend-item[data-series="player"] i,
+.chart-legend-item[data-series="movement"] i {
   background-color: var(--accent);
 }
 
@@ -1844,6 +1845,10 @@ body {
 }
 
 .chart-line--player {
+  stroke: var(--accent);
+}
+
+.chart-line--movement {
   stroke: var(--accent);
 }
 
@@ -2004,13 +2009,6 @@ body {
 .deaths-hint[hidden],
 .movement-hint[hidden] {
   display: none;
-}
-
-.movement-subnote {
-  margin: 32px auto 0;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
 }
 
 .spell-detail {

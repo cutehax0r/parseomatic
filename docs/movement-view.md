@@ -171,55 +171,61 @@ The purple state needs a new aura-interval scan (no position involved).
 radius for > 1.5 s, drop a circle at that spot and grow it by a fixed
 increment per additional second parked — a quick read of "camped here".
 
-### 7b. Movement-over-time bar graph
+### 7b. Movement-over-time line graph — **built**
 
-Like the Overview line chart: distance moved per time bin (**1.5 s
-minimum bin**, matching `stats.rs` `BIN_MS`). Each bin coloured by its
-dominant state — green (still) / blue (moving+casting) / red (moving
-raw). Death periods marked yellow, same as 7a.
+`src/ui/widgets/movement-chart.ts`, a single-series sibling of the
+Overview `line-chart` (same geometry, axis/tick engine, roll-up-for-
+smoothness, hover). One `--accent` line of **distance rate (yd/s)** over
+time; the selected player's `UNIT_DIED` timestamps are `--chart-death`
+vertical rules. Fed by the `movement_series` command (§8); fine ~1 s
+buckets for the hover tooltip, rolled up to ~8 s draw buckets for the
+line. The view (`src/views/movement.ts`) gates like Overview/Deaths — a
+player must be picked and the range must be a bounded window, not the
+whole log — and shows total distance as the title badge.
+
+**Later:** per-bin state colouring (green still / blue moving+casting /
+red moving raw), matching 7a. Needs the cast/aura spans from §8's fuller
+payload; the shipped `movement_series` is distance-only.
 
 `stats.rs` `movement_bins[10]` (distance per encounter-decile) is the
-coarse version of this and already ships in `PlayerEncounterStats`; the
-view wants a finer, per-1.5 s series with the state split, so it needs
-its own data path (§8).
+coarse precomputed version, still on `PlayerEncounterStats` for the
+Overview row sparkline.
 
 ## 8. Data model / where it computes
 
-Two consumers, two paths:
-
 - **Coarse row stats** (distance, moving-%, the 10-bucket sparkline) —
-  already in the parse-time `stats.rs` pass, on `PlayerEncounterStats`.
-  Nothing new.
-- **The path polyline + fine movement series** — a dedicated backend
-  command, e.g. `movement_path(encounterIndex, unitId)`, returning the
-  ordered samples for that unit:
+  in the parse-time `stats.rs` pass, on `PlayerEncounterStats`. Nothing
+  new.
+- **The line graph — `movement_series` command** (`src-tauri/src/movement.rs`,
+  **built**). A live windowed scan (the range is UI-picked), same shape
+  as `spell_breakdown` / `death_detail`:
 
   ```
-  MovementPath {
-      map_boxes: Vec<{ ui_map_id, x0, x1, y0, y1 }>,   // from MAP_CHANGE
-      samples: Vec<{ t_ms, x, y }>,                    // pos_unit == unitId, time order
-      casts:   Vec<{ start_ms, end_ms }>,              // for the blue state
-      boss_debuffs: Vec<{ start_ms, end_ms }>,         // for the purple state
-      deaths:  Vec<{ died_ms, revived_ms? }>,
+  MovementSeries {
+      start_ms, end_ms, bucket_ms: i64,
+      buckets: Vec<f64>,   // distance (~yd) per equal time slice; pos_unit(row) == unitId
+      total:   f64,
+      deaths:  Vec<i64>,   // this unit's UNIT_DIED timestamps in the window
   }
   ```
 
-  One scan of the encounter window picking `pos_unit(row) == unitId`,
-  plus the cast/aura/death spans (the pass in `stats.rs` already derives
-  most of these). Cache it per `(encounterIndex, unitId)` like
-  `encounter_stats` / `spell_breakdown` already are. Client does the
-  binning, interpolation, colour classification, and downsampling for
-  the plot.
+  `query::window` binary-searches the row range, then one linear pass
+  walking `hypot` between consecutive `pos_unit == unitId` samples
+  (`dt > MOVE_GAP_MS` steps skipped), binned by `query.rs` bucket maths.
+  Bucket count matches the Overview chart (~1/s, capped 800). Fetched +
+  cached client-side in `src/ui/movement-series.ts` (keyed
+  `unitId:start:end:buckets`, cleared on log change), like the other
+  dedicated commands.
 
-  A pure-client alternative (query `raw_events` for source=player +
-  target=player, read the `position` field, merge) works for a first
-  cut — the raw row already carries `position` — but re-does the
-  `pos_unit` logic in TS and can't see cast/aura spans cheaply. Prefer
-  the command.
+- **The path polyline (§7a, not built)** will want a fuller payload —
+  the ordered `(t, x, y)` samples plus map boxes and cast / boss-debuff
+  spans for the colour states. Either extend `movement_series` or add a
+  `movement_path(encounterIndex, unitId)` sibling; the cast/death spans
+  are already derived in `stats.rs`.
 
 ## 9. Raid view (later)
 
-Same `movement_path` shape, all players at once, drawn on the shared
+Same shape, all players at once, drawn on the shared
 map box — a heatmap or spaghetti plot with the scrubber. The
 "wrong for the player" outgoing-damage rows are a bonus here: every
 player's hits on the boss agree on the **boss's** coordinates each tick,

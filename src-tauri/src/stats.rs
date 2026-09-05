@@ -23,7 +23,8 @@ use crate::parser::reports::Encounter;
 const BIN_MS: i64 = 1500;
 /// Ignore a position delta spanning a bigger time gap than this -- a gap
 /// in the log, a teleport, or a phase transition, not real running.
-const MOVE_GAP_MS: i64 = 5000;
+/// Shared with `movement.rs` (the live series for the Movement view).
+pub(crate) const MOVE_GAP_MS: i64 = 5000;
 /// World-units/sec below which a step counts as standing still, not moving.
 const MOVE_SPEED_MIN: f64 = 1.0;
 /// A single step contributes at most this much to "moving time" (guards

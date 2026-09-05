@@ -18,6 +18,7 @@ import { query, invalidateQueryCache, type QuerySpec } from "./query";
 import { invalidateEncounterStatsCache } from "./encounter-stats";
 import { invalidateSpellBreakdownCache } from "./spell-breakdown";
 import { invalidateDeathDetailCache } from "./death-detail";
+import { invalidateMovementSeriesCache } from "./movement-series";
 
 // ---- Shared stores -----------------------------------------------------
 //
@@ -87,6 +88,7 @@ export function setLogData(next: LogData): void {
   invalidateEncounterStatsCache();
   invalidateSpellBreakdownCache();
   invalidateDeathDetailCache();
+  invalidateMovementSeriesCache();
   setSelectedPlayer(null); // a new log's roster is different -- drop the pick
   for (const fn of logDataSubs) fn(next);
 }
