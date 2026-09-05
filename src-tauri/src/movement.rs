@@ -21,6 +21,14 @@ use crate::parser::intern::NO_UNIT;
 use crate::query;
 use crate::stats::MOVE_GAP_MS;
 
+/// One `(t, x, y)` fix for the unit -- an event that carried the unit's
+/// own advanced-block position, in file order.
+pub struct Sample {
+    pub t_ms: i64,
+    pub x: f32,
+    pub y: f32,
+}
+
 pub struct MovementSeries {
     pub start_ms: i64,
     pub end_ms: i64,
@@ -33,15 +41,26 @@ pub struct MovementSeries {
     pub total: f64,
     /// This unit's `UNIT_DIED` timestamps within the window, ascending.
     pub deaths: Vec<i64>,
+    /// Ordered `(t, x, y)` fixes for the top-down path plot -- every event
+    /// in the window that carried this unit's own position.
+    pub samples: Vec<Sample>,
+    /// Playable-area bounding box `[x0, x1, y0, y1]` from the `MAP_CHANGE`
+    /// in effect at the window (corners are NOT sorted -- see
+    /// `docs/movement-view.md` §5). `None` if no `MAP_CHANGE` precedes the
+    /// window's end (the plot then auto-fits to the samples).
+    pub map_box: Option<[f32; 4]>,
 }
 
 /// Walk the positioned events that describe `unit_id` in
 /// `[start_ms, end_ms]`, summing straight-line distance between
-/// consecutive samples into `bucket_count` equal slices. A step spanning
-/// a gap longer than `MOVE_GAP_MS` (a log gap, a wipe reset, a phase
-/// teleport) is skipped rather than counted as a very long run.
+/// consecutive samples into `bucket_count` equal slices and collecting
+/// the raw `(t, x, y)` fixes for the path plot. A step spanning a gap
+/// longer than `MOVE_GAP_MS` (a log gap, a wipe reset, a phase teleport)
+/// doesn't count toward distance, but the sample is still recorded so
+/// the path can break across it. `mmap` resolves the `MAP_CHANGE` box.
 pub fn series(
     events: &EventStore,
+    mmap: &[u8],
     unit_id: u32,
     start_ms: i64,
     end_ms: i64,
@@ -56,12 +75,33 @@ pub fn series(
         buckets: vec![0.0; count],
         total: 0.0,
         deaths: Vec::new(),
+        samples: Vec::new(),
+        map_box: None,
     };
     if unit_id == NO_UNIT || end_ms <= start_ms {
         return out;
     }
 
     let (lo, hi) = query::window(events, start_ms, end_ms);
+
+    // The MAP_CHANGE in effect at the window: the most recent one at or
+    // before `hi`. Scan backward and stop at the first hit -- it's
+    // normally in the trash span just before the pull, a few thousand
+    // rows back at most.
+    for row in (0..hi).rev() {
+        if !matches!(events.kind[row], LineKind::Standalone(StandaloneKind::MapChange)) {
+            continue;
+        }
+        let raw = events.raw_fields(row);
+        // raw_fields keeps the subevent name at [0]:
+        // ["MAP_CHANGE", uiMapID, name, x0, x1, y0, y1]
+        let f = |i: usize| raw.get(i).and_then(|s| s.resolve_str(mmap).parse::<f32>().ok());
+        if let (Some(x0), Some(x1), Some(y0), Some(y1)) = (f(3), f(4), f(5), f(6)) {
+            out.map_box = Some([x0, x1, y0, y1]);
+        }
+        break;
+    }
+
     let mut last: Option<(i64, f32, f32)> = None;
     for row in lo..hi {
         let ts = events.timestamp_ms[row];
@@ -90,6 +130,7 @@ pub fn series(
             }
         }
         last = Some((ts, x, y));
+        out.samples.push(Sample { t_ms: ts, x, y });
     }
     out
 }
@@ -126,7 +167,7 @@ mod tests {
         let unit = store.source_unit[0];
         assert_ne!(unit, NO_UNIT);
         let _ = &tables;
-        let s = series(&store, unit, store.timestamp_ms[0], store.timestamp_ms[2], 2);
+        let s = series(&store, &[], unit, store.timestamp_ms[0], store.timestamp_ms[2], 2);
         assert!((s.total - 2.0).abs() < 1e-6, "two 1-unit steps -> total 2, got {}", s.total);
         assert!((s.buckets.iter().sum::<f64>() - 2.0).abs() < 1e-6);
     }
@@ -140,7 +181,7 @@ mod tests {
                    500.00,500.00,2607,0,93,10,10,-1,1,0,0,0,nil,nil,ST";
         let (_tables, store) = store_from(&[dmg, dmg]);
         let caster = store.source_unit[0];
-        let s = series(&store, caster, store.timestamp_ms[0], store.timestamp_ms[1] + 1, 2);
+        let s = series(&store, &[], caster, store.timestamp_ms[0], store.timestamp_ms[1] + 1, 2);
         assert_eq!(s.total, 0.0, "the caster never moved; the boss's coords must not count");
     }
 
@@ -151,7 +192,43 @@ mod tests {
         ]);
         let dead = store.dest_unit[0];
         assert_ne!(dead, NO_UNIT);
-        let s = series(&store, dead, store.timestamp_ms[0] - 1, store.timestamp_ms[0] + 1, 1);
+        let s = series(&store, &[], dead, store.timestamp_ms[0] - 1, store.timestamp_ms[0] + 1, 1);
         assert_eq!(s.deaths, vec![store.timestamp_ms[0]]);
+    }
+
+    // One shared buffer so the MAP_CHANGE row's raw-field spans stay
+    // valid for `resolve_str`.
+    #[test]
+    fn collects_samples_and_the_map_box() {
+        let cast = |t: &str, xy: &str| {
+            format!(
+                "9/3/2026 19:23:{t}-6  SPELL_CAST_SUCCESS,Player-1-1,\"Mv-R-US\",0x512,0x0,\
+                 0000000000000000,nil,0x80000000,0x80000000,100,\"Spell\",0x1,\
+                 Player-1-1,0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,{xy},2607,0,1"
+            )
+        };
+        let lines = [
+            "9/3/2026 19:23:00.000-6  MAP_CHANGE,2607,\"The Venomous Abyss\",1088.000000,410.000000,508.500000,-508.500000".to_string(),
+            cast("01.000", "10.0,20.0"),
+            cast("02.000", "13.0,24.0"),
+        ];
+        let data = lines.join("\n").into_bytes();
+        let mut tables = InternTables::default();
+        let mut store = EventStore::default();
+        let mut off = 0usize;
+        for line in data.split(|&b| b == b'\n') {
+            parse_line(&data, off, line, &mut tables, &mut store);
+            off += line.len() + 1;
+        }
+
+        let unit = store.source_unit[1];
+        assert_ne!(unit, NO_UNIT);
+        let s = series(&store, &data, unit, store.timestamp_ms[0], store.timestamp_ms[2] + 1, 2);
+        assert_eq!(s.samples.len(), 2);
+        assert_eq!((s.samples[0].x, s.samples[0].y), (10.0, 20.0));
+        assert_eq!(s.samples[1].t_ms, store.timestamp_ms[2]);
+        assert_eq!(s.map_box, Some([1088.0, 410.0, 508.5, -508.5]));
+        // 3-4-5 triangle between the two fixes.
+        assert!((s.total - 5.0).abs() < 1e-6, "got {}", s.total);
     }
 }

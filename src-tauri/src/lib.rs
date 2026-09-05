@@ -1350,6 +1350,14 @@ fn death_detail(window: WebviewWindow, unit_id: u32, death_ms: i64, lookback_ms:
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct MovementSampleRow {
+    t_ms: i64,
+    x: f32,
+    y: f32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct MovementSeriesRow {
     start_ms: i64,
     end_ms: i64,
@@ -1357,12 +1365,17 @@ struct MovementSeriesRow {
     buckets: Vec<f64>,
     total: f64,
     deaths: Vec<i64>,
+    /// Ordered `(t, x, y)` fixes for the top-down path plot.
+    samples: Vec<MovementSampleRow>,
+    /// `MAP_CHANGE` box `[x0, x1, y0, y1]` (corners unsorted), or `null`.
+    map_box: Option<[f32; 4]>,
 }
 
-/// Distance moved over time for `unit_id` across `[start_ms, end_ms]`,
-/// split into `buckets` equal time slices -- backs the Movement character
-/// view's line graph (distance rate + death rules). `None` before parsing
-/// has finished. See `src/movement.rs`.
+/// Movement for `unit_id` across `[start_ms, end_ms]` -- distance binned
+/// into `buckets` equal time slices (the line graph), plus the ordered
+/// position fixes and the `MAP_CHANGE` box (the top-down path plot), and
+/// the unit's death timestamps. `None` before parsing has finished. See
+/// `src/movement.rs`.
 #[tauri::command]
 fn movement_series(
     window: WebviewWindow,
@@ -1373,7 +1386,7 @@ fn movement_series(
 ) -> Option<MovementSeriesRow> {
     let log = current_log(&window)?;
     let data = log.data()?;
-    let m = movement::series(&data.events, unit_id, start_ms, end_ms, buckets);
+    let m = movement::series(&data.events, log.mmap_bytes(), unit_id, start_ms, end_ms, buckets);
     Some(MovementSeriesRow {
         start_ms: m.start_ms,
         end_ms: m.end_ms,
@@ -1381,6 +1394,12 @@ fn movement_series(
         buckets: m.buckets,
         total: m.total,
         deaths: m.deaths,
+        samples: m
+            .samples
+            .into_iter()
+            .map(|s| MovementSampleRow { t_ms: s.t_ms, x: s.x, y: s.y })
+            .collect(),
+        map_box: m.map_box,
     })
 }
 

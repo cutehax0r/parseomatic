@@ -1940,6 +1940,86 @@ body {
   margin-right: 5px;
 }
 
+/* movement-path -- top-down "radar" of the player's route. */
+.movement-path .chart-plot {
+  /* tooltip is positioned by both left AND top inside the plot */
+  overflow: hidden;
+}
+
+.movement-path .chart-plot svg {
+  height: 380px; /* keep in sync with H in movement-path.ts */
+}
+
+.movement-path .chart-tooltip {
+  transform: translate(-50%, calc(-100% - 8px));
+  top: 0; /* widget sets an explicit top; override the shared `top: 6px` */
+}
+
+.movement-path-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.movement-path-empty[hidden] {
+  display: none;
+}
+
+.movement-frame {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.movement-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  opacity: 0.4;
+}
+
+.movement-trail {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.movement-start {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+}
+
+.movement-end {
+  fill: var(--accent);
+}
+
+.movement-death {
+  stroke: var(--chart-death);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.movement-hoverdot {
+  fill: var(--accent);
+}
+
+.chart-legend-item[data-series="start"] i {
+  background: none;
+  border: 1.5px solid var(--text-muted);
+  border-radius: 50%;
+}
+
+.chart-legend-item[data-series="end"] i {
+  background-color: var(--accent);
+  border-radius: 50%;
+}
+
 /* area-chart -- one translucent band per stacked series, `--c` set
    per-band by the widget. */
 .chart-area {

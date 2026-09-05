@@ -23,6 +23,13 @@ const spec: NodeSpec = {
     { kind: "widget", type: "encounter-title", id: "title", props: { name: "", badge: "" } },
     {
       kind: "widget",
+      type: "movement-path",
+      id: "path",
+      span: 1,
+      props: { samples: [], deaths: [], startMs: 0, mapBox: null },
+    },
+    {
+      kind: "widget",
       type: "movement-chart",
       id: "chart",
       span: 1,
@@ -96,6 +103,12 @@ async function paint(): Promise<void> {
   built.get("title")?.update({
     name: formatUnitName(unit),
     badge: `${formatCompact(series.total)} yd`,
+  });
+  built.get("path")?.update({
+    samples: series.samples,
+    deaths,
+    startMs: series.startMs,
+    mapBox: series.mapBox,
   });
   built.get("chart")?.update({
     buckets,

@@ -148,28 +148,37 @@ Environmental field offset in `parse_composed`.
 
 ## 7. The two graphs
 
-### 7a. Top-down path plot
+### 7a. Top-down path plot — **built (first cut)**
 
-The `(t, x, y)` polyline for the selected player, drawn over the map
-box from §5, optionally animated with a playback scrubber.
+`src/ui/widgets/movement-path.ts`: the selected player's `(x, y)` fixes
+drawn as a smooth **Catmull-Rom curve** (open, no value-band clamp —
+this is a spatial curve) on a faint world-coordinate grid. Square plot
+region, one uniform scale for both axes so the route shape isn't
+distorted; screen +x right, +y up.
 
-Segment colouring, by state between consecutive samples:
+- **Framing:** the `MAP_CHANGE` box (§5, corners min/max-normalised) when
+  the window has one — a stable frame across pulls on the same map —
+  else an auto-fit to the fixes with an 8 % pad and a 20-yard minimum
+  span so a player who barely moved isn't magnified into noise.
+- **Grid:** lines at round world coordinates (`niceStep(worldSpan/6)`),
+  clipped to the region, plus a frame rect.
+- **Trail direction:** the curve is drawn in ~8-point chunks with
+  `stroke-opacity` ramping 0.22 → 1.0 across `[startMs, lastFix]`, so
+  old route reads faint and recent route bright — direction without an
+  animation.
+- **Markers:** hollow ring at the first fix, filled dot at the last,
+  `--chart-death` crosses at the fix nearest each `UNIT_DIED`.
+- **Gaps:** consecutive fixes more than `GAP_MS` (5 s) apart break the
+  trail rather than drawing a long false segment across a wipe reset /
+  phase teleport.
+- Hover snaps to the nearest fix and shows its elapsed time.
 
-| State | Colour | Backing data |
-|---|---|---|
-| standing still | green | step speed `< MOVE_SPEED_MIN` (1 unit/s) |
-| moving, doing nothing | red | speed ≥ threshold, no cast open |
-| moving while casting | blue | step interval overlaps a `SPELL_CAST_START`…`SPELL_CAST_SUCCESS`/`_FAILED` span for that player |
-| moving with a boss debuff | purple | step interval overlaps an aura interval whose caster is an enemy unit; exact debuff list TBD |
-| dead | yellow dot at the spot | `UNIT_DIED` (dest = player) → next `SPELL_RESURRECT`; `stats.rs` already tracks these as `dead_spans` |
-
-`stats.rs` already builds a per-player cast timeline (`CastEvent`:
-Start / Success / Failed / Empower / Died), which the blue state reuses.
-The purple state needs a new aura-interval scan (no position involved).
-
-**Standstill markers:** where consecutive samples stay within a small
-radius for > 1.5 s, drop a circle at that spot and grow it by a fixed
-increment per additional second parked — a quick read of "camped here".
+**Still to add:** per-segment **state colouring** (green still / blue
+moving+casting / red moving raw / purple boss-debuff) — needs the cast
+and aura spans, which the shipped `movement_series` doesn't carry yet
+(`stats.rs` already derives the cast timeline as `CastEvent`; the aura
+spans need a new scan). A **playback scrubber** and the growing
+"camped here" standstill circles are also future.
 
 ### 7b. Movement-over-time line graph — **built**
 
@@ -192,8 +201,8 @@ player must be picked and the range must be a bounded window, not the
 whole log — and shows total distance as the title badge.
 
 **Later:** per-bin state colouring (green still / blue moving+casting /
-red moving raw), matching 7a. Needs the cast/aura spans from §8's fuller
-payload; the shipped `movement_series` is distance-only.
+red moving raw), matching 7a. Needs the cast/aura spans (§8); the
+shipped `movement_series` is distance + fixes only.
 
 `stats.rs` `movement_bins[10]` (distance per encounter-decile) is the
 coarse precomputed version, still on `PlayerEncounterStats` for the
@@ -204,32 +213,35 @@ Overview row sparkline.
 - **Coarse row stats** (distance, moving-%, the 10-bucket sparkline) —
   in the parse-time `stats.rs` pass, on `PlayerEncounterStats`. Nothing
   new.
-- **The line graph — `movement_series` command** (`src-tauri/src/movement.rs`,
-  **built**). A live windowed scan (the range is UI-picked), same shape
-  as `spell_breakdown` / `death_detail`:
+- **`movement_series` command** (`src-tauri/src/movement.rs`, **built**) —
+  one live windowed scan feeding both graphs. Same shape as
+  `spell_breakdown` / `death_detail`:
 
   ```
   MovementSeries {
       start_ms, end_ms, bucket_ms: i64,
-      buckets: Vec<f64>,   // distance (~yd) per equal time slice; pos_unit(row) == unitId
+      buckets: Vec<f64>,        // distance (~yd) per equal time slice -- the line graph
       total:   f64,
-      deaths:  Vec<i64>,   // this unit's UNIT_DIED timestamps in the window
+      deaths:  Vec<i64>,        // this unit's UNIT_DIED timestamps in the window
+      samples: Vec<Sample>,     // ordered (t_ms, x, y) fixes -- the path plot
+      map_box: Option<[f32; 4]>,// MAP_CHANGE [x0,x1,y0,y1] (corners unsorted)
   }
   ```
 
-  `query::window` binary-searches the row range, then one linear pass
-  walking `hypot` between consecutive `pos_unit == unitId` samples
-  (`dt > MOVE_GAP_MS` steps skipped), binned by `query.rs` bucket maths.
-  Bucket count matches the Overview chart (~1/s, capped 800). Fetched +
-  cached client-side in `src/ui/movement-series.ts` (keyed
-  `unitId:start:end:buckets`, cleared on log change), like the other
-  dedicated commands.
+  `query::window` binary-searches the row range, then one linear pass:
+  `hypot` between consecutive `pos_unit == unitId` fixes into
+  `query.rs`-style buckets (`dt > MOVE_GAP_MS` steps don't count toward
+  distance but the fix is still recorded), and each fix pushed to
+  `samples`. `map_box` comes from a backward scan for the nearest
+  `MAP_CHANGE` at/before the window (raw fields 3–6, resolved against
+  the mmap). Bucket count matches the Overview chart (~1/s, capped 800).
+  Fetched + cached in `src/ui/movement-series.ts` (keyed
+  `unitId:start:end:buckets`, cleared on log change).
 
-- **The path polyline (§7a, not built)** will want a fuller payload —
-  the ordered `(t, x, y)` samples plus map boxes and cast / boss-debuff
-  spans for the colour states. Either extend `movement_series` or add a
-  `movement_path(encounterIndex, unitId)` sibling; the cast/death spans
-  are already derived in `stats.rs`.
+- **Still missing for §7a's colour states:** the cast spans
+  (`SPELL_CAST_START`…`_SUCCESS`) and enemy-aura spans. Add them to
+  `movement_series` when building that; `stats.rs` already derives the
+  cast timeline as `CastEvent`.
 
 ## 9. Raid view (later)
 
