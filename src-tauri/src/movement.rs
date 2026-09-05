@@ -16,7 +16,7 @@
 //! `query_events` bucketed series. The unit's death timestamps within the
 //! window ride along for the chart's death rules.
 
-use crate::parser::event::{EventStore, LineKind, StandaloneKind};
+use crate::parser::event::{EventStore, LineKind, StandaloneKind, Suffix};
 use crate::parser::intern::{InternTables, UnitKind, NO_UNIT};
 use crate::query;
 use crate::stats::MOVE_GAP_MS;
@@ -29,6 +29,14 @@ pub struct Sample {
     pub y: f32,
 }
 
+/// One death interval for the unit: `UNIT_DIED` -> the `SPELL_RESURRECT`
+/// that brought them back, or `None` if they were still dead at the
+/// window's end.
+pub struct DeathSpan {
+    pub start_ms: i64,
+    pub end_ms: Option<i64>,
+}
+
 pub struct MovementSeries {
     pub start_ms: i64,
     pub end_ms: i64,
@@ -39,8 +47,8 @@ pub struct MovementSeries {
     pub buckets: Vec<f64>,
     /// Total distance over the whole window.
     pub total: f64,
-    /// This unit's `UNIT_DIED` timestamps within the window, ascending.
-    pub deaths: Vec<i64>,
+    /// This unit's death intervals within the window, ascending.
+    pub death_spans: Vec<DeathSpan>,
     /// Ordered `(t, x, y)` fixes for the top-down path plot -- every event
     /// in the window that carried this unit's own position.
     pub samples: Vec<Sample>,
@@ -82,7 +90,7 @@ pub fn series(
         bucket_ms: width,
         buckets: vec![0.0; count],
         total: 0.0,
-        deaths: Vec::new(),
+        death_spans: Vec::new(),
         samples: Vec::new(),
         map_box: None,
         fit_box: None,
@@ -120,13 +128,21 @@ pub fn series(
         }
         if let LineKind::Standalone(StandaloneKind::UnitDied) = events.kind[row] {
             if events.dest_unit[row] == unit_id {
-                out.deaths.push(ts);
+                out.death_spans.push(DeathSpan { start_ms: ts, end_ms: None });
             }
             continue;
         }
-        // `pos_unit` already screens out rows with no position (NaN ->
-        // NO_UNIT), so a non-NO_UNIT result guarantees a real coord pair.
-        let pos_unit = events.pos_unit(row);
+        // A res closes the most recent still-open death span.
+        if matches!(events.kind[row], LineKind::Composed { suffix: Suffix::Resurrect, .. })
+            && events.dest_unit[row] == unit_id
+        {
+            if let Some(span) = out.death_spans.last_mut() {
+                span.end_ms.get_or_insert(ts);
+            }
+        }
+        // `pos_unit` is `NO_UNIT` exactly when the row has no position, so
+        // a non-NO_UNIT value guarantees a real coord pair.
+        let pos_unit = events.pos_unit[row];
         if pos_unit == NO_UNIT {
             continue;
         }
@@ -210,14 +226,16 @@ mod tests {
     }
 
     #[test]
-    fn collects_unit_died_timestamps_for_the_unit() {
+    fn opens_a_death_span_on_unit_died_for_the_unit() {
         let (tables, store) = store_from(&[
             "UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,Player-1-1,\"Mv-R-US\",0x512,0x0,0",
         ]);
         let dead = store.dest_unit[0];
         assert_ne!(dead, NO_UNIT);
         let s = series(&store, &tables, &[], dead, store.timestamp_ms[0] - 1, store.timestamp_ms[0] + 1, 1);
-        assert_eq!(s.deaths, vec![store.timestamp_ms[0]]);
+        assert_eq!(s.death_spans.len(), 1);
+        assert_eq!(s.death_spans[0].start_ms, store.timestamp_ms[0]);
+        assert_eq!(s.death_spans[0].end_ms, None); // no res -> stays open
     }
 
     // One shared buffer so the MAP_CHANGE row's raw-field spans stay

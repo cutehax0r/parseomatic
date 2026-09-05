@@ -34,7 +34,9 @@ and which unit that is depends on the sub-event. Checked against
 | Event | `infoGUID` = | the coords are |
 |---|---|---|
 | `SPELL_CAST_SUCCESS` | **source** (caster) | the casting player's own spot — even when the spell lands on someone else |
-| `SPELL_DAMAGE`, `SPELL_PERIODIC_DAMAGE`, `RANGE_DAMAGE`, `SWING_DAMAGE` | **dest** | the target that was hit |
+| **`SWING_DAMAGE`** (the swing) | **source** (attacker) | the attacker's spot |
+| **`SWING_DAMAGE_LANDED`** (the resolved hit) | **dest** (victim) | the victim's spot |
+| `SPELL_DAMAGE`, `SPELL_PERIODIC_DAMAGE`, `RANGE_DAMAGE` | **dest** | the target that was hit |
 | `SPELL_HEAL`, `SPELL_PERIODIC_HEAL` | **dest** | the heal recipient |
 | `SPELL_ENERGIZE` / `_DRAIN` / `_LEECH` | **dest** | the unit gaining/losing power (usually self) |
 | `ENVIRONMENTAL_DAMAGE` | dest (victim) | the victim — but the field order is irregular in current logs, see §6 |
@@ -44,8 +46,18 @@ and which unit that is depends on the sub-event. Checked against
 Evidence: in one 1-second slice, 20+ players' `SPELL_DAMAGE` lines onto
 the boss all carry the identical coords `387.14, 403.95` (the boss's
 spot), while each of those players' own `SPELL_CAST_SUCCESS` in the same
-second carries their own distinct coords. Boss→player `SPELL_DAMAGE`
-carries the *player's* coords.
+second carries their own distinct coords. And in the Ula'tek kill
+(`WoWCombatLog-090426_190426.txt`) the boss meleeing a player emits a
+`SWING_DAMAGE` at the **boss's** coords and a same-instant
+`SWING_DAMAGE_LANDED` at the **player's** — 27 yd apart.
+
+**`SWING_DAMAGE` vs `SWING_DAMAGE_LANDED` is the trap:** the parser
+classifies both to `{Swing, Damage}`, so `pos_unit` can't be a `match`
+on `kind` — it's a promoted column (§3). Before that, every boss melee
+on a player planted a phantom fix at the boss's location, ~27 yd from
+the player, dozens of times a minute: the player's trail jittered
+between their real spot and the boss's, their distance line inflated
+~50%, and it read as "stuck near the boss / stops moving".
 
 Consequences for anything reading position:
 
@@ -59,24 +71,20 @@ Consequences for anything reading position:
   advanced block. Boss-debuff colouring (§7) is a time-only interval
   query over `AURA_APPLIED`→`AURA_REMOVED`, independent of x/y.
 
-## 3. `EventStore::pos_unit(row)`
+## 3. `EventStore.pos_unit` — a promoted column
 
-Resolves the unit a row's `pos_x`/`pos_y` belong to:
+`pos_unit: Vec<u32>` alongside `pos_x`/`pos_y`: the interned id of the
+row's `infoGUID`, filled at parse time by `parser::event::resolve_pos_unit`
+(compare the `infoGUID` string to the line's own source / dest GUIDs and
+reuse the id already interned for whichever matches; the rare third
+party — a pet proc, a vehicle passenger — is interned by GUID).
+`NO_UNIT` when the row has no position.
 
-```rust
-pub fn pos_unit(&self, row: usize) -> u32 {
-    if self.pos_x[row].is_nan() { return NO_UNIT; }
-    match self.kind[row] {
-        LineKind::Composed { suffix: Suffix::CastSuccess, .. } => self.source_unit[row],
-        _ => self.dest_unit[row],
-    }
-}
-```
-
-Zero new storage — it's derivable from `kind` + the existing
-`source_unit` / `dest_unit` columns. A dedicated `pos_unit: Vec<u32>`
-column (interned `infoGUID`, ~4 bytes/event) would be more robust if the
-`infoGUID` rule ever drifts, but isn't worth the memory today.
+It has to be a column, not a `match` on `kind`, because `SWING_DAMAGE`
+and `SWING_DAMAGE_LANDED` classify identically yet carry opposite units'
+coords (§2). ~4 bytes/event (~7 MB on the 547 MB fixture); parse stays
+~0.2 s warm (three short GUID string compares per advanced composed
+event, short-circuiting).
 
 **Bug this fixed:** the `stats.rs` per-encounter movement pass keyed
 distance off `is_player(source_unit)` and treated `pos_x` as the
@@ -91,7 +99,7 @@ position matters a lot.)
 
 ## 4. Reconstructing one player's track
 
-Merge, in timestamp order, the rows where `pos_unit(row) == player`:
+Merge, in timestamp order, the rows where `pos_unit[row] == player`:
 
 - every `SPELL_CAST_SUCCESS` they cast (the densest source — a busy
   player emits 1–3/s),

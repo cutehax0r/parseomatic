@@ -163,13 +163,18 @@ export interface MovementSample {
   y: number;
 }
 
+export interface MovementDeathSpan {
+  startMs: number;
+  endMs: number | null; // null = still dead at the window's end
+}
+
 export interface MovementSeries {
   startMs: number;
   endMs: number;
   bucketMs: number;
   buckets: number[]; // distance travelled in each equal time slice (the line graph)
   total: number;
-  deaths: number[]; // this unit's death timestamps within the window, ascending
+  deathSpans: MovementDeathSpan[]; // this unit's death intervals within the window
   samples: MovementSample[]; // ordered position fixes (the top-down path plot)
   // MAP_CHANGE playable-area box [x0, x1, y0, y1] -- corners NOT sorted.
   // Kept for reference; the path plot frames on `fitBox`.

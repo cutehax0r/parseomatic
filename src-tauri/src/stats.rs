@@ -299,7 +299,7 @@ fn build_one(
         // holding still while the boss's coordinates stream past every
         // `SPELL_DAMAGE` line (`docs/movement-view.md`). Player only, no
         // pet fold -- a pet's position isn't its owner's.
-        let pos_unit = events.pos_unit(row);
+        let pos_unit = events.pos_unit[row];
         if pos_unit != NO_UNIT && is_player(pos_unit) {
             let (x, y) = (events.pos_x[row], events.pos_y[row]);
             let a = accs.entry(pos_unit).or_default();

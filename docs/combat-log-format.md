@@ -197,7 +197,7 @@ The block is inserted between the prefix params and the suffix params. **Presenc
 
 | # | Field | Type | Example (from fixture) | Notes |
 |---|---|---|---|---|
-| 1 | infoGUID | GUID string | `Creature-0-4227-1592-26103-238693-0000657958` | GUID of the unit these advanced params describe. For `SWING_DAMAGE`/`SPELL_DAMAGE` this was the **dest** in every fixture sample; wiki's "source for SWING_DAMAGE" claim wasn't reproduced — verify further before trusting either rule universally |
+| 1 | infoGUID | GUID string | `Creature-0-4227-1592-26103-238693-0000657958` | GUID of the unit these advanced params describe — **and which of source/dest it is varies by sub-event, confirmed against real fixtures:** `SWING_DAMAGE` (the swing) = **source** (attacker), but `SWING_DAMAGE_LANDED` (the resolved hit) = **dest** (victim); `SPELL_DAMAGE`/`SPELL_PERIODIC_*`/`RANGE_DAMAGE`/`SPELL_HEAL` = **dest**; `SPELL_CAST_SUCCESS` = **source** (caster, even for a targeted cast). The wiki's "source for SWING_DAMAGE" was right and the earlier "dest in every sample" note was reproducing only `_LANDED` and `SPELL_*`. The parser can't derive this from `kind` (it collapses `SWING_DAMAGE`/`_LANDED` to one), so `EventStore` promotes a `pos_unit` column resolved from this field at parse time — see `parser::event::resolve_pos_unit` |
 | 2 | ownerGUID | GUID string or zero-GUID | `0000000000000000` | owner GUID for pets/minions |
 | 3 | currentHP | number | `608368408` | modern retail HP pools are large (post-squish-removal numbers) |
 | 4 | maxHP | number | `608376450` | |

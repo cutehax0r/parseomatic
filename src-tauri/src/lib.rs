@@ -1358,13 +1358,22 @@ struct MovementSampleRow {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct MovementDeathSpanRow {
+    start_ms: i64,
+    /// `null` if still dead at the window's end.
+    end_ms: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct MovementSeriesRow {
     start_ms: i64,
     end_ms: i64,
     bucket_ms: i64,
     buckets: Vec<f64>,
     total: f64,
-    deaths: Vec<i64>,
+    /// This unit's death intervals within the window.
+    death_spans: Vec<MovementDeathSpanRow>,
     /// Ordered `(t, x, y)` fixes for the top-down path plot.
     samples: Vec<MovementSampleRow>,
     /// `MAP_CHANGE` box `[x0, x1, y0, y1]` (corners unsorted), or `null`.
@@ -1404,7 +1413,11 @@ fn movement_series(
         bucket_ms: m.bucket_ms,
         buckets: m.buckets,
         total: m.total,
-        deaths: m.deaths,
+        death_spans: m
+            .death_spans
+            .into_iter()
+            .map(|d| MovementDeathSpanRow { start_ms: d.start_ms, end_ms: d.end_ms })
+            .collect(),
         samples: m
             .samples
             .into_iter()

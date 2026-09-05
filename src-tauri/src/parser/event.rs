@@ -256,11 +256,20 @@ pub struct EventStore {
     /// metrics (`docs/activity-and-movement.md`, `docs/movement-view.md`)
     /// walk it per event and can't afford to re-parse the raw span each
     /// time.
-    ///
-    /// This is `infoGUID`'s position, **not always the source's** -- see
-    /// `pos_unit` for which unit each row describes.
     pub pos_x: Vec<f32>,
     pub pos_y: Vec<f32>,
+    /// The unit `pos_x`/`pos_y` describe -- the advanced block's
+    /// `infoGUID`, resolved to `source_unit` / `dest_unit` (or interned
+    /// afresh for the rare third-party case). `NO_UNIT` when there's no
+    /// position. **Which of source/dest `infoGUID` is varies by
+    /// sub-event and is NOT derivable from `kind`** -- `SWING_DAMAGE`
+    /// (the swing) carries the *attacker's* position while
+    /// `SWING_DAMAGE_LANDED` (the hit) carries the *victim's*, yet both
+    /// classify to `{Swing, Damage}`; `SPELL_DAMAGE` is the victim's;
+    /// `SPELL_CAST_SUCCESS` the caster's. Reading it wrong plants a
+    /// player's boss-melee events at the boss's coordinates. Hence a
+    /// promoted column rather than a `match` on `kind`.
+    pub pos_unit: Vec<u32>,
     raw_field_ranges: Vec<(u32, u32)>,
     raw_field_arena: Vec<FieldSpan>,
 }
@@ -280,29 +289,6 @@ impl EventStore {
         &self.raw_field_arena[start as usize..(start + len) as usize]
     }
 
-    /// The unit `pos_x[row]`/`pos_y[row]` actually describe -- the
-    /// advanced block's `infoGUID` (`docs/combat-log-format.md` §5).
-    /// Verified against the real fixtures (`docs/movement-view.md`):
-    /// `infoGUID` is the event's **dest** for every damage / heal /
-    /// energize effect, and the **source** only for `SPELL_CAST_SUCCESS`
-    /// (the caster's own position, even when the cast lands on someone
-    /// else). Returns `NO_UNIT` when the row carries no position
-    /// (`pos_x[row]` is `NaN`), or when the relevant unit didn't intern.
-    ///
-    /// Consumers that want a *player's own* track (movement distance, the
-    /// path view) must key off this, not `source_unit` -- for outgoing
-    /// damage the source is the player standing still while the target's
-    /// coordinates stream past.
-    pub fn pos_unit(&self, row: usize) -> u32 {
-        if self.pos_x[row].is_nan() {
-            return intern::NO_UNIT;
-        }
-        match self.kind[row] {
-            LineKind::Composed { suffix: Suffix::CastSuccess, .. } => self.source_unit[row],
-            _ => self.dest_unit[row],
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
@@ -317,6 +303,7 @@ impl EventStore {
         flags: u8,
         pos_x: f32,
         pos_y: f32,
+        pos_unit: u32,
         raw_fields: &[FieldSpan],
     ) {
         self.timestamp_ms.push(timestamp_ms);
@@ -330,6 +317,7 @@ impl EventStore {
         self.flags.push(flags);
         self.pos_x.push(pos_x);
         self.pos_y.push(pos_y);
+        self.pos_unit.push(pos_unit);
         let start = self.raw_field_arena.len() as u32;
         self.raw_field_arena.extend_from_slice(raw_fields);
         self.raw_field_ranges.push((start, raw_fields.len() as u32));
@@ -348,6 +336,7 @@ impl EventStore {
             0,
             f32::NAN,
             f32::NAN,
+            intern::NO_UNIT,
             &[],
         );
     }
@@ -362,6 +351,11 @@ impl EventStore {
             }
         }
         for id in other.dest_unit.iter_mut() {
+            if *id != intern::NO_UNIT {
+                *id = remap.guids[*id as usize];
+            }
+        }
+        for id in other.pos_unit.iter_mut() {
             if *id != intern::NO_UNIT {
                 *id = remap.guids[*id as usize];
             }
@@ -390,6 +384,7 @@ impl EventStore {
         self.has_advanced.extend(other.has_advanced);
         self.pos_x.extend(other.pos_x);
         self.pos_y.extend(other.pos_y);
+        self.pos_unit.extend(other.pos_unit);
         self.amount.extend(other.amount);
         self.flags.extend(other.flags);
         self.raw_field_arena.extend(other.raw_field_arena);
@@ -745,7 +740,7 @@ fn parse_composed(
 
     let (amount, flags) = extract_damage_heal(prefix, suffix, has_advanced, raw, data);
 
-    // Source position: advanced-block indices 14/15 (`docs/combat-log-format.md`
+    // World position: advanced-block indices 14/15 (`docs/combat-log-format.md`
     // §5). `fields[after_prefix..advanced_end]` is the clean 19-field block
     // for every prefix (Environmental's leading environmentalType field is
     // already before `after_prefix`), so no per-prefix offset here --
@@ -760,6 +755,12 @@ fn parse_composed(
     } else {
         (f32::NAN, f32::NAN)
     };
+    // ...and whose position it is (advanced field 1, `infoGUID`).
+    let pos_unit = if has_advanced && !pos_x.is_nan() {
+        resolve_pos_unit(data, fields, after_prefix, source_id, dest_id, tables)
+    } else {
+        intern::NO_UNIT
+    };
 
     store.push(
         timestamp_ms,
@@ -773,8 +774,36 @@ fn parse_composed(
         flags,
         pos_x,
         pos_y,
+        pos_unit,
         raw,
     );
+}
+
+/// The interned unit id the advanced block's `infoGUID` (field 1 of the
+/// block, i.e. `fields[after_prefix]`) refers to. It's almost always
+/// exactly the line's own source or dest GUID string, so resolve against
+/// the ids already interned for those; the rare third party (a pet proc,
+/// a vehicle passenger) is interned by GUID with a placeholder name that
+/// its own named sighting fills in.
+fn resolve_pos_unit(
+    data: &[u8],
+    fields: &[FieldSpan],
+    after_prefix: usize,
+    source_id: u32,
+    dest_id: u32,
+    tables: &mut InternTables,
+) -> u32 {
+    let info = fields[after_prefix].resolve_str(data);
+    if info == fields[1].resolve_str(data) {
+        source_id
+    } else if info == fields[5].resolve_str(data) {
+        dest_id
+    } else if intern::UnitKind::from_guid(info) == intern::UnitKind::None {
+        intern::NO_UNIT
+    } else {
+        let empty = tables.strings.intern("");
+        tables.guids.intern_placeholder(info, empty, None)
+    }
 }
 
 fn push_raw_only(
@@ -796,6 +825,7 @@ fn push_raw_only(
         0,
         f32::NAN,
         f32::NAN,
+        intern::NO_UNIT,
         fields,
     );
 }
@@ -832,6 +862,7 @@ fn parse_standalone(
                 0,
                 f32::NAN,
                 f32::NAN,
+                intern::NO_UNIT,
                 &fields[9..],
             );
         }
@@ -871,6 +902,7 @@ fn parse_standalone(
                 0,
                 f32::NAN,
                 f32::NAN,
+                intern::NO_UNIT,
                 fields.get(2..).unwrap_or(&[]),
             );
         }
@@ -921,6 +953,7 @@ fn parse_emote(
         0,
         f32::NAN,
         f32::NAN,
+        intern::NO_UNIT,
         raw,
     );
 }
@@ -1121,8 +1154,8 @@ mod tests {
         ));
         assert_eq!(store.len(), 1);
         assert!(store.has_advanced[0]);
-        assert_eq!(store.pos_unit(0), store.dest_unit[0]);
-        assert_ne!(store.pos_unit(0), store.source_unit[0]);
+        assert_eq!(store.pos_unit[0], store.dest_unit[0]);
+        assert_ne!(store.pos_unit[0], store.source_unit[0]);
         assert_eq!(store.pos_x[0], 387.14);
     }
 
@@ -1141,8 +1174,8 @@ mod tests {
         ));
         assert_eq!(store.len(), 1);
         assert!(store.has_advanced[0]);
-        assert_eq!(store.pos_unit(0), store.source_unit[0]);
-        assert_ne!(store.pos_unit(0), store.dest_unit[0]);
+        assert_eq!(store.pos_unit[0], store.source_unit[0]);
+        assert_ne!(store.pos_unit[0], store.dest_unit[0]);
         assert_eq!(store.pos_x[0], 566.51);
     }
 
@@ -1154,7 +1187,39 @@ mod tests {
         ));
         assert_eq!(store.len(), 1);
         assert!(store.pos_x[0].is_nan());
-        assert_eq!(store.pos_unit(0), intern::NO_UNIT);
+        assert_eq!(store.pos_unit[0], intern::NO_UNIT);
+    }
+
+    // The one that motivated promoting `pos_unit` to a column: `SWING_DAMAGE`
+    // and `SWING_DAMAGE_LANDED` both classify to `{Swing, Damage}` but carry
+    // opposite units' positions. Real fixture lines (Ula'tek kill,
+    // WoWCombatLog-090426_190426.txt): the boss meleeing a player.
+    #[test]
+    fn swing_damage_pos_is_the_attacker_but_landed_is_the_victim() {
+        let attacker = concat!(
+            "SWING_DAMAGE,Vehicle-0-4226-3004-53831-257758-00001B8A14,\"Ula'tek\",0x10a48,0x80000000,",
+            "Player-115-089917C7,\"Sorn-Draenor-US\",0x514,0x80000002,",
+            "Vehicle-0-4226-3004-53831-257758-00001B8A14,0000000000000000,424402240,424402240,0,0,1470,0,0,0,3,0,100,0,",
+            "1599.81,-1.23,2610,3.1461,93,412129,1024580,-1,1,0,0,0,nil,nil,nil"
+        );
+        let (_, _, store) = parse(attacker);
+        // infoGUID == the boss (source) -> pos_unit is the source, coords
+        // are the boss's, NOT the player dest's.
+        assert_eq!(store.pos_unit[0], store.source_unit[0]);
+        assert_ne!(store.pos_unit[0], store.dest_unit[0]);
+        assert_eq!(store.pos_x[0], 1599.81);
+
+        let landed = concat!(
+            "SWING_DAMAGE_LANDED,Vehicle-0-4226-3004-53831-257758-00001B8A14,\"Ula'tek\",0x10a48,0x80000000,",
+            "Player-115-089917C7,\"Sorn-Draenor-US\",0x514,0x80000002,",
+            "Player-115-089917C7,0000000000000000,603931,1016060,3605,676,6236,748,105,0,0,250000,250000,0,",
+            "1573.34,3.48,2610,5.8069,301,412129,1024580,-1,1,0,0,0,nil,nil,nil"
+        );
+        let (_, _, store) = parse(landed);
+        // infoGUID == the player (dest) -> pos_unit is the dest here.
+        assert_eq!(store.pos_unit[0], store.dest_unit[0]);
+        assert_ne!(store.pos_unit[0], store.source_unit[0]);
+        assert_eq!(store.pos_x[0], 1573.34);
     }
 
     #[test]

@@ -100,7 +100,10 @@ async function paint(): Promise<void> {
     tMid: series.startMs + (i + 0.5) * series.bucketMs,
     distance,
   }));
-  const deaths: MovementChartDeath[] = series.deaths.map((t) => ({ t, label: formatUnitName(unit) }));
+  const deaths: MovementChartDeath[] = series.deathSpans.map((d) => ({
+    t: d.startMs,
+    label: formatUnitName(unit),
+  }));
 
   built.get("title")?.update({
     name: formatUnitName(unit),
