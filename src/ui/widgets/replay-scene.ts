@@ -70,6 +70,10 @@ const STACK_DIST = 0.85;
 const PLAYER_STEP = 0.1;
 const ADD_STEP = 0.25;
 
+const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+const smoothstep = (k: number): number => k * k * (3 - 2 * k);
+const lerp = (a: number, b: number, k: number): number => a + (b - a) * k;
+
 // Spawn-in: an enemy that isn't active at the window start sits
 // `SPAWN_RISE` yд above its spot at 0 opacity until `SPAWN_LEAD_MS`
 // before its first activity, then slides down + fades to full, arriving
@@ -83,9 +87,101 @@ function spawnAt(firstMs: number, t: number): { yOffset: number; opacity: number
   const lead = firstMs - t;
   if (lead <= 0) return { yOffset: 0, opacity: 1 };
   if (lead >= SPAWN_LEAD_MS) return { yOffset: SPAWN_RISE, opacity: 0 };
-  const k = lead / SPAWN_LEAD_MS; // 1 -> 0
-  const e = k * k * (3 - 2 * k);
+  const e = smoothstep(lead / SPAWN_LEAD_MS); // 1 -> 0
   return { yOffset: SPAWN_RISE * e, opacity: 1 - e };
+}
+
+// Death: squish to `DEATH_FLAT` of normal height over `DEATH_SQUISH_MS`,
+// resting a hair (`DEAD_LIFT`) above the deck -- just enough to stop
+// z-fighting. Players then stay a pancake forever (until a
+// `SPELL_RESURRECT` -- `end_ms` -- stretches them back over `REVIVE_MS`).
+// Enemies hold flat for `DEATH_HOLD_MS`, then over `DEATH_FADE_MS` fade
+// to 0 and sink `SPAWN_RISE` under the world (mirror of the spawn-in).
+const DEATH_SQUISH_MS = 300;
+const DEATH_FLAT = 1 / 8;
+const DEAD_LIFT = 0.06;
+const DEATH_HOLD_MS = 10_000;
+const DEATH_FADE_MS = 1000;
+const REVIVE_MS = 350;
+
+interface DeathPose {
+  scaleY: number; // multiplier on the shape's base y scale
+  y: number; // absolute world y for the (squished) centre
+  opacity: number;
+  visible: boolean;
+}
+
+const flatY = (size: number): number => FLOOR_LIFT + DEAD_LIFT + (DEATH_FLAT * size) / 2;
+const normalY = (size: number): number => FLOOR_LIFT + HOVER + size / 2;
+
+// "Flatten then leave the field", starting at `t0`: squish over
+// `DEATH_SQUISH_MS`, hold flat for `hold` ms, then fade to 0 + sink
+// `SPAWN_RISE` under the world over `DEATH_FADE_MS`. `null` before `t0`.
+function leavePose(t0: number, t: number, size: number, hold: number): DeathPose | null {
+  const over = t - t0;
+  if (over < 0) return null;
+  const kdown = smoothstep(clamp01(over / DEATH_SQUISH_MS));
+  const scaleY = lerp(1, DEATH_FLAT, kdown);
+  const fadeStart = DEATH_SQUISH_MS + hold;
+  if (over < fadeStart) {
+    return { scaleY, y: lerp(normalY(size), flatY(size), kdown), opacity: 1, visible: true };
+  }
+  const f = clamp01((over - fadeStart) / DEATH_FADE_MS);
+  if (f >= 1) return { scaleY: DEATH_FLAT, y: flatY(size) - SPAWN_RISE, opacity: 0, visible: false };
+  return {
+    scaleY: DEATH_FLAT,
+    y: lerp(flatY(size), flatY(size) - SPAWN_RISE, f),
+    opacity: 1 - f,
+    visible: true,
+  };
+}
+
+// Death/revive pose for a unit of world height `size` at time `t`, or
+// `null` if it's alive then. `permanent` (enemies) adds the hold -> fade
+// -> sink tail; a player just stays a pancake until resurrected.
+function deathPoseAt(
+  spans: ReplayDeathSpan[],
+  t: number,
+  size: number,
+  permanent: boolean,
+): DeathPose | null {
+  let span: ReplayDeathSpan | null = null;
+  for (const s of spans) {
+    if (s.startMs <= t) span = s;
+    else break;
+  }
+  if (!span) return null;
+
+  // Resurrected and past it -> stretch back up.
+  if (span.endMs != null && t >= span.endMs) {
+    const k = smoothstep(clamp01((t - span.endMs) / REVIVE_MS));
+    if (k >= 1) return null; // fully back
+    return {
+      scaleY: lerp(DEATH_FLAT, 1, k),
+      y: lerp(flatY(size), normalY(size), k),
+      opacity: 1,
+      visible: true,
+    };
+  }
+
+  if (permanent) return leavePose(span.startMs, t, size, DEATH_HOLD_MS);
+
+  // Player: squish and stay flat forever (until the res branch above).
+  const kdown = smoothstep(clamp01((t - span.startMs) / DEATH_SQUISH_MS));
+  return {
+    scaleY: lerp(1, DEATH_FLAT, kdown),
+    y: lerp(normalY(size), flatY(size), kdown),
+    opacity: 1,
+    visible: true,
+  };
+}
+
+// An enemy that stops appearing in the log without ever dying (add-swarm
+// mechanic mobs that just get "dealt with") leaves the field like a
+// death, starting `DESPAWN_GRACE_MS` past its last position fix.
+const DESPAWN_GRACE_MS = 3000;
+function despawnPoseAt(lastMs: number, t: number, size: number): DeathPose | null {
+  return leavePose(lastMs + DESPAWN_GRACE_MS, t, size, DEATH_HOLD_MS);
 }
 
 function setMeshOpacity(mesh: THREE.Mesh, o: number): void {
@@ -627,20 +723,40 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       }
       const px = at.x - cx;
       const pz = at.y - cy;
+      // Reset to the resting pose; the spawn / death blocks below adjust.
+      const baseScaleY = u.shape === "cube" ? u.size : 1;
       mesh.position.set(px, FLOOR_LIFT + HOVER + u.size / 2, pz);
+      mesh.scale.y = baseScaleY;
       mesh.visible = true;
       mesh.castShadow = true;
       setMeshOpacity(mesh, 1);
 
-      // Enemies not yet active spawn in from above.
-      let spawned = true;
-      if (u.team === "enemy") {
-        const s = spawnAt(u.samples[0].tMs, t);
-        mesh.position.y += s.yOffset;
-        setMeshOpacity(mesh, s.opacity);
-        mesh.visible = s.opacity > 0.01;
-        mesh.castShadow = s.opacity > 0.9;
-        spawned = s.opacity > 0.9;
+      let settled = true; // at the resting pose -> takes part in overlap de-conflict
+      const spawn = u.team === "enemy" ? spawnAt(u.samples[0].tMs, t) : null;
+
+      if (spawn && spawn.opacity < 1) {
+        // Enemy not active yet -- parked high, fading in.
+        mesh.position.y += spawn.yOffset;
+        setMeshOpacity(mesh, spawn.opacity);
+        mesh.visible = spawn.opacity > 0.01;
+        mesh.castShadow = false;
+        settled = false;
+      } else {
+        // Real death, or (enemies only) a soft despawn once it stops
+        // appearing -- both squish flat then leave the field.
+        const pose =
+          deathPoseAt(u.deathSpans, t, u.size, u.team === "enemy") ??
+          (u.team === "enemy"
+            ? despawnPoseAt(u.samples[u.samples.length - 1].tMs, t, u.size)
+            : null);
+        if (pose) {
+          mesh.position.y = pose.y;
+          mesh.scale.y = baseScaleY * pose.scaleY;
+          setMeshOpacity(mesh, pose.opacity);
+          mesh.visible = pose.visible;
+          mesh.castShadow = pose.visible && pose.opacity > 0.9;
+          settled = false;
+        }
       }
 
       placed.push({
@@ -651,7 +767,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
         size: u.size,
         rank: u.stackRank,
         guid: u.guid,
-        spawned,
+        settled,
       });
     }
 
@@ -738,7 +854,7 @@ interface Placement {
   size: number;
   rank: number;
   guid: string;
-  spawned: boolean; // false while an enemy is still parked high, mid spawn-in
+  settled: boolean; // false while spawning / dead / mid revive -- skipped by de-conflict
 }
 
 const overlaps = (a: Placement, b: Placement): boolean =>
@@ -765,7 +881,8 @@ function overlapClusters(items: Placement[]): Placement[][] {
 //    each smaller one `ADD_STEP x its height` higher.
 // Reused per frame in phase C when positions move.
 function deconflictOverlaps(placed: Placement[]): void {
-  for (const cl of overlapClusters(placed.filter((p) => p.team === "player"))) {
+  const live = placed.filter((p) => p.settled);
+  for (const cl of overlapClusters(live.filter((p) => p.team === "player"))) {
     if (cl.length < 2) continue;
     cl.sort((a, b) => a.rank - b.rank || (a.guid < b.guid ? -1 : a.guid > b.guid ? 1 : 0));
     cl.forEach((p, i) => {
@@ -773,8 +890,8 @@ function deconflictOverlaps(placed: Placement[]): void {
     });
   }
 
-  const players = placed.filter((p) => p.team === "player");
-  const enemies = placed.filter((p) => p.team === "enemy" && p.spawned);
+  const players = live.filter((p) => p.team === "player");
+  const enemies = live.filter((p) => p.team === "enemy");
   for (const e of enemies) {
     if (players.some((p) => overlaps(p, e))) {
       e.mesh.position.y = FLOOR_LIFT + e.size / 2; // flush on the deck

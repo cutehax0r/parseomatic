@@ -137,10 +137,20 @@ async function paint(): Promise<void> {
   const series = await replaySeries(win.startMs, win.endMs);
   if (seq !== paintSeq || !series) return;
 
+  const units = ctx.units;
   const specByUnit = new Map<number, number>();
   for (const c of ctx.combatants) specByUnit.set(c.unitId, c.specId);
 
-  const renderable = series.units.filter((u) => RENDER_KINDS.has(u.kind));
+  // Player pets / guardians / totems are `Creature` kind but owned by a
+  // player -- drop them (v1 shows raiders + real enemies only; a modern
+  // pull is ~100 totems/procs of grey clutter otherwise). Boss-summoned
+  // adds also carry an owner (the boss), so check the owner is a Player,
+  // not just that one exists.
+  const renderable = series.units.filter(
+    (u) =>
+      RENDER_KINDS.has(u.kind) &&
+      !(u.kind === "Creature" && units[u.unitId]?.owner?.startsWith("Player-")),
+  );
 
   // "Boss" = the creature with the biggest max health (user's
   // definition). Everything scales off that.
