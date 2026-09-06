@@ -89,9 +89,50 @@ fn line_endpoint(tables: &InternTables, id: u32) -> bool {
     is_hostile(tables, id) || player_of(tables, id) == Some(id)
 }
 
+/// Is this attack line a splash/cleave hit -- i.e. this source's attack
+/// has a *different* primary target? The primary is the source's most
+/// recent targeted cast of this spell (if within `CAST_PRIMARY_MS`), else
+/// the first unit this `(source, spell)` hit -- re-established once that
+/// pair has been quiet for `CAST_PRIMARY_MS`. Keeps one bright line per
+/// attack; every other target of the same swing / AoE is dim.
+fn classify_secondary(
+    cast_primary: &FxHashMap<u32, (i64, u32, u16)>,
+    first_hit: &mut FxHashMap<(u32, u16), (i64, u32)>,
+    source_unit: u32,
+    target_unit: u32,
+    spell: u16,
+    ts: i64,
+) -> bool {
+    let primary = cast_primary
+        .get(&source_unit)
+        .filter(|&&(pts, _, pspell)| pspell == spell && (0..=CAST_PRIMARY_MS).contains(&(ts - pts)))
+        .map(|&(_, ptgt, _)| ptgt)
+        .unwrap_or_else(|| {
+            let key = (source_unit, spell);
+            match first_hit.get(&key) {
+                Some(&(pts, ptgt)) if ts - pts <= CAST_PRIMARY_MS => ptgt,
+                _ => {
+                    first_hit.insert(key, (ts, target_unit));
+                    target_unit
+                }
+            }
+        });
+    primary != target_unit
+}
+
 /// A lone instant `CAST_SUCCESS` (and, for now, a channel's opening
 /// success) spins the cube for this long.
 const INSTANT_SPIN_MS: i64 = 450;
+/// Merge damage hits from the same `(source, target, spell)` within this
+/// window into one attack line (channels, fast multi-hit).
+const DMG_MERGE_MS: i64 = 300;
+/// A hard-cast window line already covers its target for this long after
+/// it resolves -- don't also draw a damage line to the same target.
+const CAST_COVER_MS: i64 = 1500;
+/// How long after a cast's primary target is recorded a damage line to a
+/// *different* unit still counts as splash/cleave of that cast (and is
+/// drawn dim). Covers a hard cast's channel plus projectile travel.
+const CAST_PRIMARY_MS: i64 = 4000;
 
 pub struct Sample {
     pub t_ms: i64,
@@ -145,6 +186,9 @@ pub struct CastLine {
     /// A heal (same-side) rather than an attack -- drawn as a straight
     /// green beam, or a teardrop loop when `source_unit == target_unit`.
     pub heal: bool,
+    /// A splash/cleave hit -- the cast's primary target was someone else.
+    /// Drawn much dimmer.
+    pub secondary: bool,
     /// `NO_SPELL` for a melee swing.
     pub spell_id: u16,
 }
@@ -260,6 +304,19 @@ pub fn series(
     let mut cast_pending: FxHashMap<u32, (i64, u16, u32)> = FxHashMap::default();
     // Dedup the SWING_DAMAGE / SWING_DAMAGE_LANDED pair (same ts/src/dst).
     let mut last_swing: Option<(i64, u32, u32)> = None;
+    // (source, target, spell) -> last damage-line ts, for merging.
+    let mut last_dmg: FxHashMap<(u32, u32, u16), i64> = FxHashMap::default();
+    // (source, target, spell) -> a hard-cast window line's resolve ts.
+    let mut cast_covered: FxHashMap<(u32, u32, u16), i64> = FxHashMap::default();
+    // source -> (ts, primary target, spell) of its most recent targeted
+    // cast. A later damage line from the same source+spell to a *different*
+    // unit is splash/cleave -> `secondary: true` (drawn dim).
+    let mut cast_primary: FxHashMap<u32, (i64, u32, u16)> = FxHashMap::default();
+    // (source, spell) -> (ts, primary target): the first unit an attack
+    // hit, so cleave / AoE with no targeted cast still keeps one bright
+    // line and dims the rest. NO_SPELL keys melee swings. Re-established
+    // after `CAST_PRIMARY_MS` of that (source, spell) going quiet.
+    let mut first_hit: FxHashMap<(u32, u16), (i64, u32)> = FxHashMap::default();
 
     for row in lo..hi {
         let ts = events.timestamp_ms[row];
@@ -354,27 +411,46 @@ pub fn series(
         let interrupted = (dst != NO_UNIT && line_endpoint(tables, dst)).then_some(dst);
         match events.kind[row] {
             LineKind::Composed { suffix: Suffix::CastStart, .. } if attacker.is_some() => {
-                cast_pending.insert(attacker.unwrap(), (ts, events.spell[row], dst));
+                let a = attacker.unwrap();
+                let spell = events.spell[row];
+                cast_pending.insert(a, (ts, spell, dst));
+                if let Some((_, target_unit, _)) = attack_pair(tables, a, dst) {
+                    cast_primary.insert(a, (ts, target_unit, spell));
+                }
             }
             LineKind::Composed { suffix: Suffix::CastSuccess, .. } if attacker.is_some() => {
                 let a = attacker.unwrap();
-                let (t0, spell, tgt0, instant) = match cast_pending.remove(&a) {
-                    Some((t0, s, tgt)) => (t0, s, tgt, false),
-                    None => (ts, events.spell[row], NO_UNIT, true),
-                };
-                let raw_tgt = if dst != NO_UNIT { dst } else { tgt0 };
-                if let Some((source_unit, target_unit, from_player)) = attack_pair(tables, a, raw_tgt) {
-                    out.cast_lines.push(CastLine {
-                        source_unit,
-                        target_unit,
-                        t0,
-                        t1: ts,
-                        instant,
-                        success: true,
-                        from_player,
-                        heal: false,
-                        spell_id: spell,
-                    });
+                let succ_spell = events.spell[row];
+                // Record the cast's primary target so splash damage lines
+                // to other units can be dimmed. Covers instants/AoE that
+                // never had a CAST_START.
+                if let Some((_, target_unit, _)) = attack_pair(tables, a, dst) {
+                    cast_primary.insert(a, (ts, target_unit, succ_spell));
+                }
+                // Only hard casts / channels (we saw a CAST_START) get a
+                // window line -- the "big thing incoming" telegraph. Lone
+                // successes (instants, AoE) are covered per-target by the
+                // damage-event lines below.
+                if let Some((t0, spell, tgt)) = cast_pending.remove(&a) {
+                    let raw_tgt = if dst != NO_UNIT { dst } else { tgt };
+                    if let Some((source_unit, target_unit, from_player)) =
+                        attack_pair(tables, a, raw_tgt)
+                    {
+                        out.cast_lines.push(CastLine {
+                            source_unit,
+                            target_unit,
+                            t0,
+                            t1: ts,
+                            instant: false,
+                            success: true,
+                            from_player,
+                            heal: false,
+                            secondary: false,
+                            spell_id: spell,
+                        });
+                        cast_covered.insert((source_unit, target_unit, spell), ts);
+                        cast_primary.insert(a, (ts, target_unit, spell));
+                    }
                 }
             }
             LineKind::Composed { suffix: Suffix::CastFailed, .. } if attacker.is_some() => {
@@ -390,6 +466,7 @@ pub fn series(
                             success: false,
                             from_player,
                             heal: false,
+                            secondary: false,
                             spell_id: spell,
                         });
                     }
@@ -408,6 +485,7 @@ pub fn series(
                             success: false,
                             from_player,
                             heal: false,
+                            secondary: false,
                             spell_id: spell,
                         });
                     }
@@ -426,6 +504,7 @@ pub fn series(
                             success: false,
                             from_player,
                             heal: false,
+                            secondary: false,
                             spell_id: spell,
                         });
                     }
@@ -436,6 +515,14 @@ pub fn series(
                     let key = (ts, src, dst);
                     if last_swing != Some(key) {
                         last_swing = Some(key);
+                        let secondary = classify_secondary(
+                            &cast_primary,
+                            &mut first_hit,
+                            source_unit,
+                            target_unit,
+                            NO_SPELL,
+                            ts,
+                        );
                         out.cast_lines.push(CastLine {
                             source_unit,
                             target_unit,
@@ -445,7 +532,50 @@ pub fn series(
                             success: true,
                             from_player,
                             heal: false,
+                            secondary,
                             spell_id: NO_SPELL,
+                        });
+                    }
+                }
+            }
+            // Direct spell / ranged damage -- ONE line per unit actually
+            // hit, so multi-target abilities (Blizzard, cleaves, Arcane
+            // Missiles) draw a line to everything. Not periodic (DoTs) or
+            // swings (handled above). Merged per (src,dst,spell) over
+            // `DMG_MERGE_MS`; skipped for the target a hard-cast window
+            // line already covers.
+            LineKind::Composed { prefix: Prefix::Spell | Prefix::Range, suffix: Suffix::Damage } => {
+                if let Some((source_unit, target_unit, from_player)) = attack_pair(tables, src, dst) {
+                    let spell = events.spell[row];
+                    let k = (source_unit, target_unit, spell);
+                    let recent_dmg = last_dmg.get(&k).is_some_and(|&p| ts - p < DMG_MERGE_MS);
+                    let covered = cast_covered
+                        .get(&k)
+                        .is_some_and(|&t1| ts - t1 >= 0 && ts - t1 <= CAST_COVER_MS);
+                    // Splash/cleave: keep one bright line per attack and
+                    // dim the rest -- the cast's own target, or (no
+                    // targeted cast) the first unit this source+spell hit.
+                    let secondary = classify_secondary(
+                        &cast_primary,
+                        &mut first_hit,
+                        source_unit,
+                        target_unit,
+                        spell,
+                        ts,
+                    );
+                    if !recent_dmg && !covered {
+                        last_dmg.insert(k, ts);
+                        out.cast_lines.push(CastLine {
+                            source_unit,
+                            target_unit,
+                            t0: ts,
+                            t1: ts,
+                            instant: true,
+                            success: true,
+                            from_player,
+                            heal: false,
+                            secondary,
+                            spell_id: spell,
                         });
                     }
                 }
@@ -463,6 +593,7 @@ pub fn series(
                         success: true,
                         from_player,
                         heal: true,
+                        secondary: false,
                         spell_id: events.spell[row],
                     });
                 }
@@ -642,11 +773,11 @@ mod tests {
                  {player},\"Pl-R-US\",0x512,0x0,{player},0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,\
                  0,0,2607,0,1,900,0,-1,1,0,0,0,nil,nil,nil"
             ),
-            // A player casting at the boss -> a line the OTHER way.
-            cast_success("05.000", player, boss, "Boss", "6.0,6.0"),
+            // Player spell-damage on the boss -> a line the OTHER way.
+            spell_damage("05.000", player, boss, 9_000_000, "6.0,6.0"),
         ]);
         let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[4] + 1);
-        assert_eq!(s.cast_lines.len(), 3, "boss cast + boss swing (dup collapsed) + player cast");
+        assert_eq!(s.cast_lines.len(), 3, "boss cast + boss swing (dup collapsed) + player damage");
 
         let cast = s.cast_lines.iter().find(|c| !c.instant && !c.from_player).unwrap();
         assert!(cast.success);
@@ -661,6 +792,55 @@ mod tests {
         assert!(pl.instant && pl.success);
         assert_eq!(pl.source_unit, store.source_unit[4]);
         assert_eq!(pl.target_unit, store.dest_unit[4]);
+    }
+
+    #[test]
+    fn multi_target_spell_draws_a_line_to_every_target() {
+        let boss = "Creature-0-0-0-0-9-1";
+        let p1 = "Player-1-1";
+        let p2 = "Player-2-2";
+        let aoe = |t: &str, victim: &str| {
+            format!(
+                "9/3/2026 19:23:{t}-6  SPELL_DAMAGE,{boss},\"Boss\",0x10a48,0x0,\
+                 {victim},\"Pl\",0x512,0x0,555,\"Blizzard\",0x10,\
+                 {victim},0000000000000000,50,100,0,0,0,0,0,0,0,0,0,0,1.0,1.0,2607,0,1,\
+                 700,0,-1,16,0,0,0,nil,nil,nil"
+            )
+        };
+        let (tables, store, mmap) = store_from(&[
+            aoe("01.000", p1),
+            aoe("01.000", p2), // same cast, second target -> its own line
+            aoe("01.100", p1), // 100ms later, same (src,dst,spell) -> merged away
+            aoe("01.500", p1), // 500ms later -> a fresh line
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[3] + 1);
+        assert_eq!(s.cast_lines.len(), 3, "p1 + p2 at t0, p1 again at t0+500 (t0+100 merged)");
+        assert!(s.cast_lines.iter().all(|c| !c.from_player && !c.heal && c.instant));
+        // No targeted cast, so the first unit hit (p1) is the bright line;
+        // p2, hit by the same AoE, is dim.
+        assert!(s.cast_lines.iter().filter(|c| c.target_unit == store.dest_unit[0]).all(|c| !c.secondary));
+        assert!(s.cast_lines.iter().filter(|c| c.target_unit == store.dest_unit[1]).all(|c| c.secondary));
+    }
+
+    #[test]
+    fn splash_damage_lines_are_flagged_secondary() {
+        let boss = "Creature-0-0-0-0-9-1";
+        let p1 = "Player-1-1";
+        let p2 = "Player-2-2";
+        let (tables, store, mmap) = store_from(&[
+            // Boss casts at p1, then that same spell hits p1 (primary) and
+            // p2 (splash) -- same spell id (100) across all three lines.
+            cast_success("01.000", boss, p1, "Pl", "5.0,5.0"),
+            spell_damage("01.050", boss, p1, 100, "5.0,5.0"),
+            spell_damage("01.050", boss, p2, 100, "6.0,6.0"),
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[2] + 1);
+        assert_eq!(s.cast_lines.len(), 2, "one damage line per unit hit; the cast_success adds none");
+
+        let primary = s.cast_lines.iter().find(|c| c.target_unit == store.dest_unit[1]).unwrap();
+        let splash = s.cast_lines.iter().find(|c| c.target_unit == store.dest_unit[2]).unwrap();
+        assert!(!primary.secondary, "the cast's own target");
+        assert!(splash.secondary, "a different unit hit by the same cast");
     }
 
     #[test]

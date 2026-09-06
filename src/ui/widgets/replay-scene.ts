@@ -204,6 +204,7 @@ const CAST_PEAK_PLAYER_RAND = 3;
 const CAST_SPREAD = 8; // yд lateral jitter on the control point
 const CAST_LINE_OPACITY = 0.5; // attack beams peak here
 const CAST_HEAL_OPACITY = 0.05; // heal beams are a barely-there hint
+const CAST_SECONDARY_DIM = 0.2; // splash/cleave lines: 20% brightness of a direct hit
 const CAST_POOL = 96; // max lines drawn at once (both directions)
 // Camera-facing ribbon half-width (yд) and projectile radius. Creature
 // attacks are 3x -- thick and loud.
@@ -1031,9 +1032,14 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       const rm = s.ribbon.material as THREE.MeshBasicMaterial;
       // st.lineOpacity is scaled to [0, CAST_LINE_OPACITY]; renormalise
       // so heals peak at CAST_HEAL_OPACITY instead.
-      rm.opacity = cl.heal
+      let op = cl.heal
         ? st.lineOpacity * (CAST_HEAL_OPACITY / CAST_LINE_OPACITY)
         : st.lineOpacity;
+      // Splash/cleave hits: dim, and hard-capped at half the opacity a
+      // direct hit would have at this instant.
+      const dim = cl.secondary ? CAST_SECONDARY_DIM : 1;
+      if (cl.secondary) op = Math.min(op * dim, st.lineOpacity * 0.5);
+      rm.opacity = op;
       rm.color.copy(col);
 
       // Projectile follows the curve on success (both damage and heals).
@@ -1041,7 +1047,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
         const bi = Math.round(st.ball * CAST_SEGMENTS);
         s.ball.position.copy(bez[Math.min(CAST_SEGMENTS, bi)]);
         s.ball.scale.setScalar(!cl.heal && !cl.fromPlayer ? CAST_BALL_R_ENEMY : CAST_BALL_R_PLAYER);
-        (s.ball.material as THREE.MeshBasicMaterial).color.copy(col);
+        (s.ball.material as THREE.MeshBasicMaterial).color.copy(col).multiplyScalar(dim);
         s.ball.visible = true;
       } else {
         s.ball.visible = false;

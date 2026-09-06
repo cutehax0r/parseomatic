@@ -1538,6 +1538,8 @@ struct ReplayCastLineRow {
     from_player: bool,
     /// A same-side heal rather than an attack.
     heal: bool,
+    /// A splash/cleave hit -- the cast's primary target was someone else.
+    secondary: bool,
     /// `null` for a melee swing.
     spell_id: Option<u16>,
 }
@@ -1588,6 +1590,7 @@ fn replay_series(
                 success: c.success,
                 from_player: c.from_player,
                 heal: c.heal,
+                secondary: c.secondary,
                 spell_id: (c.spell_id != NO_SPELL).then_some(c.spell_id),
             })
             .collect(),

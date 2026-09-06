@@ -252,6 +252,7 @@ export interface ReplayCastLine {
   success: boolean;
   fromPlayer: boolean; // player-side source: flatter arc, caster's class colour
   heal: boolean; // same-side heal: straight green beam, or a teardrop loop if self
+  secondary: boolean; // splash/cleave hit (cast's primary target was someone else) -- drawn dim
   spellId: number | null; // null for a melee swing
 }
 
