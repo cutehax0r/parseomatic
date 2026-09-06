@@ -129,12 +129,8 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   const element = document.createElement("div");
   element.className = "chart movement-path";
 
-  // A thin status strip at the top edge -- hover-over-the-map details
-  // land here rather than in a tooltip that chases the cursor.
-  const status = document.createElement("div");
-  status.className = "movement-path-status";
-
-  // Header row: [legend] ... [playhead time] ... [◀ ▶]
+  // Header: legend on the left, the scrubber (window range + ◀ ▶) on the
+  // right -- the readout labels what the table is showing.
   const header = document.createElement("div");
   header.className = "chart-header movement-path-header";
   const legend = document.createElement("div");
@@ -144,8 +140,6 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     '<span class="chart-legend-item" data-series="death"><i></i>Death</span>';
   const readout = document.createElement("span");
   readout.className = "movement-path-readout";
-  const controls = document.createElement("div");
-  controls.className = "movement-path-controls";
   const prevBtn = document.createElement("button");
   prevBtn.type = "button";
   prevBtn.className = "movement-path-step";
@@ -156,8 +150,10 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   nextBtn.className = "movement-path-step";
   nextBtn.textContent = "▶";
   nextBtn.title = "Step forward (→)";
-  controls.append(prevBtn, nextBtn);
-  header.append(legend, readout, controls);
+  const nav = document.createElement("div");
+  nav.className = "movement-path-nav";
+  nav.append(readout, prevBtn, nextBtn);
+  header.append(legend, nav);
 
   const body = document.createElement("div");
   body.className = "movement-path-body";
@@ -172,7 +168,11 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   empty.className = "movement-path-empty";
   empty.textContent = "No movement recorded in this window.";
   empty.hidden = true;
-  plot.append(svg, empty);
+  // Hover-over-the-map readout: a strip along the top of the plot,
+  // inside the map box. Empty -> hidden (CSS).
+  const status = document.createElement("div");
+  status.className = "movement-path-status";
+  plot.append(svg, empty, status);
 
   const side = document.createElement("div");
   side.className = "movement-path-side";
@@ -181,7 +181,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   side.append(sideList);
 
   body.append(plot, side);
-  element.append(status, header, body);
+  element.append(header, body);
 
   let current: MovementPathProps = props;
   let playT: number | null = null;
@@ -189,6 +189,9 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   let hoverPts: Array<{ x: number; y: number; t: number }> = [];
   // Standstill spans (ms) + their anchor world point, for the side header.
   let standSpans: Array<{ s: number; e: number; x: number; y: number }> = [];
+  // Screen-space circular hit targets for the stand / death markers, so
+  // hovering one can report how long the player was there.
+  let hoverRegions: Array<{ cx: number; cy: number; r: number; startMs: number; ms: number; kind: "stood" | "dead" }> = [];
   let hoverDot: SVGCircleElement | null = null;
   let svgRect: DOMRect | null = null;
   let hoverRaf = 0;
@@ -237,6 +240,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     svg.replaceChildren();
     hoverPts = [];
     standSpans = [];
+    hoverRegions = [];
 
     const { samples, deathSpans, startMs, endMs, fitBox, mapBox } = current;
     const hasPath = samples.length >= 2;
@@ -315,7 +319,10 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       standSpans.push({ s: runStart, e: runLast, x: anchor.x, y: anchor.y });
       const notches = Math.floor(held / STAND_STEP_MS);
       const r = MARKER_R * Math.min(STAND_MAX_MULT, 1 + STAND_GROW * notches);
-      svg.appendChild(el("circle", { cx: px(anchor.x), cy: py(anchor.y), r, class: "movement-standstill" }));
+      const cx = px(anchor.x);
+      const cy = py(anchor.y);
+      svg.appendChild(el("circle", { cx, cy, r, class: "movement-standstill" }));
+      hoverRegions.push({ cx, cy, r: Math.max(r, MARKER_R + 3), startMs: runStart, ms: held, kind: "stood" });
     };
     for (let i = 1; i < samples.length; i++) {
       const s = samples[i];
@@ -374,11 +381,14 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     for (const d of deathSpans) {
       const spot = fixNearestTime(d.startMs);
       if (!spot) continue;
-      const deadSec = ((d.endMs ?? endMs) - d.startMs) / 1000;
-      const r = MARKER_R * Math.min(DEATH_MAX_MULT, 1 + Math.max(0, deadSec) / DEATH_GROW_S);
+      const deadMs = (d.endMs ?? endMs) - d.startMs;
+      const r = MARKER_R * Math.min(DEATH_MAX_MULT, 1 + Math.max(0, deadMs / 1000) / DEATH_GROW_S);
+      const cx = px(spot.x);
+      const cy = py(spot.y);
       svg.appendChild(
-        el("rect", { x: px(spot.x) - r, y: py(spot.y) - r, width: 2 * r, height: 2 * r, class: "movement-death" }),
+        el("rect", { x: cx - r, y: cy - r, width: 2 * r, height: 2 * r, class: "movement-death" }),
       );
+      hoverRegions.push({ cx, cy, r: Math.max(r, MARKER_R + 3), startMs: d.startMs, ms: deadMs, kind: "dead" });
     }
 
     // --- playhead --------------------------------------------------
@@ -569,6 +579,18 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     const vx = ((pendingClient[0] - svgRect.left) / svgRect.width) * vbW;
     const vy = ((pendingClient[1] - svgRect.top) / svgRect.height) * vbH;
 
+    // A stand / death marker under the cursor wins -- report when it
+    // happened and how long it lasted.
+    let region: (typeof hoverRegions)[number] | null = null;
+    let regionD = Infinity;
+    for (const r of hoverRegions) {
+      const dd = (r.cx - vx) ** 2 + (r.cy - vy) ** 2;
+      if (dd <= r.r * r.r && dd < regionD) {
+        regionD = dd;
+        region = r;
+      }
+    }
+
     let best = hoverPts[0];
     let bestD = Infinity;
     for (const p of hoverPts) {
@@ -578,21 +600,20 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
         best = p;
       }
     }
-    if (bestD > 24 * 24) {
+    if (!region && bestD > 24 * 24) {
       hideHover();
       return;
     }
-    const near = current.events.filter((e) => Math.abs(e.tMs - best.t) < 1500);
-    hoverDot?.setAttribute("cx", String(best.x));
-    hoverDot?.setAttribute("cy", String(best.y));
-    hoverDot?.setAttribute("visibility", "visible");
-    const names = near
-      .slice(0, 3)
-      .map((e) => e.name)
-      .join(", ");
-    status.textContent =
-      formatAxisTime(best.t - current.startMs, 0.1) +
-      (near.length ? ` · ${near.length} event${near.length > 1 ? "s" : ""}${names ? ` (${names}${near.length > 3 ? "…" : ""})` : ""}` : "");
+
+    if (region) {
+      hoverDot?.setAttribute("visibility", "hidden");
+      status.textContent = `${formatAxisTime(region.startMs - current.startMs, 0.1)} · ${region.kind} ${fmtDur(region.ms)}`;
+    } else {
+      hoverDot?.setAttribute("cx", String(best.x));
+      hoverDot?.setAttribute("cy", String(best.y));
+      hoverDot?.setAttribute("visibility", "visible");
+      status.textContent = formatAxisTime(best.t - current.startMs, 0.1);
+    }
   }
 
   function hideHover() {
