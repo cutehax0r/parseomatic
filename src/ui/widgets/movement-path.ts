@@ -174,11 +174,9 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
 
   const side = document.createElement("div");
   side.className = "movement-path-side";
-  const sideHead = document.createElement("div");
-  sideHead.className = "movement-path-side-head";
   const sideList = document.createElement("div");
   sideList.className = "movement-path-events";
-  side.append(sideHead, sideList);
+  side.append(sideList);
 
   body.append(plot, side);
   element.append(header, body);
@@ -401,13 +399,10 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     const { events, startMs, endMs } = current;
 
     if (playT === null) {
-      readout.textContent = current.samples.length >= 2 ? "no moment picked" : "";
-      sideHead.textContent = "Click the path (or use ◀ ▶ / arrow keys) to inspect a moment.";
+      readout.textContent = "";
       sideList.replaceChildren();
       return;
     }
-
-    readout.textContent = formatAxisTime(playT - startMs, 0.1);
 
     const parked = standSpans.find((s) => playT! >= s.s && playT! <= s.e);
     let winStart: number;
@@ -415,13 +410,13 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     if (parked) {
       winStart = parked.s;
       winEnd = parked.e;
-      sideHead.textContent =
-        `Stood here ${fmtDur(parked.e - parked.s)} · ` +
+      readout.textContent =
+        `stood ${fmtDur(parked.e - parked.s)} · ` +
         `${formatAxisTime(parked.s - startMs, 0)}–${formatAxisTime(parked.e - startMs, 0)}`;
     } else {
       winStart = Math.max(startMs, playT - HALF_WINDOW_MS);
       winEnd = Math.min(endMs, playT + HALF_WINDOW_MS);
-      sideHead.textContent = `${formatAxisTime(playT - startMs, 0.1)} · ±${HALF_WINDOW_MS / 1000}s`;
+      readout.textContent = `${formatAxisTime(playT - startMs, 0.1)} · ±${HALF_WINDOW_MS / 1000}s`;
     }
 
     const rows = events.filter((e) => e.tMs >= winStart && e.tMs <= winEnd);
