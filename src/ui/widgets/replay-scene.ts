@@ -15,7 +15,13 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 import { registerWidget } from "../registry";
 import type { Widget } from "../spec";
-import type { ReplayCastSpan, ReplayDeathSpan, ReplayFaceHint, ReplaySample } from "../../types";
+import type {
+  ReplayCastLine,
+  ReplayCastSpan,
+  ReplayDeathSpan,
+  ReplayFaceHint,
+  ReplaySample,
+} from "../../types";
 
 export type ReplayTeam = "player" | "enemy" | "other";
 export type ReplayShape = "cube" | "sphere";
@@ -41,6 +47,7 @@ export interface ReplaySceneUnitInput {
 
 export interface ReplaySceneProps {
   units: ReplaySceneUnitInput[];
+  castLines: ReplayCastLine[];
   fitBox: [number, number, number, number] | null;
   startMs: number;
   endMs: number;
@@ -182,6 +189,83 @@ function deathPoseAt(
 const DESPAWN_GRACE_MS = 3000;
 function despawnPoseAt(lastMs: number, t: number, size: number): DeathPose | null {
   return leavePose(lastMs + DESPAWN_GRACE_MS, t, size, DEATH_HOLD_MS);
+}
+
+// ---- Cast lines (hostile -> player attack arcs) ----------------------
+const CAST_SEGMENTS = 24; // bezier samples per line
+const CAST_FADE_MS = 125; // line fade in / out
+const CAST_BALL_MS = 500; // projectile flight time
+// Arc peak: [min, min+rand] yд. Creature attacks lob high; player
+// attacks are much flatter.
+const CAST_PEAK_ENEMY = 10;
+const CAST_PEAK_ENEMY_RAND = 5;
+const CAST_PEAK_PLAYER = 3;
+const CAST_PEAK_PLAYER_RAND = 3;
+const CAST_SPREAD = 8; // yд lateral jitter on the control point
+const CAST_LINE_OPACITY = 0.5; // attack beams peak here
+const CAST_HEAL_OPACITY = 0.05; // heal beams are a barely-there hint
+const CAST_POOL = 96; // max lines drawn at once (both directions)
+// Camera-facing ribbon half-width (yд) and projectile radius. Creature
+// attacks are 3x -- thick and loud.
+const CAST_HALFW_PLAYER = 0.12;
+const CAST_HALFW_ENEMY = 0.36;
+const CAST_BALL_R_PLAYER = 0.35;
+const CAST_BALL_R_ENEMY = 1.05;
+const CAST_ENEMY_COLOR = "#8a1414"; // deep red for the boss's arcs + ball
+const CAST_HEAL_COLOR = "var(--ctp-green)"; // heal beams / teardrops
+
+// Deterministic [0,1) from three ints -- a per-line arc height / spread
+// that stays put across frames.
+function hash01(a: number, b: number, c: number): number {
+  let h = (Math.imul(a, 374761393) + Math.imul(b, 668265263) + Math.imul(c | 0, 2246822519)) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+// Quadratic bezier point at `u` in [0,1], into `out` (or a fresh vector).
+function quadBezier(
+  a: THREE.Vector3,
+  c: THREE.Vector3,
+  b: THREE.Vector3,
+  u: number,
+  out: THREE.Vector3 = new THREE.Vector3(),
+): THREE.Vector3 {
+  const k = 1 - u;
+  return out.set(
+    k * k * a.x + 2 * k * u * c.x + u * u * b.x,
+    k * k * a.y + 2 * k * u * c.y + u * u * b.y,
+    k * k * a.z + 2 * k * u * c.z + u * u * b.z,
+  );
+}
+
+// Line opacity + ball progress (0..1, or null = no ball) for a cast line
+// at time `t`, or `null` if the line isn't live then. Timeline:
+//   [t0, t0+FADE]        fade in 0 -> CAST_LINE_OPACITY
+//   [t0+FADE, t1]        hold (empty for an instant / swing)
+//   on resolve at t1:
+//     success -> ball flies [bs, bs+BALL] (bs delayed one FADE for
+//                instants so it flies during the visible stretch),
+//                then line fades out [bs+BALL, +FADE]
+//     fail    -> line fades out [t1, t1+FADE], no ball
+function castLineState(cl: ReplayCastLine, t: number): { lineOpacity: number; ball: number | null } | null {
+  if (t < cl.t0) return null;
+  const fadeIn = clamp01((t - cl.t0) / CAST_FADE_MS) * CAST_LINE_OPACITY;
+
+  if (!cl.success) {
+    if (t <= cl.t1) return { lineOpacity: fadeIn, ball: null };
+    const out = clamp01((t - cl.t1) / CAST_FADE_MS);
+    if (out >= 1) return null;
+    return { lineOpacity: CAST_LINE_OPACITY * (1 - out), ball: null };
+  }
+
+  const bs = cl.t1 + (cl.instant ? CAST_FADE_MS : 0);
+  const be = bs + CAST_BALL_MS;
+  if (t < be) {
+    return { lineOpacity: fadeIn, ball: t >= bs ? smoothstep(clamp01((t - bs) / CAST_BALL_MS)) : null };
+  }
+  const out = clamp01((t - be) / CAST_FADE_MS);
+  if (out >= 1) return null;
+  return { lineOpacity: CAST_LINE_OPACITY * (1 - out), ball: null };
 }
 
 function setMeshOpacity(mesh: THREE.Mesh, o: number): void {
@@ -428,6 +512,22 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private lastFrame = 0;
   // mesh + its unit input, kept so `applyTime` can reposition without rebuilding.
   private entries: { mesh: THREE.Mesh; u: ReplaySceneUnitInput }[] = [];
+  private unitById = new Map<number, ReplaySceneUnitInput>();
+
+  // ---- cast lines ----
+  private castGroup = new THREE.Group();
+  private castLines: ReplayCastLine[] = [];
+  private castPool: {
+    ribbon: THREE.Mesh; // camera-facing quad strip along the arc
+    ball: THREE.Mesh;
+    pos: Float32Array; // (CAST_SEGMENTS+1) * 2 verts * 3
+  }[] = [];
+  private _bez: THREE.Vector3[] = Array.from({ length: CAST_SEGMENTS + 1 }, () => new THREE.Vector3());
+  private _av = new THREE.Vector3();
+  private _sv = new THREE.Vector3();
+  private _tv = new THREE.Vector3();
+  private _nv = new THREE.Vector3();
+  private _mv = new THREE.Vector3();
 
   constructor(props: ReplaySceneProps) {
     this.element = document.createElement("div");
@@ -462,6 +562,8 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.scene.add(this.sun.target);
     this.scene.add(this.mist);
     this.scene.add(this.unitsGroup);
+    this.scene.add(this.castGroup);
+    this.buildCastPool();
 
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 20000);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -682,6 +784,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.startMs = props.startMs;
     this.endMs = props.endMs;
     this.playhead = props.startMs;
+    this.castLines = props.castLines ?? [];
     this.setPlaying(false);
     this.reframe();
     this.rebuildUnits(props); // creates meshes, then applyTime(playhead)
@@ -702,6 +805,8 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       else mat.dispose();
     }
     this.entries = [];
+    this.unitById.clear();
+    for (const u of props.units) this.unitById.set(u.unitId, u);
 
     for (const u of props.units) {
       if (u.samples.length === 0) continue;
@@ -779,7 +884,173 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
     deconflictOverlaps(placed);
     dimOverlapping(placed);
+    this.updateCastLines(t);
     this.renderOnce();
+  }
+
+  private buildCastPool(): void {
+    // Shared triangle index for every ribbon: 2 verts per bezier sample,
+    // 2 tris per segment.
+    const idx: number[] = [];
+    for (let i = 0; i < CAST_SEGMENTS; i++) {
+      const a = i * 2;
+      idx.push(a, a + 1, a + 2, a + 2, a + 1, a + 3);
+    }
+    for (let i = 0; i < CAST_POOL; i++) {
+      const pos = new Float32Array((CAST_SEGMENTS + 1) * 2 * 3);
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      geom.setIndex(idx);
+      const ribbon = new THREE.Mesh(
+        geom,
+        new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        }),
+      );
+      ribbon.frustumCulled = false;
+      ribbon.visible = false;
+      const ball = new THREE.Mesh(
+        new THREE.SphereGeometry(1, 12, 8),
+        new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.95,
+          depthWrite: false,
+        }),
+      );
+      ball.frustumCulled = false;
+      ball.visible = false;
+      this.castGroup.add(ribbon, ball);
+      this.castPool.push({ ribbon, ball, pos });
+    }
+  }
+
+  // Draw the attack / heal beams live at time `t` from a fixed pool.
+  // Damage = arcs with a projectile (creatures lob high). Heals = flat
+  // green lasers, or a teardrop loop for a self-cast.
+  private updateCastLines(t: number): void {
+    const { cx, cy } = this.framing;
+    const cam = this.camera.position;
+    let slot = 0;
+    for (const cl of this.castLines) {
+      if (slot >= this.castPool.length) break;
+      if (t < cl.t0) break; // ascending by t0 -- nothing later has started
+      const st = castLineState(cl, t);
+      if (!st) continue;
+      const src = this.unitById.get(cl.sourceUnit);
+      const tgt = this.unitById.get(cl.targetUnit);
+      if (!src || !tgt) continue;
+      const a = posAt(src.samples, t);
+      const b = posAt(tgt.samples, t);
+      if (!a || !b) continue;
+
+      const self = cl.sourceUnit === cl.targetUnit;
+      const r = hash01(cl.sourceUnit, cl.targetUnit, cl.t0);
+      const sx = a.x - cx;
+      const sz = a.y - cy;
+
+      // Source anchor = the caster's front-centre face, aimed at the
+      // target (or at the camera for a self-cast); mid-body height.
+      let dirx: number;
+      let dirz: number;
+      if (self) {
+        dirx = cam.x - sx;
+        dirz = cam.z - sz;
+      } else {
+        dirx = b.x - a.x;
+        dirz = b.y - a.y;
+      }
+      const dl = Math.hypot(dirx, dirz) || 1;
+      dirx /= dl;
+      dirz /= dl;
+      const Ax = sx + dirx * src.size * 0.5;
+      const Az = sz + dirz * src.size * 0.5;
+      const Ay = FLOOR_LIFT + HOVER + src.size * 0.5;
+
+      const bez = this._bez;
+      if (cl.heal && self) {
+        // Teardrop loop: pinched at the anchor, bulging up + camera-ward.
+        const rlx = -dirz; // camera-facing horizontal, perpendicular to `dir`
+        const rlz = dirx;
+        const R = Math.max(0.8, src.size * 0.6);
+        const H = src.size + 2.5;
+        for (let i = 0; i <= CAST_SEGMENTS; i++) {
+          const th = (i / CAST_SEGMENTS) * Math.PI * 2;
+          const off = Math.sin(th) * R * (0.5 - 0.5 * Math.cos(th));
+          bez[i].set(Ax + rlx * off, Ay + (1 - Math.cos(th)) * H * 0.5, Az + rlz * off);
+        }
+      } else {
+        const B = this._tv.set(b.x - cx, FLOOR_LIFT + HOVER + tgt.size + 0.2, b.y - cy);
+        const C = this._sv.set((Ax + B.x) / 2, (Ay + B.y) / 2, (Az + B.z) / 2);
+        if (!cl.heal) {
+          // Damage: lateral jitter + a high arc.
+          const dx = B.x - Ax;
+          const dz = B.z - Az;
+          const len = Math.hypot(dx, dz) || 1;
+          C.x += (-dz / len) * (r - 0.5) * CAST_SPREAD;
+          C.z += (dx / len) * (r - 0.5) * CAST_SPREAD;
+          const peak = cl.fromPlayer
+            ? CAST_PEAK_PLAYER + r * CAST_PEAK_PLAYER_RAND
+            : CAST_PEAK_ENEMY + r * CAST_PEAK_ENEMY_RAND;
+          C.y = Math.max(Ay, B.y) + 2 * peak;
+        }
+        const A = this._av.set(Ax, Ay, Az);
+        for (let i = 0; i <= CAST_SEGMENTS; i++) quadBezier(A, C, B, i / CAST_SEGMENTS, bez[i]);
+      }
+
+      const col = cl.heal
+        ? cssColor(CAST_HEAL_COLOR)
+        : cl.fromPlayer
+          ? cssColor(src.color)
+          : cssColor(CAST_ENEMY_COLOR);
+      const halfW = !cl.heal && !cl.fromPlayer ? CAST_HALFW_ENEMY : CAST_HALFW_PLAYER;
+
+      const s = this.castPool[slot++];
+      for (let i = 0; i <= CAST_SEGMENTS; i++) {
+        const p = bez[i];
+        const prev = bez[Math.max(0, i - 1)];
+        const next = bez[Math.min(CAST_SEGMENTS, i + 1)];
+        this._nv.subVectors(next, prev); // tangent
+        this._mv.subVectors(cam, p).cross(this._nv); // ribbon side (faces camera)
+        const l = this._mv.length() || 1;
+        this._mv.multiplyScalar(halfW / l);
+        const o = i * 6;
+        s.pos[o] = p.x - this._mv.x;
+        s.pos[o + 1] = p.y - this._mv.y;
+        s.pos[o + 2] = p.z - this._mv.z;
+        s.pos[o + 3] = p.x + this._mv.x;
+        s.pos[o + 4] = p.y + this._mv.y;
+        s.pos[o + 5] = p.z + this._mv.z;
+      }
+      s.ribbon.geometry.attributes.position.needsUpdate = true;
+      s.ribbon.visible = true;
+      const rm = s.ribbon.material as THREE.MeshBasicMaterial;
+      // st.lineOpacity is scaled to [0, CAST_LINE_OPACITY]; renormalise
+      // so heals peak at CAST_HEAL_OPACITY instead.
+      rm.opacity = cl.heal
+        ? st.lineOpacity * (CAST_HEAL_OPACITY / CAST_LINE_OPACITY)
+        : st.lineOpacity;
+      rm.color.copy(col);
+
+      // Projectile follows the curve on success (both damage and heals).
+      if (st.ball != null) {
+        const bi = Math.round(st.ball * CAST_SEGMENTS);
+        s.ball.position.copy(bez[Math.min(CAST_SEGMENTS, bi)]);
+        s.ball.scale.setScalar(!cl.heal && !cl.fromPlayer ? CAST_BALL_R_ENEMY : CAST_BALL_R_PLAYER);
+        (s.ball.material as THREE.MeshBasicMaterial).color.copy(col);
+        s.ball.visible = true;
+      } else {
+        s.ball.visible = false;
+      }
+    }
+    for (; slot < this.castPool.length; slot++) {
+      this.castPool[slot].ribbon.visible = false;
+      this.castPool[slot].ball.visible = false;
+    }
   }
 
   private resize(): void {
@@ -808,7 +1079,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.ro.disconnect();
     this.controls.removeEventListener("change", this.renderOnce);
     this.controls.dispose();
-    this.rebuildUnits({ units: [], fitBox: null, startMs: 0, endMs: 0 });
+    this.rebuildUnits({ units: [], castLines: [], fitBox: null, startMs: 0, endMs: 0 });
     this.scene.traverse((o: THREE.Object3D) => {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();

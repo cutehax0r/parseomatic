@@ -240,10 +240,26 @@ export interface ReplayUnit {
   faceEvents: ReplayFaceHint[];
 }
 
+// A hostile creature attacking a player -- the replay's arcing
+// projectile line. Casts (t0=CAST_START, t1=resolve) and melee swings
+// (t0==t1, instant). The ball only flies on `success`.
+export interface ReplayCastLine {
+  sourceUnit: number;
+  targetUnit: number;
+  t0: number;
+  t1: number;
+  instant: boolean;
+  success: boolean;
+  fromPlayer: boolean; // player-side source: flatter arc, caster's class colour
+  heal: boolean; // same-side heal: straight green beam, or a teardrop loop if self
+  spellId: number | null; // null for a melee swing
+}
+
 export interface ReplaySeries {
   startMs: number;
   endMs: number;
   units: ReplayUnit[];
+  castLines: ReplayCastLine[]; // hostile -> player attack lines, ascending by t0
   // Tight [minX, maxX, minY, maxY] over every unit's fixes -- the scene's
   // framing box. null if nothing carried a position.
   fitBox: [number, number, number, number] | null;

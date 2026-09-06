@@ -29,9 +29,65 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::parser::event::{EventStore, LineKind, StandaloneKind, Suffix};
-use crate::parser::intern::{InternTables, NO_UNIT};
+use crate::parser::event::{EventStore, LineKind, Prefix, StandaloneKind, Suffix};
+use crate::parser::intern::{InternTables, UnitKind, NO_SPELL, NO_UNIT};
 use crate::query;
+
+/// The player behind a unit: the unit itself if it's a player, or its
+/// owner if that owner is a player (a pet/guardian). `None` for a
+/// hostile creature.
+fn player_of(tables: &InternTables, id: u32) -> Option<u32> {
+    if id == NO_UNIT {
+        return None;
+    }
+    let rec = tables.guids.get(id);
+    if rec.kind == UnitKind::Player {
+        return Some(id);
+    }
+    match rec.owner_id {
+        Some(owner) if tables.guids.get(owner).kind == UnitKind::Player => Some(owner),
+        _ => None,
+    }
+}
+
+/// A creature that isn't player-owned -- a real enemy.
+fn is_hostile(tables: &InternTables, id: u32) -> bool {
+    id != NO_UNIT
+        && tables.guids.get(id).kind == UnitKind::Creature
+        && player_of(tables, id).is_none()
+}
+
+/// Classify a `src -> dst` pair as a drawable attack line: hostile
+/// creature -> player, or player -> hostile creature. Returns
+/// `(source, target, from_player)`.
+fn attack_pair(tables: &InternTables, src: u32, dst: u32) -> Option<(u32, u32, bool)> {
+    if is_hostile(tables, src) {
+        return player_of(tables, dst).map(|p| (src, p, false));
+    }
+    if player_of(tables, src) == Some(src) && is_hostile(tables, dst) {
+        return Some((src, dst, true));
+    }
+    None
+}
+
+/// Classify a heal `src -> dst` as same-side: both player-side (a pet's
+/// heal resolves to its owner) or both hostile. Returns
+/// `(source, target, from_player)`.
+fn heal_pair(tables: &InternTables, src: u32, dst: u32) -> Option<(u32, u32, bool)> {
+    if let (Some(s), Some(d)) = (player_of(tables, src), player_of(tables, dst)) {
+        return Some((s, d, true));
+    }
+    if is_hostile(tables, src) && is_hostile(tables, dst) {
+        return Some((src, dst, false));
+    }
+    None
+}
+
+/// Either endpoint of a cast we might turn into a line -- a hostile
+/// creature or a player casting directly (not a pet).
+fn line_endpoint(tables: &InternTables, id: u32) -> bool {
+    is_hostile(tables, id) || player_of(tables, id) == Some(id)
+}
 
 /// A lone instant `CAST_SUCCESS` (and, for now, a channel's opening
 /// success) spins the cube for this long.
@@ -67,6 +123,32 @@ pub struct FaceHint {
     pub y: f32,
 }
 
+/// An attack between a hostile creature and a player, either direction --
+/// drives the replay's arcing projectile animation. Covers spell casts
+/// (`CAST_START`->resolve) and melee swings.
+pub struct CastLine {
+    pub source_unit: u32,
+    pub target_unit: u32,
+    /// When the line appears -- `CAST_START`, or the instant/swing time.
+    pub t0: i64,
+    /// When the cast resolves -- `CAST_SUCCESS` / `_FAILED` / interrupt /
+    /// death. Equal to `t0` for an instant cast or a swing.
+    pub t1: i64,
+    /// No `CAST_START` seen (instant cast, or a melee swing).
+    pub instant: bool,
+    /// Ended in `CAST_SUCCESS` (always true for instants / swings). The
+    /// projectile only flies on success.
+    pub success: bool,
+    /// Player-side source (vs a hostile creature). Player *attacks* draw
+    /// flatter + in the caster's class colour.
+    pub from_player: bool,
+    /// A heal (same-side) rather than an attack -- drawn as a straight
+    /// green beam, or a teardrop loop when `source_unit == target_unit`.
+    pub heal: bool,
+    /// `NO_SPELL` for a melee swing.
+    pub spell_id: u16,
+}
+
 pub struct ReplayUnit {
     pub unit_id: u32,
     pub guid: String,
@@ -86,6 +168,8 @@ pub struct ReplaySeries {
     pub start_ms: i64,
     pub end_ms: i64,
     pub units: Vec<ReplayUnit>,
+    /// Hostile-creature-attacks-player lines, ascending by `t0`.
+    pub cast_lines: Vec<CastLine>,
     /// Tight `[min_x, max_x, min_y, max_y]` over **every** unit's fixes --
     /// what the scene frames on. `None` if nothing carried a position.
     pub fit_box: Option<[f32; 4]>,
@@ -146,6 +230,7 @@ pub fn series(
         start_ms,
         end_ms,
         units: Vec::new(),
+        cast_lines: Vec::new(),
         fit_box: None,
         map_box: None,
     };
@@ -171,6 +256,10 @@ pub fn series(
     }
 
     let mut accs: FxHashMap<u32, Acc> = FxHashMap::default();
+    // Open hostile cast: source -> (t0, spell, target-at-start).
+    let mut cast_pending: FxHashMap<u32, (i64, u16, u32)> = FxHashMap::default();
+    // Dedup the SWING_DAMAGE / SWING_DAMAGE_LANDED pair (same ts/src/dst).
+    let mut last_swing: Option<(i64, u32, u32)> = None;
 
     for row in lo..hi {
         let ts = events.timestamp_ms[row];
@@ -251,6 +340,131 @@ pub fn series(
                             spell_id: espell,
                         });
                     }
+                }
+            }
+            _ => {}
+        }
+
+        // ---- Cast lines: hostile creature <-> player, both directions.
+        // Separate from the Acc match above so it can't disturb the
+        // spin/death bookkeeping. `attacker` is the cast's source when
+        // it's a line endpoint; `interrupted` the dest when an incoming
+        // interrupt/death ends someone's cast.
+        let attacker = (src != NO_UNIT && line_endpoint(tables, src)).then_some(src);
+        let interrupted = (dst != NO_UNIT && line_endpoint(tables, dst)).then_some(dst);
+        match events.kind[row] {
+            LineKind::Composed { suffix: Suffix::CastStart, .. } if attacker.is_some() => {
+                cast_pending.insert(attacker.unwrap(), (ts, events.spell[row], dst));
+            }
+            LineKind::Composed { suffix: Suffix::CastSuccess, .. } if attacker.is_some() => {
+                let a = attacker.unwrap();
+                let (t0, spell, tgt0, instant) = match cast_pending.remove(&a) {
+                    Some((t0, s, tgt)) => (t0, s, tgt, false),
+                    None => (ts, events.spell[row], NO_UNIT, true),
+                };
+                let raw_tgt = if dst != NO_UNIT { dst } else { tgt0 };
+                if let Some((source_unit, target_unit, from_player)) = attack_pair(tables, a, raw_tgt) {
+                    out.cast_lines.push(CastLine {
+                        source_unit,
+                        target_unit,
+                        t0,
+                        t1: ts,
+                        instant,
+                        success: true,
+                        from_player,
+                        heal: false,
+                        spell_id: spell,
+                    });
+                }
+            }
+            LineKind::Composed { suffix: Suffix::CastFailed, .. } if attacker.is_some() => {
+                let a = attacker.unwrap();
+                if let Some((t0, spell, tgt)) = cast_pending.remove(&a) {
+                    if let Some((source_unit, target_unit, from_player)) = attack_pair(tables, a, tgt) {
+                        out.cast_lines.push(CastLine {
+                            source_unit,
+                            target_unit,
+                            t0,
+                            t1: ts,
+                            instant: false,
+                            success: false,
+                            from_player,
+                            heal: false,
+                            spell_id: spell,
+                        });
+                    }
+                }
+            }
+            LineKind::Composed { suffix: Suffix::Interrupt, .. } if interrupted.is_some() => {
+                let c = interrupted.unwrap();
+                if let Some((t0, spell, tgt)) = cast_pending.remove(&c) {
+                    if let Some((source_unit, target_unit, from_player)) = attack_pair(tables, c, tgt) {
+                        out.cast_lines.push(CastLine {
+                            source_unit,
+                            target_unit,
+                            t0,
+                            t1: ts,
+                            instant: false,
+                            success: false,
+                            from_player,
+                            heal: false,
+                            spell_id: spell,
+                        });
+                    }
+                }
+            }
+            LineKind::Standalone(StandaloneKind::UnitDied) if interrupted.is_some() => {
+                let c = interrupted.unwrap();
+                if let Some((t0, spell, tgt)) = cast_pending.remove(&c) {
+                    if let Some((source_unit, target_unit, from_player)) = attack_pair(tables, c, tgt) {
+                        out.cast_lines.push(CastLine {
+                            source_unit,
+                            target_unit,
+                            t0,
+                            t1: ts,
+                            instant: false,
+                            success: false,
+                            from_player,
+                            heal: false,
+                            spell_id: spell,
+                        });
+                    }
+                }
+            }
+            LineKind::Composed { prefix: Prefix::Swing, suffix: Suffix::Damage } => {
+                if let Some((source_unit, target_unit, from_player)) = attack_pair(tables, src, dst) {
+                    let key = (ts, src, dst);
+                    if last_swing != Some(key) {
+                        last_swing = Some(key);
+                        out.cast_lines.push(CastLine {
+                            source_unit,
+                            target_unit,
+                            t0: ts,
+                            t1: ts,
+                            instant: true,
+                            success: true,
+                            from_player,
+                            heal: false,
+                            spell_id: NO_SPELL,
+                        });
+                    }
+                }
+            }
+            // Direct heals only (not HoT ticks) -- same-side, straight
+            // green beam, or a teardrop loop when self-cast.
+            LineKind::Composed { prefix: Prefix::Spell, suffix: Suffix::Heal } => {
+                if let Some((source_unit, target_unit, from_player)) = heal_pair(tables, src, dst) {
+                    out.cast_lines.push(CastLine {
+                        source_unit,
+                        target_unit,
+                        t0: ts,
+                        t1: ts,
+                        instant: true,
+                        success: true,
+                        from_player,
+                        heal: true,
+                        spell_id: events.spell[row],
+                    });
                 }
             }
             _ => {}
@@ -349,6 +563,7 @@ pub fn series(
     }
 
     out.units.sort_by_key(|u| u.unit_id);
+    out.cast_lines.sort_by_key(|c| c.t0);
     out
 }
 
@@ -399,6 +614,75 @@ mod tests {
              {victim},0000000000000000,50,{max_hp},0,0,0,0,0,0,0,0,{xy},2607,0,1,\
              40,0,-1,1,0,0,0,nil,nil,nil"
         )
+    }
+
+    #[test]
+    fn cast_lines_for_hostile_casts_and_swings_at_players() {
+        let boss = "Creature-0-0-0-0-9-1";
+        let player = "Player-1-1";
+        let (tables, store, mmap) = store_from(&[
+            // Hostile hard cast at a player: START -> SUCCESS.
+            format!(
+                "9/3/2026 19:23:01.000-6  SPELL_CAST_START,{boss},\"Boss\",0x10a48,0x0,\
+                 {player},\"Pl-R-US\",0x512,0x0,300,\"Bolt\",0x20"
+            ),
+            format!(
+                "9/3/2026 19:23:03.000-6  SPELL_CAST_SUCCESS,{boss},\"Boss\",0x10a48,0x0,\
+                 {player},\"Pl-R-US\",0x512,0x0,300,\"Bolt\",0x20,\
+                 {boss},0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,5.0,5.0,2607,0,1"
+            ),
+            // Melee swing at the player (the LANDED dup should collapse).
+            format!(
+                "9/3/2026 19:23:04.000-6  SWING_DAMAGE,{boss},\"Boss\",0x10a48,0x0,\
+                 {player},\"Pl-R-US\",0x512,0x0,{boss},0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,\
+                 0,0,2607,0,1,900,0,-1,1,0,0,0,nil,nil,nil"
+            ),
+            format!(
+                "9/3/2026 19:23:04.000-6  SWING_DAMAGE_LANDED,{boss},\"Boss\",0x10a48,0x0,\
+                 {player},\"Pl-R-US\",0x512,0x0,{player},0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,\
+                 0,0,2607,0,1,900,0,-1,1,0,0,0,nil,nil,nil"
+            ),
+            // A player casting at the boss -> a line the OTHER way.
+            cast_success("05.000", player, boss, "Boss", "6.0,6.0"),
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[4] + 1);
+        assert_eq!(s.cast_lines.len(), 3, "boss cast + boss swing (dup collapsed) + player cast");
+
+        let cast = s.cast_lines.iter().find(|c| !c.instant && !c.from_player).unwrap();
+        assert!(cast.success);
+        assert_eq!(cast.t0, store.timestamp_ms[0]);
+        assert_eq!(cast.t1, store.timestamp_ms[1]);
+
+        let swing = s.cast_lines.iter().find(|c| c.instant && c.spell_id == NO_SPELL).unwrap();
+        assert!(swing.success && !swing.from_player);
+        assert_eq!(swing.t0, swing.t1);
+
+        let pl = s.cast_lines.iter().find(|c| c.from_player).unwrap();
+        assert!(pl.instant && pl.success);
+        assert_eq!(pl.source_unit, store.source_unit[4]);
+        assert_eq!(pl.target_unit, store.dest_unit[4]);
+    }
+
+    #[test]
+    fn heal_lines_same_side_and_self() {
+        let p1 = "Player-1-1";
+        let p2 = "Player-2-2";
+        let heal = |t: &str, src: &str, dst: &str| {
+            format!(
+                "9/3/2026 19:23:{t}-6  SPELL_HEAL,{src},\"H-R-US\",0x512,0x0,\
+                 {dst},\"T-R-US\",0x512,0x0,100,\"Mend\",0x8,\
+                 {dst},0000000000000000,50,100,0,0,0,0,0,0,0,0,0,0,1.0,1.0,2607,0,1,4000,0,0,nil"
+            )
+        };
+        let (tables, store, mmap) = store_from(&[
+            heal("01.000", p1, p2), // cross heal -> straight beam
+            heal("02.000", p1, p1), // self heal -> teardrop
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[1] + 1);
+        assert_eq!(s.cast_lines.len(), 2);
+        assert!(s.cast_lines.iter().all(|c| c.heal && c.from_player && c.instant));
+        assert_ne!(s.cast_lines[0].source_unit, s.cast_lines[0].target_unit);
+        assert_eq!(s.cast_lines[1].source_unit, s.cast_lines[1].target_unit, "self heal");
     }
 
     #[test]

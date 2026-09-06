@@ -37,7 +37,7 @@ const spec: NodeSpec = {
       type: "replay-scene",
       id: "scene",
       span: 1,
-      props: { units: [], fitBox: null, startMs: 0, endMs: 0 },
+      props: { units: [], castLines: [], fitBox: null, startMs: 0, endMs: 0 },
     },
   ],
 };
@@ -200,8 +200,16 @@ async function paint(): Promise<void> {
     };
   });
 
+  // Cast lines whose source didn't make the render cut (no position
+  // fixes) can't be drawn -- filter to renderable sources.
+  const shown = new Set(sceneUnits.map((u) => u.unitId));
+  const castLines = series.castLines.filter(
+    (c) => shown.has(c.sourceUnit) && shown.has(c.targetUnit),
+  );
+
   built.get("scene")?.update({
     units: sceneUnits,
+    castLines,
     fitBox: series.fitBox,
     startMs: series.startMs,
     endMs: series.endMs,

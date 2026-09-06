@@ -1527,10 +1527,29 @@ struct ReplayUnitRow {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ReplayCastLineRow {
+    source_unit: u32,
+    target_unit: u32,
+    t0: i64,
+    t1: i64,
+    instant: bool,
+    success: bool,
+    /// Player-side source (vs a hostile creature).
+    from_player: bool,
+    /// A same-side heal rather than an attack.
+    heal: bool,
+    /// `null` for a melee swing.
+    spell_id: Option<u16>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ReplaySeriesRow {
     start_ms: i64,
     end_ms: i64,
     units: Vec<ReplayUnitRow>,
+    /// Hostile-creature-attacks-player lines, ascending by `t0`.
+    cast_lines: Vec<ReplayCastLineRow>,
     /// Tight `[minX, maxX, minY, maxY]` over every unit's fixes -- the
     /// scene's framing box. `null` if nothing carried a position.
     fit_box: Option<[f32; 4]>,
@@ -1557,6 +1576,21 @@ fn replay_series(
         end_ms: s.end_ms,
         fit_box: s.fit_box,
         map_box: s.map_box,
+        cast_lines: s
+            .cast_lines
+            .into_iter()
+            .map(|c| ReplayCastLineRow {
+                source_unit: c.source_unit,
+                target_unit: c.target_unit,
+                t0: c.t0,
+                t1: c.t1,
+                instant: c.instant,
+                success: c.success,
+                from_player: c.from_player,
+                heal: c.heal,
+                spell_id: (c.spell_id != NO_SPELL).then_some(c.spell_id),
+            })
+            .collect(),
         units: s
             .units
             .into_iter()
