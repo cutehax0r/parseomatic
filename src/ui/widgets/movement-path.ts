@@ -129,23 +129,34 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   const element = document.createElement("div");
   element.className = "chart movement-path";
 
+  // Header row: [legend] ... [playhead time] ... [◀ ▶]
   const header = document.createElement("div");
-  header.className = "chart-header";
-  const title = document.createElement("span");
-  title.className = "chart-title";
-  title.textContent = "Path";
+  header.className = "chart-header movement-path-header";
   const legend = document.createElement("div");
   legend.className = "chart-legend";
   legend.innerHTML =
     '<span class="chart-legend-item" data-series="trail"><i></i>Start → End</span>' +
     '<span class="chart-legend-item" data-series="death"><i></i>Death</span>';
-  header.append(title, legend);
+  const readout = document.createElement("span");
+  readout.className = "movement-path-readout";
+  const controls = document.createElement("div");
+  controls.className = "movement-path-controls";
+  const prevBtn = document.createElement("button");
+  prevBtn.type = "button";
+  prevBtn.className = "movement-path-step";
+  prevBtn.textContent = "◀";
+  prevBtn.title = "Step back (←)";
+  const nextBtn = document.createElement("button");
+  nextBtn.type = "button";
+  nextBtn.className = "movement-path-step";
+  nextBtn.textContent = "▶";
+  nextBtn.title = "Step forward (→)";
+  controls.append(prevBtn, nextBtn);
+  header.append(legend, readout, controls);
 
   const body = document.createElement("div");
   body.className = "movement-path-body";
 
-  const main = document.createElement("div");
-  main.className = "movement-path-main";
   const plot = document.createElement("div");
   plot.className = "chart-plot";
   plot.tabIndex = 0;
@@ -161,23 +172,6 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   tooltip.hidden = true;
   plot.append(svg, empty, tooltip);
 
-  const controls = document.createElement("div");
-  controls.className = "movement-path-controls";
-  const prevBtn = document.createElement("button");
-  prevBtn.type = "button";
-  prevBtn.className = "movement-path-step";
-  prevBtn.textContent = "◀";
-  prevBtn.title = "Step back (←)";
-  const readout = document.createElement("span");
-  readout.className = "movement-path-readout";
-  const nextBtn = document.createElement("button");
-  nextBtn.type = "button";
-  nextBtn.className = "movement-path-step";
-  nextBtn.textContent = "▶";
-  nextBtn.title = "Step forward (→)";
-  controls.append(prevBtn, readout, nextBtn);
-  main.append(plot, controls);
-
   const side = document.createElement("div");
   side.className = "movement-path-side";
   const sideHead = document.createElement("div");
@@ -186,7 +180,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   sideList.className = "movement-path-events";
   side.append(sideHead, sideList);
 
-  body.append(main, side);
+  body.append(plot, side);
   element.append(header, body);
 
   let current: MovementPathProps = props;

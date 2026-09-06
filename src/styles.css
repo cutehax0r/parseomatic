@@ -1940,11 +1940,46 @@ body {
   margin-right: 5px;
 }
 
-/* movement-path -- top-down "radar" (square) + a per-moment event
-   table beside it. */
-.movement-path {
-  max-width: 940px;
-  margin-inline: auto;
+/* movement-path -- full-width like the graph below it: header row
+   [legend .. playhead time .. ◀ ▶], then [square radar | event table]. */
+.movement-path-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.movement-path-header .chart-legend {
+  flex: 0 0 auto;
+  justify-content: flex-start;
+}
+
+.movement-path-readout {
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.movement-path-controls {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.movement-path-step {
+  min-width: 28px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.movement-path-step:hover {
+  background: var(--accent-bg);
 }
 
 .movement-path-body {
@@ -1954,15 +1989,11 @@ body {
   align-items: flex-start;
 }
 
-.movement-path-main {
-  flex: 1 1 360px;
-  max-width: 520px;
-  min-width: 0;
-}
-
 .movement-path .chart-plot {
+  flex: 1 1 380px;
   aspect-ratio: 1 / 1;
-  width: 100%;
+  max-width: 640px;
+  min-width: 0;
   outline: none;
   border-radius: 6px;
   /* tooltip is positioned by both left AND top inside the plot */
@@ -1983,42 +2014,11 @@ body {
   top: 0; /* widget sets an explicit top; override the shared `top: 6px` */
 }
 
-.movement-path-controls {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 6px;
-}
-
-.movement-path-step {
-  min-width: 28px;
-  padding: 2px 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 5px;
-  background: var(--bg-elevated);
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.movement-path-step:hover {
-  background: var(--accent-bg);
-}
-
-.movement-path-readout {
-  min-width: 68px;
-  text-align: center;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
-}
-
 /* --- side event table --- */
 .movement-path-side {
-  flex: 1 1 260px;
+  flex: 1 1 240px;
   min-width: 220px;
-  max-width: 380px;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2031,7 +2031,9 @@ body {
 }
 
 .movement-path-events {
-  max-height: 340px;
+  flex: 1 1 auto;
+  min-height: 180px;
+  max-height: 640px;
   overflow-y: auto;
   overscroll-behavior: contain;
   border: 1px solid var(--border);
