@@ -76,8 +76,8 @@ const DEATH_GROW_S = 4; // death square: +1x base per this many seconds dead
 const DEATH_MAX_MULT = 6; // cap on the death square radius
 const TRAIL_CHUNK = 6; // fixes per gradient segment of the trail
 const HUE_SWEEP = 300; // degrees -- red -> ... -> magenta
-const HOP_GRID_MS = 4000; // ◀ ▶ hop by at least this through open movement...
-const HALF_WINDOW_MS = 3000; // side-table window is +/- this around a non-parked playhead
+const HOP_GRID_MS = 4000; // ◀ ▶ hop by at least this through open movement
+const MIN_STOP_GAP_MS = 1200; // collapse stops closer than this (no micro-segments)
 
 function rampColor(frac: number): string {
   return `hsl(${Math.round(Math.min(1, Math.max(0, frac)) * HUE_SWEEP)} 78% 62%)`;
@@ -398,7 +398,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   }
 
   function renderSide() {
-    const { events, startMs, endMs } = current;
+    const { events, startMs } = current;
 
     if (playT === null) {
       readout.textContent = "";
@@ -406,19 +406,25 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       return;
     }
 
-    const parked = standSpans.find((s) => playT! >= s.s && playT! <= s.e);
+    // `< s.e` (not `<=`) so landing exactly on a span's exit reads as
+    // the next segment, not a re-show of the span.
+    const parked = standSpans.find((s) => playT! >= s.s && playT! < s.e);
     let winStart: number;
     let winEnd: number;
     if (parked) {
+      // Whole standstill span -- and the ◀ ▶ stops skip its interior, so
+      // the next press lands on the span's exit.
       winStart = parked.s;
       winEnd = parked.e;
       readout.textContent =
         `stood ${fmtDur(parked.e - parked.s)} · ` +
         `${formatAxisTime(parked.s - startMs, 0)}–${formatAxisTime(parked.e - startMs, 0)}`;
     } else {
-      winStart = Math.max(startMs, playT - HALF_WINDOW_MS);
-      winEnd = Math.min(endMs, playT + HALF_WINDOW_MS);
-      readout.textContent = `${formatAxisTime(playT - startMs, 0.1)} · ±${HALF_WINDOW_MS / 1000}s`;
+      // The segment the playhead sits in -- consecutive segments don't
+      // overlap, so every ◀ ▶ press shows a fresh slice of events.
+      [winStart, winEnd] = segmentAt(playT);
+      readout.textContent =
+        `${formatAxisTime(winStart - startMs, 0.1)}–${formatAxisTime(winEnd - startMs, 0.1)}`;
     }
 
     const rows = events.filter((e) => e.tMs >= winStart && e.tMs <= winEnd);
@@ -462,18 +468,28 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     render();
   }
 
-  // ◀ ▶ hop between "stops" -- the standstill span edges, the window
-  // ends, and a coarse time grid for open-movement stretches -- so one
-  // press clears a whole 30 s stand instead of creeping 1 s at a time.
+  // Ordered "stops" the playhead snaps between: standstill span edges,
+  // the window ends, and a coarse grid for open-movement stretches. Grid
+  // points that land *inside* a standstill span are dropped so one ▶
+  // clears the whole stand instead of creeping through it. Consecutive
+  // segments (stop -> next stop) are the side table's non-overlapping
+  // windows, so every press changes the list.
   function stopTimes(): number[] {
     const { startMs, endMs } = current;
+    const insideStand = (t: number) => standSpans.some((s) => t > s.s && t < s.e);
     const set = new Set<number>([startMs, endMs]);
     for (const s of standSpans) {
       set.add(s.s);
       set.add(s.e);
     }
-    for (let t = startMs + HOP_GRID_MS; t < endMs; t += HOP_GRID_MS) set.add(t);
-    return [...set].sort((a, b) => a - b);
+    for (let t = startMs + HOP_GRID_MS; t < endMs; t += HOP_GRID_MS) {
+      if (!insideStand(t)) set.add(t);
+    }
+    const out: number[] = [];
+    for (const t of [...set].sort((a, b) => a - b)) {
+      if (!out.length || t - out[out.length - 1] >= MIN_STOP_GAP_MS) out.push(t);
+    }
+    return out;
   }
 
   function step(dir: 1 | -1) {
@@ -484,6 +500,21 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
         ? stops.find((t) => t > from + 1)
         : [...stops].reverse().find((t) => t < from - 1);
     setPlayT(next ?? (dir === 1 ? current.endMs : current.startMs));
+  }
+
+  // [previous stop <= t, next stop > t] -- the segment `t` sits in.
+  function segmentAt(t: number): [number, number] {
+    const stops = stopTimes();
+    let segStart = current.startMs;
+    let segEnd = current.endMs;
+    for (const s of stops) {
+      if (s <= t) segStart = s;
+      else {
+        segEnd = s;
+        break;
+      }
+    }
+    return [segStart, segEnd];
   }
 
   prevBtn.addEventListener("click", () => step(-1));
