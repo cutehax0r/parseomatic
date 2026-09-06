@@ -70,6 +70,32 @@ const STACK_DIST = 0.85;
 const PLAYER_STEP = 0.1;
 const ADD_STEP = 0.25;
 
+// Spawn-in: an enemy that isn't active at the window start sits
+// `SPAWN_RISE` yд above its spot at 0 opacity until `SPAWN_LEAD_MS`
+// before its first activity, then slides down + fades to full, arriving
+// on time. "First activity" = its first position fix (`samples[0]`).
+const SPAWN_RISE = 50;
+const SPAWN_LEAD_MS = 1000;
+
+// yд-above-normal + opacity for an enemy whose first activity is
+// `firstMs`, viewed at `t`. Smoothstepped.
+function spawnAt(firstMs: number, t: number): { yOffset: number; opacity: number } {
+  const lead = firstMs - t;
+  if (lead <= 0) return { yOffset: 0, opacity: 1 };
+  if (lead >= SPAWN_LEAD_MS) return { yOffset: SPAWN_RISE, opacity: 0 };
+  const k = lead / SPAWN_LEAD_MS; // 1 -> 0
+  const e = k * k * (3 - 2 * k);
+  return { yOffset: SPAWN_RISE * e, opacity: 1 - e };
+}
+
+function setMeshOpacity(mesh: THREE.Mesh, o: number): void {
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const m of mats) {
+    m.transparent = o < 1;
+    m.opacity = o;
+  }
+}
+
 // Resolve a `var(--token)` (or pass through a literal) to the raw CSS
 // value string, e.g. "#494d64".
 function cssValue(spec: string): string {
@@ -463,6 +489,18 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       const px = at.x - cx;
       const pz = at.y - cy;
       mesh.position.set(px, FLOOR_LIFT + HOVER + u.size / 2, pz);
+
+      // Enemies not active at the window start spawn in from above.
+      let spawned = true;
+      if (u.team === "enemy" && u.samples.length > 0) {
+        const s = spawnAt(u.samples[0].tMs, props.startMs);
+        mesh.position.y += s.yOffset;
+        setMeshOpacity(mesh, s.opacity);
+        mesh.visible = s.opacity > 0.01;
+        mesh.castShadow = s.opacity > 0.9;
+        spawned = s.opacity > 0.9;
+      }
+
       mesh.userData = {
         unitId: u.unitId,
         team: u.team,
@@ -474,7 +512,16 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       } satisfies Record<string, unknown>;
       this.unitsGroup.add(mesh);
 
-      placed.push({ mesh, x: px, z: pz, team: u.team, size: u.size, rank: u.stackRank, guid: u.guid });
+      placed.push({
+        mesh,
+        x: px,
+        z: pz,
+        team: u.team,
+        size: u.size,
+        rank: u.stackRank,
+        guid: u.guid,
+        spawned,
+      });
     }
 
     deconflictOverlaps(placed);
@@ -558,6 +605,7 @@ interface Placement {
   size: number;
   rank: number;
   guid: string;
+  spawned: boolean; // false while an enemy is still parked high, mid spawn-in
 }
 
 const overlaps = (a: Placement, b: Placement): boolean =>
@@ -593,13 +641,14 @@ function deconflictOverlaps(placed: Placement[]): void {
   }
 
   const players = placed.filter((p) => p.team === "player");
-  for (const e of placed) {
-    if (e.team === "enemy" && players.some((p) => overlaps(p, e))) {
+  const enemies = placed.filter((p) => p.team === "enemy" && p.spawned);
+  for (const e of enemies) {
+    if (players.some((p) => overlaps(p, e))) {
       e.mesh.position.y = FLOOR_LIFT + e.size / 2; // flush on the deck
     }
   }
 
-  for (const cl of overlapClusters(placed.filter((p) => p.team === "enemy"))) {
+  for (const cl of overlapClusters(enemies)) {
     if (cl.length < 2) continue;
     cl.sort((a, b) => b.size - a.size || (a.guid < b.guid ? -1 : a.guid > b.guid ? 1 : 0));
     cl.forEach((e, i) => {
