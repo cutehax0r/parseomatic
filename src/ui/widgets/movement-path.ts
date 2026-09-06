@@ -11,12 +11,21 @@
 // filled dot.
 //
 // A PLAYHEAD marks one moment on the trail. It opens on the first fix of
-// the window and moves by clicking the plot, the arrow buttons under it,
-// or the keyboard (the plot is focusable; Home/End jump to the ends).
-// The side table then lists the player's cast / damage / heal events in
-// a window around that moment -- the whole standstill span when the
-// playhead is parked, otherwise +/- HALF_WINDOW_MS. Scrollable, fixed
+// the window and moves by clicking near the trail, the ◀ ▶ buttons in
+// the header, or the keyboard (the plot is focusable; Home/End jump to
+// the ends). ◀ ▶ hop between "stops" -- standstill span edges, the
+// window ends, and a coarse grid across open movement -- so one press
+// clears a whole long stand instead of creeping through it.
+//
+// The side table lists the player's cast / damage / heal events for a
+// window around that moment: the whole standstill span when the playhead
+// is parked, otherwise the segment between the two adjacent stops (so
+// consecutive presses show non-overlapping slices). Scrollable, fixed
 // height, so it doesn't jump as you scrub.
+//
+// Hovering the map fills a status strip pinned inside its top edge: the
+// fix time, or the marker's start + duration ("stood 12.4s" / "dead
+// 18s") over a standstill circle or death square.
 //
 // Framing: `fitBox` -- the tight bounds over EVERY player's fixes in the
 // window ("the area the raid played in") -- padded 10%. Falls back to

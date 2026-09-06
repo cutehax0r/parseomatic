@@ -86,7 +86,8 @@ advanced block describes its `infoGUID` field, which the fixtures show is
 the event's **dest** for every damage / heal / energize effect and the
 **source** only for `SPELL_CAST_SUCCESS`. So `pos_x`/`pos_y` on a
 player's outgoing `SPELL_DAMAGE` row are the *target's* coordinates, not
-the player's. `EventStore.pos_unit` returns the unit each row's
+the player's. `EventStore.pos_unit` — a promoted `Vec<u32>` column
+resolved from `infoGUID` at parse time — gives the unit each row's
 position actually belongs to; anything building a *player's own* track
 must key off that. Full breakdown and the movement/path view design:
 `docs/movement-view.md`.

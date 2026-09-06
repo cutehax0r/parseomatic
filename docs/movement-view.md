@@ -161,9 +161,11 @@ Environmental field offset in `parse_composed`.
 `src/ui/widgets/movement-path.ts`: the selected player's `(x, y)` fixes
 drawn as a smooth **Catmull-Rom curve** (open, no value-band clamp —
 this is a spatial curve) on a faint world-coordinate grid. The plot is a
-**square** (CSS `aspect-ratio: 1`, capped ~520 px, centred; the widget
-reads its real pixel width AND height), one uniform scale for both axes
-so the route shape isn't distorted; screen +x right, +y up.
+**square** (CSS `aspect-ratio: 1`, `max-width` ~460 px, centred; the
+widget reads its real pixel width AND height), one uniform scale for both
+axes so the route shape isn't distorted; screen +x right, +y up. It sits
+in a flex row: `[ square plot | scrollable event table ]`, the table the
+wider of the two.
 
 - **Framing:** `fit_box` — the tight bounds over **every player's** fixes
   in the window ("the area the raid played in"), from `movement_series`
@@ -194,19 +196,42 @@ so the route shape isn't distorted; screen +x right, +y up.
 - **Gaps:** consecutive fixes more than `GAP_MS` (5 s) apart break the
   trail *and* the standstill run rather than drawing across a wipe reset
   / phase teleport.
-- **Hover** snaps to the nearest fix, shows its time + a nearby-event
-  count.
-- **Playhead + side table.** A ring marks one moment on the trail — set
-  it by clicking the plot, the ◀ ▶ buttons under it, or the arrow keys
-  (the plot is focusable; Home/End jump to the ends), `PLAYHEAD_STEP_MS`
-  (1 s) per step. The side table then lists the player's cast / damage /
-  heal / taken events (`movement_events`, §8) in a window around the
-  playhead — the **whole standstill span** when it's parked (header:
-  "Stood here 12.4 s · m:ss–m:ss"), else `± HALF_WINDOW_MS` (3 s). The
-  list is `max-height` + `overflow-y: auto` so it doesn't jump while
-  scrubbing; names/spells are resolved in `views/movement.ts` so the
-  widget stays dumb. Event fetch is decoupled from the path render (the
-  path draws first, the table fills in when its larger payload lands).
+- **Hover status strip.** A bar pinned inside the top edge of the plot
+  (absolute, `pointer-events: none`, hidden when empty — it doesn't
+  reflow the map). Hovering the trail snaps a dot to the nearest fix and
+  shows its time; hovering a standstill circle or a death square instead
+  shows that marker's start time and how long it lasted (`1:23 · stood
+  12.4s` / `2:47 · dead 18s`). No event count — that read as noise.
+- **Playhead.** A ring + dot on the trail marking one moment. Set it by
+  clicking near the trail, the ◀ ▶ buttons in the header, or the arrow
+  keys (the plot is focusable; Home / End jump to the window ends). It
+  opens on the first fix of the window, so the table starts on the
+  fight's first moment rather than a blank hint.
+- **◀ ▶ hop between _stops_, not by a fixed step.** The stop list is:
+  the window ends, every standstill span's start and end, and a
+  `HOP_GRID_MS` (4 s) grid across open-movement stretches — grid points
+  landing *inside* a standstill span are dropped, and stops closer than
+  `MIN_STOP_GAP_MS` (1.2 s) collapse. So one ▶ clears a whole 40-second
+  stand in a single press instead of creeping through it, and every
+  press lands somewhere new.
+- **Side table** — the player's cast / damage-done / damage-taken /
+  heal-done / heal-taken events (`movement_events`, §8) for a window
+  around the playhead:
+  - **parked** (playhead inside a standstill span) → the whole span;
+    readout `stood 12.4s · 1:23–1:35`.
+  - **moving** → the segment between the two adjacent stops
+    (`segmentAt`); readout `1:23.4–1:27.0`. Consecutive segments don't
+    overlap, so every ◀ ▶ press shows a fresh slice of events, not a
+    mostly-repeated list.
+
+  Fixed-height + `overflow-y: auto` so it doesn't jump while scrubbing;
+  each row is `time · Kind · name   amount   →/← other`. Names/spells are
+  resolved in `views/movement.ts` so the widget stays dumb, and the
+  event fetch is decoupled from the path render (the path draws first,
+  the table fills in when its larger payload lands).
+- **Header:** `[ legend ] ······ [ readout ◀ ▶ ]` — the window readout
+  sits with the step buttons on the right so it reads as the label for
+  what the table below is showing.
 
 **Still to add:** a **playback scrubber** (auto-advance the playhead),
 and the casting-aware trail states.
