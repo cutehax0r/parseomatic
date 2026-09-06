@@ -187,7 +187,13 @@ function despawnPoseAt(lastMs: number, t: number, size: number): DeathPose | nul
 function setMeshOpacity(mesh: THREE.Mesh, o: number): void {
   const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
   for (const m of mats) {
-    m.transparent = o < 1;
+    const wantTransparent = o < 1;
+    if (m.transparent !== wantTransparent) {
+      // three.js won't switch a material to/from the blended path
+      // without a recompile flag.
+      m.transparent = wantTransparent;
+      m.needsUpdate = true;
+    }
     m.opacity = o;
   }
 }
@@ -772,6 +778,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     }
 
     deconflictOverlaps(placed);
+    dimOverlapping(placed);
     this.renderOnce();
   }
 
@@ -904,6 +911,24 @@ function deconflictOverlaps(placed: Placement[]): void {
     cl.forEach((e, i) => {
       e.mesh.position.y += i * e.size * ADD_STEP;
     });
+  }
+}
+
+// When one shape's centre is inside another's sphere -- a player soaking
+// a boss orb, an orb swallowing an add -- fade the LARGER of the two to
+// 80% so the thing inside stays visible. O(n^2) over settled shapes,
+// n <= ~120; runs each frame.
+function dimOverlapping(placed: Placement[]): void {
+  const live = placed.filter((p) => p.settled);
+  for (let i = 0; i < live.length; i++) {
+    for (let j = i + 1; j < live.length; j++) {
+      const a = live[i];
+      const b = live[j];
+      if (Math.hypot(a.x - b.x, a.z - b.z) >= Math.max(a.size, b.size) / 2) continue;
+      const big = a.size >= b.size ? a : b;
+      setMeshOpacity(big.mesh, 0.8);
+      big.mesh.castShadow = false;
+    }
   }
 }
 
