@@ -96,6 +96,13 @@ function setMeshOpacity(mesh: THREE.Mesh, o: number): void {
   }
 }
 
+// ms -> "m:ss.s"
+function fmtClock(ms: number): string {
+  const s = Math.max(0, ms) / 1000;
+  const m = Math.floor(s / 60);
+  return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
+}
+
 // Resolve a `var(--token)` (or pass through a literal) to the raw CSS
 // value string, e.g. "#494d64".
 function cssValue(spec: string): string {
@@ -305,15 +312,35 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private framing: Framing = { cx: 0, cy: 0, span: MIN_SPAN };
   private disposed = false;
 
+  // ---- playback ----
+  private stage!: HTMLElement; // holds the <canvas>; the bordered box
+  private playBtn!: HTMLButtonElement;
+  private slider!: HTMLInputElement;
+  private timeEl!: HTMLElement;
+  private startMs = 0;
+  private endMs = 0;
+  private playhead = 0;
+  private playing = false;
+  private speed = 1;
+  private rafId = 0;
+  private lastFrame = 0;
+  // mesh + its unit input, kept so `applyTime` can reposition without rebuilding.
+  private entries: { mesh: THREE.Mesh; u: ReplaySceneUnitInput }[] = [];
+
   constructor(props: ReplaySceneProps) {
     this.element = document.createElement("div");
     this.element.className = "replay-scene";
+    this.element.appendChild(this.buildTransport());
+
+    this.stage = document.createElement("div");
+    this.stage.className = "replay-scene__stage";
+    this.element.appendChild(this.stage);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.element.appendChild(this.renderer.domElement);
+    this.stage.appendChild(this.renderer.domElement);
 
     // Equirectangular so the backdrop wraps the horizon and moves with
     // the camera when you orbit -- a plain screen-space background reads
@@ -346,9 +373,103 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.update(props);
 
     this.ro = new ResizeObserver(() => this.resize());
-    this.ro.observe(this.element);
+    this.ro.observe(this.stage);
     this.resize();
+
+    this.lastFrame = performance.now();
+    this.rafId = requestAnimationFrame(this.tick);
   }
+
+  // Transport bar: |◀◀  ▶/⏸  ▶▶|  [slider]  m:ss / m:ss  [speed].
+  private buildTransport(): HTMLElement {
+    const bar = document.createElement("div");
+    bar.className = "replay-transport";
+
+    const btn = (label: string, title: string): HTMLButtonElement => {
+      const b = document.createElement("button");
+      b.className = "rt-btn";
+      b.type = "button";
+      b.textContent = label;
+      b.title = title;
+      return b;
+    };
+    const toStart = btn("⏮", "Jump to start");
+    this.playBtn = btn("▶", "Play");
+    const toEnd = btn("⏭", "Jump to end");
+
+    this.slider = document.createElement("input");
+    this.slider.type = "range";
+    this.slider.className = "rt-slider";
+    this.slider.min = "0";
+    this.slider.max = "1";
+    this.slider.step = "any";
+    this.slider.value = "0";
+
+    this.timeEl = document.createElement("span");
+    this.timeEl.className = "rt-time";
+    this.timeEl.textContent = "0:00.0 / 0:00.0";
+
+    const speed = document.createElement("select");
+    speed.className = "rt-speed";
+    speed.title = "Playback speed";
+    for (const v of [1, 2, 3, 5, 8, 10]) {
+      const o = document.createElement("option");
+      o.value = String(v);
+      o.textContent = `${v}×`;
+      speed.appendChild(o);
+    }
+
+    toStart.addEventListener("click", () => this.seek(this.startMs, true));
+    toEnd.addEventListener("click", () => this.seek(this.endMs, true));
+    this.playBtn.addEventListener("click", () => this.setPlaying(!this.playing));
+    this.slider.addEventListener("input", () => {
+      const frac = Number(this.slider.value);
+      this.seek(this.startMs + (this.endMs - this.startMs) * frac, true);
+    });
+    speed.addEventListener("change", () => {
+      this.speed = Number(speed.value) || 1;
+    });
+
+    bar.append(toStart, this.playBtn, toEnd, this.slider, this.timeEl, speed);
+    return bar;
+  }
+
+  private seek(t: number, pause: boolean): void {
+    this.playhead = Math.max(this.startMs, Math.min(this.endMs, t));
+    if (pause) this.setPlaying(false);
+    this.syncTransport();
+    this.applyTime(this.playhead);
+  }
+
+  private setPlaying(on: boolean): void {
+    if (on && this.playhead >= this.endMs) this.playhead = this.startMs; // replay from the top
+    this.playing = on;
+    this.playBtn.textContent = on ? "⏸" : "▶";
+    this.playBtn.title = on ? "Pause" : "Play";
+    this.lastFrame = performance.now();
+  }
+
+  private syncTransport(): void {
+    const total = Math.max(1, this.endMs - this.startMs);
+    this.slider.value = String((this.playhead - this.startMs) / total);
+    this.timeEl.textContent = `${fmtClock(this.playhead - this.startMs)} / ${fmtClock(total)}`;
+  }
+
+  // Runs every frame; only advances the playhead while playing.
+  private tick = (now: number): void => {
+    if (this.disposed) return;
+    this.rafId = requestAnimationFrame(this.tick);
+    if (!this.playing) {
+      this.lastFrame = now;
+      return;
+    }
+    const dt = Math.min(250, now - this.lastFrame);
+    this.lastFrame = now;
+    this.playhead = Math.min(this.endMs, this.playhead + dt * this.speed);
+    this.syncTransport();
+    this.applyTime(this.playhead);
+    if (this.playhead >= this.endMs) this.setPlaying(false);
+  };
 
   // Static world geometry -- rebuilt to the framed span in `reframe`.
   private buildWorld(): void {
@@ -456,11 +577,19 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
   update(props: ReplaySceneProps): void {
     this.framing = framingOf(props.fitBox);
+    this.startMs = props.startMs;
+    this.endMs = props.endMs;
+    this.playhead = props.startMs;
+    this.setPlaying(false);
     this.reframe();
-    this.rebuildUnits(props);
+    this.rebuildUnits(props); // creates meshes, then applyTime(playhead)
+    this.syncTransport();
     this.resize();
   }
 
+  // Dispose the old meshes and build one per unit; positioning is then
+  // `applyTime`'s job (called here for the current playhead, and every
+  // frame during playback).
   private rebuildUnits(props: ReplaySceneProps): void {
     for (const child of [...this.unitsGroup.children]) {
       this.unitsGroup.remove(child);
@@ -470,47 +599,49 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
       else mat.dispose();
     }
-
-    const { cx, cy } = this.framing;
-
-    // All placements, kept so overlaps can be de-conflicted afterward:
-    // overlapping player cubes fan UP into a stack, overlapping enemy
-    // spheres drop DOWN onto the deck.
-    const placed: Placement[] = [];
+    this.entries = [];
 
     for (const u of props.units) {
-      const at = posAt(u.samples, props.startMs);
-      if (!at) continue;
-
+      if (u.samples.length === 0) continue;
       const col = cssColor(u.color);
       const mesh = u.shape === "sphere" ? sphereMesh(col, u.size) : cubeMesh(col, u.size);
-      mesh.castShadow = true;
+      mesh.userData = { unitId: u.unitId, size: u.size } satisfies Record<string, unknown>;
+      this.unitsGroup.add(mesh);
+      this.entries.push({ mesh, u });
+    }
 
+    this.applyTime(this.playhead);
+  }
+
+  // Position / fade every unit for time `t`, de-conflict overlaps, draw.
+  // Pure over `t` + the in-memory tracks -- no IPC, cheap per frame.
+  private applyTime(t: number): void {
+    const { cx, cy } = this.framing;
+    const placed: Placement[] = [];
+
+    for (const { mesh, u } of this.entries) {
+      const at = posAt(u.samples, t);
+      if (!at) {
+        mesh.visible = false;
+        continue;
+      }
       const px = at.x - cx;
       const pz = at.y - cy;
       mesh.position.set(px, FLOOR_LIFT + HOVER + u.size / 2, pz);
+      mesh.visible = true;
+      mesh.castShadow = true;
+      setMeshOpacity(mesh, 1);
 
-      // Enemies not active at the window start spawn in from above.
+      // Enemies not yet active spawn in from above.
       let spawned = true;
-      if (u.team === "enemy" && u.samples.length > 0) {
-        const s = spawnAt(u.samples[0].tMs, props.startMs);
+      if (u.team === "enemy") {
+        const s = spawnAt(u.samples[0].tMs, t);
         mesh.position.y += s.yOffset;
         setMeshOpacity(mesh, s.opacity);
         mesh.visible = s.opacity > 0.01;
         mesh.castShadow = s.opacity > 0.9;
         spawned = s.opacity > 0.9;
       }
-
-      mesh.userData = {
-        unitId: u.unitId,
-        team: u.team,
-        samples: u.samples,
-        deathSpans: u.deathSpans,
-        castSpans: u.castSpans,
-        faceEvents: u.faceEvents,
-        size: u.size,
-      } satisfies Record<string, unknown>;
-      this.unitsGroup.add(mesh);
 
       placed.push({
         mesh,
@@ -525,12 +656,13 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     }
 
     deconflictOverlaps(placed);
+    this.renderOnce();
   }
 
   private resize(): void {
     if (this.disposed) return;
-    const w = this.element.clientWidth || 1;
-    const h = this.element.clientHeight || 1;
+    const w = this.stage.clientWidth || 1;
+    const h = this.stage.clientHeight || 1;
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -549,6 +681,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
   destroy(): void {
     this.disposed = true;
+    cancelAnimationFrame(this.rafId);
     this.ro.disconnect();
     this.controls.removeEventListener("change", this.renderOnce);
     this.controls.dispose();
