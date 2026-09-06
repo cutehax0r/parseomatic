@@ -61,7 +61,7 @@ export interface MovementPathProps {
   mapBox: [number, number, number, number] | null;
 }
 
-const M = 12; // margin inside the SVG around the square plot region
+const M = 3; // margin inside the SVG around the square plot region (px)
 const GAP_MS = 5000; // break the trail across a bigger jump (teleport / wipe reset)
 const MAX_PTS = 500; // downsample cap for the drawn curve
 const MIN_SPAN = 20; // yards -- floor on the world span so a tiny path isn't over-zoomed
@@ -76,7 +76,7 @@ const DEATH_GROW_S = 4; // death square: +1x base per this many seconds dead
 const DEATH_MAX_MULT = 6; // cap on the death square radius
 const TRAIL_CHUNK = 6; // fixes per gradient segment of the trail
 const HUE_SWEEP = 300; // degrees -- red -> ... -> magenta
-const PLAYHEAD_STEP_MS = 1000; // arrow-button / arrow-key step
+const HOP_GRID_MS = 4000; // ◀ ▶ hop by at least this through open movement...
 const HALF_WINDOW_MS = 3000; // side-table window is +/- this around a non-parked playhead
 
 function rampColor(frac: number): string {
@@ -129,6 +129,11 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   const element = document.createElement("div");
   element.className = "chart movement-path";
 
+  // A thin status strip at the top edge -- hover-over-the-map details
+  // land here rather than in a tooltip that chases the cursor.
+  const status = document.createElement("div");
+  status.className = "movement-path-status";
+
   // Header row: [legend] ... [playhead time] ... [◀ ▶]
   const header = document.createElement("div");
   header.className = "chart-header movement-path-header";
@@ -167,10 +172,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   empty.className = "movement-path-empty";
   empty.textContent = "No movement recorded in this window.";
   empty.hidden = true;
-  const tooltip = document.createElement("div");
-  tooltip.className = "chart-tooltip";
-  tooltip.hidden = true;
-  plot.append(svg, empty, tooltip);
+  plot.append(svg, empty);
 
   const side = document.createElement("div");
   side.className = "movement-path-side";
@@ -179,7 +181,7 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
   side.append(sideList);
 
   body.append(plot, side);
-  element.append(header, body);
+  element.append(status, header, body);
 
   let current: MovementPathProps = props;
   let playT: number | null = null;
@@ -460,9 +462,28 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     render();
   }
 
+  // ◀ ▶ hop between "stops" -- the standstill span edges, the window
+  // ends, and a coarse time grid for open-movement stretches -- so one
+  // press clears a whole 30 s stand instead of creeping 1 s at a time.
+  function stopTimes(): number[] {
+    const { startMs, endMs } = current;
+    const set = new Set<number>([startMs, endMs]);
+    for (const s of standSpans) {
+      set.add(s.s);
+      set.add(s.e);
+    }
+    for (let t = startMs + HOP_GRID_MS; t < endMs; t += HOP_GRID_MS) set.add(t);
+    return [...set].sort((a, b) => a - b);
+  }
+
   function step(dir: 1 | -1) {
-    const base = playT ?? (dir === 1 ? current.startMs : current.endMs);
-    setPlayT(base + dir * PLAYHEAD_STEP_MS);
+    const stops = stopTimes();
+    const from = playT ?? current.startMs;
+    const next =
+      dir === 1
+        ? stops.find((t) => t > from + 1)
+        : [...stops].reverse().find((t) => t < from - 1);
+    setPlayT(next ?? (dir === 1 ? current.endMs : current.startMs));
   }
 
   prevBtn.addEventListener("click", () => step(-1));
@@ -530,19 +551,21 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
       hideHover();
       return;
     }
-    const near = current.events.filter((e) => Math.abs(e.tMs - best.t) < 1500).length;
+    const near = current.events.filter((e) => Math.abs(e.tMs - best.t) < 1500);
     hoverDot?.setAttribute("cx", String(best.x));
     hoverDot?.setAttribute("cy", String(best.y));
     hoverDot?.setAttribute("visibility", "visible");
-    tooltip.textContent =
-      formatAxisTime(best.t - current.startMs, 0.1) + (near ? ` · ${near} event${near > 1 ? "s" : ""}` : "");
-    tooltip.hidden = false;
-    tooltip.style.left = `${(best.x / vbW) * 100}%`;
-    tooltip.style.top = `${(best.y / vbH) * 100}%`;
+    const names = near
+      .slice(0, 3)
+      .map((e) => e.name)
+      .join(", ");
+    status.textContent =
+      formatAxisTime(best.t - current.startMs, 0.1) +
+      (near.length ? ` · ${near.length} event${near.length > 1 ? "s" : ""}${names ? ` (${names}${near.length > 3 ? "…" : ""})` : ""}` : "");
   }
 
   function hideHover() {
-    tooltip.hidden = true;
+    status.textContent = "";
     hoverDot?.setAttribute("visibility", "hidden");
   }
 
