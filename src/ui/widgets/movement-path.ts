@@ -10,10 +10,11 @@
 // by how long they were dead. Start is a hollow ring, the last fix a
 // filled dot.
 //
-// A PLAYHEAD marks one moment on the trail: click the plot, use the
-// arrow buttons under it, or the keyboard (the plot is focusable). The
-// side table then lists the player's cast / damage / heal events in a
-// window around that moment -- the whole standstill span when the
+// A PLAYHEAD marks one moment on the trail. It opens on the first fix of
+// the window and moves by clicking the plot, the arrow buttons under it,
+// or the keyboard (the plot is focusable; Home/End jump to the ends).
+// The side table then lists the player's cast / damage / heal events in
+// a window around that moment -- the whole standstill span when the
 // playhead is parked, otherwise +/- HALF_WINDOW_MS. Scrollable, fixed
 // height, so it doesn't jump as you scrub.
 //
@@ -580,7 +581,11 @@ registerWidget<MovementPathProps>("movement-path", (props) => {
     update(next) {
       const sameWindow = next.startMs === current.startMs && next.endMs === current.endMs;
       current = next;
-      if (!sameWindow) playT = null; // a new encounter/range -- drop the playhead
+      // A new encounter/range -- park the playhead on the first fix so
+      // the table opens on the start of the fight, not a blank hint.
+      if (!sameWindow) {
+        playT = next.samples.length ? next.samples[0].tMs : next.startMs || null;
+      }
       render();
     },
   };
