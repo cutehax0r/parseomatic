@@ -14,3 +14,4 @@ import "./area-chart";
 import "./bar-chart";
 import "./pie-chart";
 import "./hp-chart";
+import "./replay-scene";

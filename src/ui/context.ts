@@ -20,6 +20,7 @@ import { invalidateSpellBreakdownCache } from "./spell-breakdown";
 import { invalidateDeathDetailCache } from "./death-detail";
 import { invalidateMovementSeriesCache } from "./movement-series";
 import { invalidateMovementEventsCache } from "./movement-events";
+import { invalidateReplaySeriesCache } from "./replay-series";
 
 // ---- Shared stores -----------------------------------------------------
 //
@@ -91,6 +92,7 @@ export function setLogData(next: LogData): void {
   invalidateDeathDetailCache();
   invalidateMovementSeriesCache();
   invalidateMovementEventsCache();
+  invalidateReplaySeriesCache();
   setSelectedPlayer(null); // a new log's roster is different -- drop the pick
   for (const fn of logDataSubs) fn(next);
 }

@@ -44,6 +44,7 @@ import { renderHealing } from "./views/healing";
 import { renderDamageTaken } from "./views/damage-taken";
 import { renderDeaths } from "./views/deaths";
 import { renderMovement } from "./views/movement";
+import { renderReplay } from "./views/replay";
 import { renderLaunch } from "./views/launch";
 import { renderEncounterGrid } from "./views/encounter-grid";
 
@@ -136,6 +137,7 @@ let lastCombatants: CombatantRow[] = [];
 type ViewMode =
   | "encounters"
   | "overview"
+  | "replay"
   | "character"
   | "damage"
   | "healing"
@@ -1378,6 +1380,7 @@ async function refreshStatus() {
   const debugView = document.querySelector<HTMLElement>("#debug-view");
   const rawView = document.querySelector<HTMLElement>("#raw-view");
   const overviewView = document.querySelector<HTMLElement>("#overview-view");
+  const replayView = document.querySelector<HTMLElement>("#replay-view");
   const characterView = document.querySelector<HTMLElement>("#character-view");
   const damageView = document.querySelector<HTMLElement>("#damage-view");
   const healingView = document.querySelector<HTMLElement>("#healing-view");
@@ -1386,6 +1389,7 @@ async function refreshStatus() {
   const movementView = document.querySelector<HTMLElement>("#movement-view");
   const encountersBtn = document.querySelector<HTMLButtonElement>("#view-encounters-btn");
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
+  const replayBtn = document.querySelector<HTMLButtonElement>("#view-replay-btn");
   const characterBtn = document.querySelector<HTMLButtonElement>("#view-character-btn");
   const damageBtn = document.querySelector<HTMLButtonElement>("#view-damage-btn");
   const healingBtn = document.querySelector<HTMLButtonElement>("#view-healing-btn");
@@ -1405,6 +1409,7 @@ async function refreshStatus() {
     !debugView ||
     !rawView ||
     !overviewView ||
+    !replayView ||
     !characterView ||
     !damageView ||
     !healingView ||
@@ -1413,6 +1418,7 @@ async function refreshStatus() {
     !movementView ||
     !encountersBtn ||
     !overviewBtn ||
+    !replayBtn ||
     !characterBtn ||
     !damageBtn ||
     !healingBtn ||
@@ -1434,6 +1440,7 @@ async function refreshStatus() {
     [
       "encounters",
       "overview",
+      "replay",
       "character",
       "damage",
       "healing",
@@ -1465,6 +1472,7 @@ async function refreshStatus() {
   // (Debug/Raw are menu-only, under View > Developer).
   encountersBtn.setAttribute("aria-pressed", String(currentViewMode === "encounters"));
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
+  replayBtn.setAttribute("aria-pressed", String(currentViewMode === "replay"));
   characterBtn.setAttribute("aria-pressed", String(currentViewMode === "character"));
   damageBtn.setAttribute("aria-pressed", String(currentViewMode === "damage"));
   healingBtn.setAttribute("aria-pressed", String(currentViewMode === "healing"));
@@ -1606,6 +1614,7 @@ async function refreshStatus() {
   debugView.hidden = currentViewMode !== "debug";
   rawView.hidden = currentViewMode !== "raw";
   overviewView.hidden = currentViewMode !== "overview";
+  replayView.hidden = currentViewMode !== "replay";
   characterView.hidden = currentViewMode !== "character";
   damageView.hidden = currentViewMode !== "damage";
   healingView.hidden = currentViewMode !== "healing";
@@ -1619,6 +1628,8 @@ async function refreshStatus() {
     renderEncGrid();
   } else if (currentViewMode === "overview") {
     renderOverview();
+  } else if (currentViewMode === "replay") {
+    renderReplay();
   } else if (currentViewMode === "character") {
     renderCharacter();
   } else if (currentViewMode === "damage") {
@@ -1683,6 +1694,10 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.querySelector("#view-overview-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "overview" });
+  });
+
+  document.querySelector("#view-replay-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "replay" });
   });
 
   document.querySelector("#view-character-btn")?.addEventListener("click", () => {

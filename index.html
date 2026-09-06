@@ -236,6 +236,20 @@
             <rect x="14" y="11" width="7" height="10" rx="1"></rect>
           </svg>
         </button>
+        <button
+          id="view-replay-btn"
+          class="toolbar-btn"
+          data-view="replay"
+          title="Replay"
+          aria-pressed="false"
+        >
+          <!-- Font Awesome Free `video` (nf-fa-video_camera, CC BY 4.0, see NOTICE) -->
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 576 512" fill="currentColor">
+            <path
+              d="M0 128C0 92.7 28.7 64 64 64H320c35.3 0 64 28.7 64 64V384c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V128zM559.1 99.8c10.4 5.6 16.9 16.4 16.9 28.2V384c0 11.8-6.5 22.6-16.9 28.2s-23 5-32.9-1.6l-96-64L416 337.1V174.9l14.2-9.5 96-64c9.8-6.5 22.4-7.2 32.9-1.6z"
+            ></path>
+          </svg>
+        </button>
       </div>
       <div class="toolbar-divider"></div>
       <div class="toolbar-group">
@@ -542,6 +556,12 @@
         <div id="overview-mount"></div>
         <p id="overview-hint" class="overview-hint" hidden>
           Pick an encounter in the Encounters view.
+        </p>
+      </section>
+      <section id="replay-view" class="replay-view" hidden>
+        <div id="replay-mount"></div>
+        <p id="replay-hint" class="replay-hint" hidden>
+          Pick an encounter — replay needs a bounded window.
         </p>
       </section>
       <section id="character-view" class="character-view" hidden>

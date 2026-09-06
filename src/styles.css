@@ -2287,6 +2287,67 @@ body {
   display: none;
 }
 
+/* Replay -- fills the pane; the 3D scene must be able to grow, so the
+   whole chain flexes instead of scrolling like the other views. */
+.replay-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px 20px;
+}
+
+.replay-view[hidden] {
+  display: none;
+}
+
+.replay-view #replay-mount {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.replay-view #replay-mount > .panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.replay-view #replay-mount > .panel > .panel-cell:last-child {
+  flex: 1;
+  min-height: 0;
+}
+
+.replay-scene {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  overflow: hidden;
+  background: var(--ctp-crust);
+}
+
+.replay-scene canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.replay-hint {
+  margin: 48px auto 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.replay-hint[hidden] {
+  display: none;
+}
+
 .spell-detail {
   display: flex;
   flex-wrap: wrap;

@@ -3,6 +3,7 @@ mod deaths;
 mod movement;
 mod parser;
 mod query;
+mod replay;
 mod stats;
 
 use std::collections::HashMap;
@@ -67,6 +68,7 @@ enum ViewKind {
     #[default]
     Encounters,
     Overview,
+    Replay,
     Character,
     Damage,
     Healing,
@@ -80,9 +82,10 @@ enum ViewKind {
 // Every view in the radio group, in toolbar/menu display order -- the
 // single source of truth for `sync_view_menu`'s loop and anywhere else
 // that has to touch them all.
-const ALL_VIEWS: [ViewKind; 10] = [
+const ALL_VIEWS: [ViewKind; 11] = [
     ViewKind::Encounters,
     ViewKind::Overview,
+    ViewKind::Replay,
     ViewKind::Character,
     ViewKind::Damage,
     ViewKind::Healing,
@@ -106,6 +109,7 @@ impl ViewKind {
         match self {
             ViewKind::Encounters => "encounters",
             ViewKind::Overview => "overview",
+            ViewKind::Replay => "replay",
             ViewKind::Character => "character",
             ViewKind::Damage => "damage",
             ViewKind::Healing => "healing",
@@ -121,6 +125,7 @@ impl ViewKind {
         match self {
             ViewKind::Encounters => "view_encounters",
             ViewKind::Overview => "view_overview",
+            ViewKind::Replay => "view_replay",
             ViewKind::Character => "view_character",
             ViewKind::Damage => "view_damage",
             ViewKind::Healing => "view_healing",
@@ -145,6 +150,7 @@ struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 struct ViewMenu {
     encounters: CheckMenuItem<tauri::Wry>,
     overview: CheckMenuItem<tauri::Wry>,
+    replay: CheckMenuItem<tauri::Wry>,
     character: CheckMenuItem<tauri::Wry>,
     damage: CheckMenuItem<tauri::Wry>,
     healing: CheckMenuItem<tauri::Wry>,
@@ -160,6 +166,7 @@ impl ViewMenu {
         match view {
             ViewKind::Encounters => &self.encounters,
             ViewKind::Overview => &self.overview,
+            ViewKind::Replay => &self.replay,
             ViewKind::Character => &self.character,
             ViewKind::Damage => &self.damage,
             ViewKind::Healing => &self.healing,
@@ -1470,6 +1477,123 @@ fn movement_events(
     )
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplaySampleRow {
+    t_ms: i64,
+    x: f32,
+    y: f32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplayDeathSpanRow {
+    start_ms: i64,
+    /// `null` if still dead at the window's end.
+    end_ms: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplayCastSpanRow {
+    start_ms: i64,
+    end_ms: i64,
+    /// `null` for a swing / an unresolved spell.
+    spell_id: Option<u16>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplayFaceRow {
+    t_ms: i64,
+    x: f32,
+    y: f32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplayUnitRow {
+    unit_id: u32,
+    guid: String,
+    /// "Player" | "Pet" | "Creature" | ...
+    kind: &'static str,
+    /// Largest advanced-block `maxHP` seen for this unit; 0 if unknown.
+    max_hp: i64,
+    samples: Vec<ReplaySampleRow>,
+    death_spans: Vec<ReplayDeathSpanRow>,
+    cast_spans: Vec<ReplayCastSpanRow>,
+    face_events: Vec<ReplayFaceRow>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplaySeriesRow {
+    start_ms: i64,
+    end_ms: i64,
+    units: Vec<ReplayUnitRow>,
+    /// Tight `[minX, maxX, minY, maxY]` over every unit's fixes -- the
+    /// scene's framing box. `null` if nothing carried a position.
+    fit_box: Option<[f32; 4]>,
+    /// `MAP_CHANGE` box `[x0, x1, y0, y1]` (corners unsorted), or `null`.
+    map_box: Option<[f32; 4]>,
+}
+
+/// Raid-wide position replay for `[start_ms, end_ms]` -- every unit that
+/// carried a position, with its `(t, x, y)` track plus death / cast spans
+/// and cast-target face hints for the Replay view's 3D scene. One fetch
+/// per encounter, scrubbed client-side. `None` before parsing finishes.
+/// See `src/replay.rs` and `docs/replay-view.md`.
+#[tauri::command]
+fn replay_series(
+    window: WebviewWindow,
+    start_ms: i64,
+    end_ms: i64,
+) -> Option<ReplaySeriesRow> {
+    let log = current_log(&window)?;
+    let data = log.data()?;
+    let s = replay::series(&data.events, &data.tables, log.mmap_bytes(), start_ms, end_ms);
+    Some(ReplaySeriesRow {
+        start_ms: s.start_ms,
+        end_ms: s.end_ms,
+        fit_box: s.fit_box,
+        map_box: s.map_box,
+        units: s
+            .units
+            .into_iter()
+            .map(|u| ReplayUnitRow {
+                unit_id: u.unit_id,
+                guid: u.guid,
+                kind: u.kind,
+                max_hp: u.max_hp,
+                samples: u
+                    .samples
+                    .into_iter()
+                    .map(|p| ReplaySampleRow { t_ms: p.t_ms, x: p.x, y: p.y })
+                    .collect(),
+                death_spans: u
+                    .death_spans
+                    .into_iter()
+                    .map(|d| ReplayDeathSpanRow { start_ms: d.start_ms, end_ms: d.end_ms })
+                    .collect(),
+                cast_spans: u
+                    .cast_spans
+                    .into_iter()
+                    .map(|c| ReplayCastSpanRow {
+                        start_ms: c.start_ms,
+                        end_ms: c.end_ms,
+                        spell_id: (c.spell_id != NO_SPELL).then_some(c.spell_id),
+                    })
+                    .collect(),
+                face_events: u
+                    .face_events
+                    .into_iter()
+                    .map(|f| ReplayFaceRow { t_ms: f.t_ms, x: f.x, y: f.y })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
 #[tauri::command]
 fn open_log_file(window: WebviewWindow) {
     pick_and_open_log(window);
@@ -1636,6 +1760,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    let replay_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Replay.menu_id(),
+        "Replay",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let character_view_item = CheckMenuItem::with_id(
         app,
         ViewKind::Character.menu_id(),
@@ -1702,15 +1834,21 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let zoom_reset_item =
         MenuItem::with_id(app, "zoom_reset", "Actual Size", true, Some("CmdOrCtrl+0"))?;
 
+    // Three groups, separator between: raid-wide views (Encounters /
+    // Overview / Replay), per-character views (Character ... Movement),
+    // then the Developer submenu (Debug / Raw).
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&encounters_view_item)
         .item(&overview_view_item)
+        .item(&replay_view_item)
+        .separator()
         .item(&character_view_item)
         .item(&damage_view_item)
         .item(&healing_view_item)
         .item(&damage_taken_view_item)
         .item(&deaths_view_item)
         .item(&movement_view_item)
+        .separator()
         .item(&developer_menu)
         .separator()
         .item(&zoom_in_item)
@@ -1785,6 +1923,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         view: ViewMenu {
             encounters: encounters_view_item,
             overview: overview_view_item,
+            replay: replay_view_item,
             character: character_view_item,
             damage: damage_view_item,
             healing: healing_view_item,
@@ -1940,6 +2079,7 @@ pub fn run() {
             death_detail,
             movement_series,
             movement_events,
+            replay_series,
             zoom
         ])
         .build(tauri::generate_context!())

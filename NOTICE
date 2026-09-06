@@ -12,6 +12,8 @@ Material Design Icons (https://pictogrammers.com/library/mdi/)
 
 Font Awesome Free (https://fontawesome.com)
   The `bandage` glyph outline (Nerd Fonts alias `nf-fa-bandage`) used for
-  the Damage Taken character view's toolbar icon (index.html).
+  the Damage Taken character view's toolbar icon, and the `video` glyph
+  outline (Nerd Fonts alias `nf-fa-video_camera`) used for the Replay
+  view's toolbar icon (index.html).
   Copyright Fonticons, Inc.
   Icons licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).

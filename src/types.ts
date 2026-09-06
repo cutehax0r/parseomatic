@@ -198,6 +198,59 @@ export interface MovementSeries {
   fitBox: [number, number, number, number] | null;
 }
 
+// ---- replay_series command (src-tauri/src/replay.rs) -----------------
+// Raid-wide position replay for one encounter -- every unit that carried
+// a position, its (t,x,y) track plus death / cast spans and cast-target
+// face hints. One fetch per encounter, scrubbed client-side. See
+// docs/replay-view.md.
+
+export interface ReplaySample {
+  tMs: number;
+  x: number;
+  y: number;
+}
+
+export interface ReplayDeathSpan {
+  startMs: number;
+  endMs: number | null; // null = still dead at the window's end
+}
+
+export interface ReplayCastSpan {
+  startMs: number;
+  endMs: number;
+  spellId: number | null;
+}
+
+// Where the thing a unit cast at was, at cast time (snapshot). Drives
+// the turn-to-face animation.
+export interface ReplayFaceHint {
+  tMs: number;
+  x: number;
+  y: number;
+}
+
+export interface ReplayUnit {
+  unitId: number; // dense intern id -- resolve against `units` / `combatants`
+  guid: string; // raw GUID -- disambiguates same-named adds
+  kind: string; // "Player" | "Pet" | "Creature" | ...
+  maxHp: number; // largest advanced-block maxHP seen; 0 if unknown
+  samples: ReplaySample[];
+  deathSpans: ReplayDeathSpan[];
+  castSpans: ReplayCastSpan[];
+  faceEvents: ReplayFaceHint[];
+}
+
+export interface ReplaySeries {
+  startMs: number;
+  endMs: number;
+  units: ReplayUnit[];
+  // Tight [minX, maxX, minY, maxY] over every unit's fixes -- the scene's
+  // framing box. null if nothing carried a position.
+  fitBox: [number, number, number, number] | null;
+  // MAP_CHANGE box [x0, x1, y0, y1] (corners NOT sorted), reference only.
+  mapBox: [number, number, number, number] | null;
+}
+
 // Per-player derived stats for one encounter, from the `encounter_stats`
 // command (see src-tauri/src/stats.rs, docs/activity-and-movement.md).
 // `unitId` is a dense intern id -- resolve names/spec against the `units`
