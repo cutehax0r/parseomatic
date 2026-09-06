@@ -37,7 +37,15 @@ const spec: NodeSpec = {
       type: "replay-scene",
       id: "scene",
       span: 1,
-      props: { units: [], castLines: [], fitBox: null, startMs: 0, endMs: 0 },
+      props: {
+        units: [],
+        castLines: [],
+        periodicHits: [],
+        periodicHeals: [],
+        fitBox: null,
+        startMs: 0,
+        endMs: 0,
+      },
     },
   ],
 };
@@ -206,10 +214,18 @@ async function paint(): Promise<void> {
   const castLines = series.castLines.filter(
     (c) => shown.has(c.sourceUnit) && shown.has(c.targetUnit),
   );
+  const periodicHits = series.periodicHits.filter(
+    (h) => shown.has(h.sourceUnit) && shown.has(h.targetUnit),
+  );
+  const periodicHeals = series.periodicHeals.filter(
+    (h) => shown.has(h.sourceUnit) && shown.has(h.targetUnit),
+  );
 
   built.get("scene")?.update({
     units: sceneUnits,
     castLines,
+    periodicHits,
+    periodicHeals,
     fitBox: series.fitBox,
     startMs: series.startMs,
     endMs: series.endMs,

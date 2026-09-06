@@ -256,11 +256,22 @@ export interface ReplayCastLine {
   spellId: number | null; // null for a melee swing
 }
 
+// One periodic-damage tick (a DoT) from a player onto a hostile
+// creature -- the replay fires a small upward particle burst from the
+// struck creature's top, in the casting player's class colour.
+export interface ReplayPeriodicHit {
+  sourceUnit: number;
+  targetUnit: number;
+  tMs: number;
+}
+
 export interface ReplaySeries {
   startMs: number;
   endMs: number;
   units: ReplayUnit[];
   castLines: ReplayCastLine[]; // hostile -> player attack lines, ascending by t0
+  periodicHits: ReplayPeriodicHit[]; // player DoT ticks on creatures, ascending by tMs
+  periodicHeals: ReplayPeriodicHit[]; // player HoT ticks on players, ascending by tMs
   // Tight [minX, maxX, minY, maxY] over every unit's fixes -- the scene's
   // framing box. null if nothing carried a position.
   fitBox: [number, number, number, number] | null;

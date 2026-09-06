@@ -1546,12 +1546,24 @@ struct ReplayCastLineRow {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ReplayPeriodicHitRow {
+    source_unit: u32,
+    target_unit: u32,
+    t_ms: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ReplaySeriesRow {
     start_ms: i64,
     end_ms: i64,
     units: Vec<ReplayUnitRow>,
     /// Hostile-creature-attacks-player lines, ascending by `t0`.
     cast_lines: Vec<ReplayCastLineRow>,
+    /// Player DoT ticks on hostile creatures, ascending by `t_ms`.
+    periodic_hits: Vec<ReplayPeriodicHitRow>,
+    /// Player HoT ticks on players, ascending by `t_ms`.
+    periodic_heals: Vec<ReplayPeriodicHitRow>,
     /// Tight `[minX, maxX, minY, maxY]` over every unit's fixes -- the
     /// scene's framing box. `null` if nothing carried a position.
     fit_box: Option<[f32; 4]>,
@@ -1592,6 +1604,24 @@ fn replay_series(
                 heal: c.heal,
                 secondary: c.secondary,
                 spell_id: (c.spell_id != NO_SPELL).then_some(c.spell_id),
+            })
+            .collect(),
+        periodic_hits: s
+            .periodic_hits
+            .into_iter()
+            .map(|h| ReplayPeriodicHitRow {
+                source_unit: h.source_unit,
+                target_unit: h.target_unit,
+                t_ms: h.t_ms,
+            })
+            .collect(),
+        periodic_heals: s
+            .periodic_heals
+            .into_iter()
+            .map(|h| ReplayPeriodicHitRow {
+                source_unit: h.source_unit,
+                target_unit: h.target_unit,
+                t_ms: h.t_ms,
             })
             .collect(),
         units: s

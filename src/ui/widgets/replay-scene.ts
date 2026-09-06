@@ -20,6 +20,7 @@ import type {
   ReplayCastSpan,
   ReplayDeathSpan,
   ReplayFaceHint,
+  ReplayPeriodicHit,
   ReplaySample,
 } from "../../types";
 
@@ -48,6 +49,8 @@ export interface ReplaySceneUnitInput {
 export interface ReplaySceneProps {
   units: ReplaySceneUnitInput[];
   castLines: ReplayCastLine[];
+  periodicHits: ReplayPeriodicHit[];
+  periodicHeals: ReplayPeriodicHit[];
   fitBox: [number, number, number, number] | null;
   startMs: number;
   endMs: number;
@@ -215,6 +218,26 @@ const CAST_BALL_R_ENEMY = 1.05;
 const CAST_ENEMY_COLOR = "#8a1414"; // deep red for the boss's arcs + ball
 const CAST_HEAL_COLOR = "var(--ctp-green)"; // heal beams / teardrops
 
+// Periodic-damage (DoT tick) particle bursts: a handful of points that
+// shoot up off the struck creature's top over a quarter second and fade,
+// tinted the casting player's class colour. All tunable.
+const PART_COUNT = 20; // damage particles per tick burst
+const PART_COUNT_HEAL = 10; // heal bursts get ~half as many
+const PART_LIFE_MS = 250; // rise + fade duration
+const PART_RISE = 12.4; // yд a particle climbs over its life
+const PART_TILT = 0.12; // rad max cone half-angle off straight up (heals); damage doubles it
+const PART_SIZE = 10; // point sprite size factor (screen px at mid distance)
+const PART_HEAL_SIZE = 0.5; // heal particles render at half the damage size
+const PART_HEAL_RISE = 1 / 3; // heal particles climb a third as far
+// Damage particles are ballistic: launch fast, then gravity curves them
+// back down by ~1/3 of their peak height by end of life. y(f) =
+// H*(UP*f - GRAV*f^2); coeffs put the peak (= H) at f~0.63, y(1) ~ 0.67 H.
+// Heals stay linear (UP 1, GRAV 0).
+const PART_ARC_UP = 3.155;
+const PART_ARC_GRAV = 2.488;
+const PART_MAX_ALPHA = 0.95; // opacity at spawn; fades to 0 over the life
+const PART_POOL = 24000; // hard cap on concurrently drawn particles
+
 // Deterministic [0,1) from three ints -- a per-line arc height / spread
 // that stays put across frames.
 function hash01(a: number, b: number, c: number): number {
@@ -291,11 +314,20 @@ function fmtClock(ms: number): string {
 }
 
 // Resolve a `var(--token)` (or pass through a literal) to the raw CSS
-// value string, e.g. "#494d64".
+// value string, e.g. "#494d64". Follows indirection chains --
+// `--class-mage` is defined as `var(--ctp-sky)`, and `getPropertyValue`
+// returns that unresolved, so one unwrap isn't enough.
 function cssValue(spec: string): string {
-  const m = spec.match(/^var\((--[A-Za-z0-9-]+)\)$/);
-  if (!m) return spec;
-  return getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim() || spec;
+  const style = getComputedStyle(document.documentElement);
+  let cur = spec.trim();
+  for (let i = 0; i < 8; i++) {
+    const m = cur.match(/^var\((--[A-Za-z0-9-]+)\)$/);
+    if (!m) return cur;
+    const next = style.getPropertyValue(m[1]).trim();
+    if (!next) return spec;
+    cur = next;
+  }
+  return cur;
 }
 
 // "#rrggbb" (or "#rgb") -> "rgba(r,g,b,a)".
@@ -530,6 +562,16 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private _nv = new THREE.Vector3();
   private _mv = new THREE.Vector3();
 
+  // ---- periodic-damage particle bursts ----
+  private partGroup = new THREE.Group();
+  private periodicHits: ReplayPeriodicHit[] = [];
+  private periodicHeals: ReplayPeriodicHit[] = [];
+  private partPoints!: THREE.Points;
+  private partPos!: Float32Array; // PART_POOL * 3
+  private partCol!: Float32Array; // PART_POOL * 3
+  private partAlpha!: Float32Array; // PART_POOL
+  private partSize!: Float32Array; // PART_POOL -- per-particle size multiplier
+
   constructor(props: ReplaySceneProps) {
     this.element = document.createElement("div");
     this.element.className = "replay-scene";
@@ -565,6 +607,8 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.scene.add(this.unitsGroup);
     this.scene.add(this.castGroup);
     this.buildCastPool();
+    this.scene.add(this.partGroup);
+    this.buildParticlePool();
 
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 20000);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -786,6 +830,8 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.endMs = props.endMs;
     this.playhead = props.startMs;
     this.castLines = props.castLines ?? [];
+    this.periodicHits = props.periodicHits ?? [];
+    this.periodicHeals = props.periodicHeals ?? [];
     this.setPlaying(false);
     this.reframe();
     this.rebuildUnits(props); // creates meshes, then applyTime(playhead)
@@ -886,6 +932,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     deconflictOverlaps(placed);
     dimOverlapping(placed);
     this.updateCastLines(t);
+    this.updateParticles(t);
     this.renderOnce();
   }
 
@@ -1059,6 +1106,145 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     }
   }
 
+  // One THREE.Points cloud, resized every frame via a draw range. A tiny
+  // shader gives each point its own colour + alpha (NormalBlending, so a
+  // stack of DoT bursts doesn't blow out) and a round, soft edge.
+  private buildParticlePool(): void {
+    const g = new THREE.BufferGeometry();
+    this.partPos = new Float32Array(PART_POOL * 3);
+    this.partCol = new Float32Array(PART_POOL * 3);
+    this.partAlpha = new Float32Array(PART_POOL);
+    this.partSize = new Float32Array(PART_POOL);
+    g.setAttribute("position", new THREE.BufferAttribute(this.partPos, 3));
+    g.setAttribute("pcolor", new THREE.BufferAttribute(this.partCol, 3));
+    g.setAttribute("alpha", new THREE.BufferAttribute(this.partAlpha, 1));
+    g.setAttribute("psize", new THREE.BufferAttribute(this.partSize, 1));
+    g.setDrawRange(0, 0);
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uSize: { value: PART_SIZE } },
+      vertexShader: `
+        attribute float alpha;
+        attribute vec3 pcolor;
+        attribute float psize;
+        varying float vAlpha;
+        varying vec3 vColor;
+        uniform float uSize;
+        void main() {
+          vAlpha = alpha;
+          vColor = pcolor;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = clamp(uSize * psize * 90.0 / max(-mv.z, 1.0), 1.0, 22.0);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        varying float vAlpha;
+        varying vec3 vColor;
+        void main() {
+          vec2 d = gl_PointCoord - vec2(0.5);
+          float r2 = dot(d, d);
+          if (r2 > 0.25) discard;
+          gl_FragColor = vec4(vColor, vAlpha * smoothstep(0.25, 0.03, r2));
+        }`,
+      transparent: true,
+      depthWrite: false,
+    });
+    this.partPoints = new THREE.Points(g, mat);
+    this.partPoints.frustumCulled = false;
+    this.partGroup.add(this.partPoints);
+  }
+
+  // Rebuild the particle cloud for time `t`: damage (DoT) bursts in the
+  // caster's class colour, then heal (HoT) bursts in green -- both a
+  // handful of points rising straight up (a few degrees of scatter) off
+  // the struck / healed unit's top, fading out over PART_LIFE_MS.
+  // Deterministic over `t` -- scrub-safe, no spawn bookkeeping.
+  private updateParticles(t: number): void {
+    let n = 0;
+    n = this.writeBursts(
+      this.periodicHits,
+      t,
+      n,
+      { count: PART_COUNT, size: 1, rise: 1, tilt: PART_TILT * 2, up: PART_ARC_UP, grav: PART_ARC_GRAV },
+      (h) => cssColor(this.unitById.get(h.sourceUnit)?.color ?? "#8087a2"),
+    );
+    const green = cssColor(CAST_HEAL_COLOR);
+    n = this.writeBursts(
+      this.periodicHeals,
+      t,
+      n,
+      { count: PART_COUNT_HEAL, size: PART_HEAL_SIZE, rise: PART_HEAL_RISE, tilt: PART_TILT, up: 1, grav: 0 },
+      () => green,
+    );
+
+    const g = this.partPoints.geometry;
+    g.setDrawRange(0, n);
+    (g.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+    (g.getAttribute("pcolor") as THREE.BufferAttribute).needsUpdate = true;
+    (g.getAttribute("alpha") as THREE.BufferAttribute).needsUpdate = true;
+    (g.getAttribute("psize") as THREE.BufferAttribute).needsUpdate = true;
+  }
+
+  // Write every burst in `hits` alive at `t` into the particle buffers
+  // starting at particle index `n`; returns the new `n`. `style` sets the
+  // per-burst count, point size, fly distance, cone angle, and the
+  // ballistic `up`/`grav` arc coefficients; `colorOf` picks the tint per
+  // hit. `hits` must ascend by tMs.
+  private writeBursts(
+    hits: ReplayPeriodicHit[],
+    t: number,
+    n: number,
+    style: { count: number; size: number; rise: number; tilt: number; up: number; grav: number },
+    colorOf: (h: ReplayPeriodicHit) => THREE.Color,
+  ): number {
+    const { count, size: sizeMul, rise: riseMul, tilt: tiltMax, up, grav } = style;
+    const { cx, cy } = this.framing;
+    let lo = 0;
+    let hi = hits.length;
+    const from = t - PART_LIFE_MS;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (hits[m].tMs < from) lo = m + 1;
+      else hi = m;
+    }
+
+    for (let i = lo; i < hits.length && n < PART_POOL; i++) {
+      const h = hits[i];
+      if (h.tMs > t) break;
+      const age = t - h.tMs;
+      const tgt = this.unitById.get(h.targetUnit);
+      if (!tgt) continue;
+      const at = posAt(tgt.samples, t);
+      if (!at) continue;
+      const c = colorOf(h);
+      const bx = at.x - cx;
+      const by = FLOOR_LIFT + HOVER + tgt.size + 0.2;
+      const bz = at.y - cy;
+      const f = age / PART_LIFE_MS; // 0 -> 1 over the life
+      const alpha = PART_MAX_ALPHA * (1 - f);
+
+      for (let k = 0; k < count && n < PART_POOL; k++, n++) {
+        const az = hash01(h.tMs, h.targetUnit, k) * Math.PI * 2;
+        const tilt = hash01(h.targetUnit, k, h.tMs) * tiltMax;
+        const spd = 0.7 + 0.6 * hash01(k, h.tMs, h.targetUnit);
+        const reach = PART_RISE * riseMul * spd; // "fly distance" scale (H)
+        // Ballistic: launch along the tilted dir at `up`, gravity `grav`
+        // pulls only the vertical down as f^2 (grav 0 -> plain linear).
+        const horiz = Math.sin(tilt) * reach * up * f;
+        const vert = Math.cos(tilt) * reach * up * f - reach * grav * f * f;
+        const o = n * 3;
+        this.partPos[o] = bx + Math.cos(az) * horiz;
+        this.partPos[o + 1] = by + vert;
+        this.partPos[o + 2] = bz + Math.sin(az) * horiz;
+        this.partCol[o] = c.r;
+        this.partCol[o + 1] = c.g;
+        this.partCol[o + 2] = c.b;
+        this.partAlpha[n] = alpha;
+        this.partSize[n] = sizeMul;
+      }
+    }
+    return n;
+  }
+
   private resize(): void {
     if (this.disposed) return;
     const w = this.stage.clientWidth || 1;
@@ -1085,7 +1271,15 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.ro.disconnect();
     this.controls.removeEventListener("change", this.renderOnce);
     this.controls.dispose();
-    this.rebuildUnits({ units: [], castLines: [], fitBox: null, startMs: 0, endMs: 0 });
+    this.rebuildUnits({
+      units: [],
+      castLines: [],
+      periodicHits: [],
+      periodicHeals: [],
+      fitBox: null,
+      startMs: 0,
+      endMs: 0,
+    });
     this.scene.traverse((o: THREE.Object3D) => {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
@@ -1104,28 +1298,16 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   }
 }
 
-// A player / big-creature cube of side `size`. The +Z face is darkened
-// so "front" reads at a glance -- the facing animation (phase D) rotates
-// the whole mesh so that face points where the unit is looking.
+// A player / big-creature cube of side `size`, one flat class colour on
+// every face (matching the Overview's class swatch).
 function cubeMesh(col: THREE.Color, size: number): THREE.Mesh {
-  const side = new THREE.MeshStandardMaterial({
+  const mat = new THREE.MeshStandardMaterial({
     color: col,
     roughness: 0.55,
     metalness: 0.05,
     emissive: col.clone().multiplyScalar(0.18),
   });
-  const front = side.clone();
-  front.color = col.clone().multiplyScalar(0.5);
-  front.emissive = col.clone().multiplyScalar(0.28);
-  // BoxGeometry material order: +x, -x, +y, -y, +z, -z. Index 4 = front.
-  const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), [
-    side,
-    side,
-    side,
-    side,
-    front,
-    side,
-  ]);
+  const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
   m.scale.setScalar(size);
   return m;
 }

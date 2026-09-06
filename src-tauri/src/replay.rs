@@ -208,12 +208,26 @@ pub struct ReplayUnit {
     pub face_events: Vec<FaceHint>,
 }
 
+/// One periodic-damage tick (a DoT) from a player onto a hostile
+/// creature. The Replay view fires a small upward particle burst from the
+/// struck creature's top for each one.
+pub struct PeriodicHit {
+    pub source_unit: u32,
+    pub target_unit: u32,
+    pub t_ms: i64,
+}
+
 pub struct ReplaySeries {
     pub start_ms: i64,
     pub end_ms: i64,
     pub units: Vec<ReplayUnit>,
     /// Hostile-creature-attacks-player lines, ascending by `t0`.
     pub cast_lines: Vec<CastLine>,
+    /// Player DoT ticks on hostile creatures, ascending by `t_ms`.
+    pub periodic_hits: Vec<PeriodicHit>,
+    /// Same-side (player) HoT ticks on players, ascending by `t_ms` --
+    /// green particle bursts.
+    pub periodic_heals: Vec<PeriodicHit>,
     /// Tight `[min_x, max_x, min_y, max_y]` over **every** unit's fixes --
     /// what the scene frames on. `None` if nothing carried a position.
     pub fit_box: Option<[f32; 4]>,
@@ -275,6 +289,8 @@ pub fn series(
         end_ms,
         units: Vec::new(),
         cast_lines: Vec::new(),
+        periodic_hits: Vec::new(),
+        periodic_heals: Vec::new(),
         fit_box: None,
         map_box: None,
     };
@@ -580,6 +596,27 @@ pub fn series(
                     }
                 }
             }
+            // Player DoT ticks on a hostile creature -- no line, just a
+            // small upward particle burst from the target (drawn in the
+            // casting player's class colour). Only player -> creature.
+            LineKind::Composed {
+                prefix: Prefix::SpellPeriodic,
+                suffix: Suffix::Damage,
+            } => {
+                if let Some((source_unit, target_unit, true)) = attack_pair(tables, src, dst) {
+                    out.periodic_hits.push(PeriodicHit { source_unit, target_unit, t_ms: ts });
+                }
+            }
+            // Player HoT ticks on a player -- a small green particle burst
+            // from the healed unit. Same-side only (both player-side).
+            LineKind::Composed {
+                prefix: Prefix::SpellPeriodic,
+                suffix: Suffix::Heal,
+            } => {
+                if let Some((source_unit, target_unit, true)) = heal_pair(tables, src, dst) {
+                    out.periodic_heals.push(PeriodicHit { source_unit, target_unit, t_ms: ts });
+                }
+            }
             // Direct heals only (not HoT ticks) -- same-side, straight
             // green beam, or a teardrop loop when self-cast.
             LineKind::Composed { prefix: Prefix::Spell, suffix: Suffix::Heal } => {
@@ -695,6 +732,8 @@ pub fn series(
 
     out.units.sort_by_key(|u| u.unit_id);
     out.cast_lines.sort_by_key(|c| c.t0);
+    out.periodic_hits.sort_by_key(|h| h.t_ms);
+    out.periodic_heals.sort_by_key(|h| h.t_ms);
     out
 }
 
@@ -745,6 +784,59 @@ mod tests {
              {victim},0000000000000000,50,{max_hp},0,0,0,0,0,0,0,0,{xy},2607,0,1,\
              40,0,-1,1,0,0,0,nil,nil,nil"
         )
+    }
+
+    fn spell_periodic(t: &str, attacker: &str, victim: &str) -> String {
+        format!(
+            "9/3/2026 19:23:{t}-6  SPELL_PERIODIC_DAMAGE,{attacker},\"A-R-US\",0x512,0x0,\
+             {victim},\"Add\",0x10a48,0x0,200,\"Dot\",0x8,\
+             {victim},0000000000000000,50,100,0,0,0,0,0,0,0,0,0,0,1.0,1.0,2607,0,1,\
+             30,0,-1,8,0,0,0,1,nil,nil"
+        )
+    }
+
+    fn spell_periodic_heal(t: &str, healer: &str, target: &str) -> String {
+        format!(
+            "9/3/2026 19:23:{t}-6  SPELL_PERIODIC_HEAL,{healer},\"H-R-US\",0x511,0x0,\
+             {target},\"Pl\",0x512,0x0,774,\"Rejuv\",0x8,\
+             {target},0000000000000000,50,100,0,0,0,0,0,0,0,0,0,0,1.0,1.0,2607,0,1,\
+             25,25,0,nil"
+        )
+    }
+
+    #[test]
+    fn player_dot_ticks_become_periodic_hits() {
+        let boss = "Creature-0-0-0-0-9-1";
+        let p1 = "Player-1-1";
+        let (tables, store, mmap) = store_from(&[
+            spell_periodic("01.000", p1, boss),   // player DoT on boss -> a hit
+            spell_periodic("02.000", p1, boss),   // second tick -> another hit
+            spell_periodic("02.500", boss, p1),   // boss DoT on player -> ignored
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[2] + 1);
+        assert_eq!(s.periodic_hits.len(), 2, "only player -> creature ticks");
+        assert_eq!(s.periodic_hits[0].source_unit, store.source_unit[0]);
+        assert_eq!(s.periodic_hits[0].target_unit, store.dest_unit[0]);
+        assert!(s.periodic_hits[0].t_ms < s.periodic_hits[1].t_ms);
+        assert!(s.cast_lines.is_empty(), "DoT ticks never draw a line");
+    }
+
+    #[test]
+    fn player_hot_ticks_become_periodic_heals() {
+        let boss = "Creature-0-0-0-0-9-1";
+        let p1 = "Player-1-1";
+        let p2 = "Player-2-2";
+        let (tables, store, mmap) = store_from(&[
+            spell_periodic_heal("01.000", p1, p2),   // player HoT on player -> a heal burst
+            spell_periodic_heal("02.000", p2, p2),   // self HoT tick -> also counts
+            spell_periodic_heal("02.500", boss, boss), // creature HoT -> ignored (not player-side)
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[2] + 1);
+        assert_eq!(s.periodic_heals.len(), 2, "only player-side HoT ticks");
+        assert_eq!(s.periodic_heals[0].target_unit, store.dest_unit[0]);
+        assert!(s.periodic_heals[0].t_ms < s.periodic_heals[1].t_ms);
+        assert!(s.cast_lines.is_empty(), "HoT ticks never draw a line");
+        assert!(s.periodic_hits.is_empty());
     }
 
     #[test]
