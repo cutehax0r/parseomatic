@@ -460,7 +460,7 @@ fn push_recent(app: &AppHandle, path: &Path) {
 
 /// The number of recent files to list in the File > Open Recent menu (the
 /// on-disk MRU keeps more -- see `push_recent`).
-const RECENT_MENU_LIMIT: usize = 12;
+const RECENT_MENU_LIMIT: usize = 10;
 
 /// Rebuilds the File > Open Recent submenu from `recent_logs.json`,
 /// dropping entries whose file no longer exists. Must run on the main
@@ -1707,6 +1707,9 @@ struct ReplayUnitRow {
     kind: &'static str,
     /// Largest advanced-block `maxHP` seen for this unit; 0 if unknown.
     max_hp: i64,
+    /// The unit's self-reported `level` (advanced-block last field); 0 if
+    /// unknown. A skull / `??` boss logs `maxPlayerLevel + 3`.
+    level: i32,
     samples: Vec<ReplaySampleRow>,
     death_spans: Vec<ReplayDeathSpanRow>,
     cast_spans: Vec<ReplayCastSpanRow>,
@@ -1750,6 +1753,8 @@ struct ReplaySeriesRow {
     cast_lines: Vec<ReplayCastLineRow>,
     /// Player DoT ticks on hostile creatures, ascending by `t_ms`.
     periodic_hits: Vec<ReplayPeriodicHitRow>,
+    /// Hostile-creature DoT ticks on players, ascending by `t_ms`.
+    hostile_periodic_hits: Vec<ReplayPeriodicHitRow>,
     /// Player HoT ticks on players, ascending by `t_ms`.
     periodic_heals: Vec<ReplayPeriodicHitRow>,
     /// Environmental damage on players, ascending by `t_ms`.
@@ -1805,6 +1810,15 @@ fn replay_series(
                 t_ms: h.t_ms,
             })
             .collect(),
+        hostile_periodic_hits: s
+            .hostile_periodic_hits
+            .into_iter()
+            .map(|h| ReplayPeriodicHitRow {
+                source_unit: h.source_unit,
+                target_unit: h.target_unit,
+                t_ms: h.t_ms,
+            })
+            .collect(),
         periodic_heals: s
             .periodic_heals
             .into_iter()
@@ -1831,6 +1845,7 @@ fn replay_series(
                 guid: u.guid,
                 kind: u.kind,
                 max_hp: u.max_hp,
+                level: u.level,
                 samples: u
                     .samples
                     .into_iter()
@@ -1907,6 +1922,7 @@ fn recent_logs(app: AppHandle) -> RecentLogs {
             }
         }
     }
+    files.truncate(10);
     locations.truncate(10);
     RecentLogs { files, locations }
 }

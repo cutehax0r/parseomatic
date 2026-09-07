@@ -50,10 +50,15 @@ fn player_of(tables: &InternTables, id: u32) -> Option<u32> {
     }
 }
 
-/// A creature that isn't player-owned -- a real enemy.
+/// An enemy unit: a `Creature` or `Vehicle` that isn't player-owned. The
+/// `Vehicle` half matters for council / vehicle fights -- Zul'jan on The
+/// Coiled Altar, Ula'tek's head + tail -- whose boss unit logs as
+/// `Vehicle`; without it no damage arc / DoT burst ever connects to the
+/// boss (`docs/replay-view.md` §5). Player-driven vehicles carry a Player
+/// `owner_id`, so `player_of` still filters them out.
 fn is_hostile(tables: &InternTables, id: u32) -> bool {
     id != NO_UNIT
-        && tables.guids.get(id).kind == UnitKind::Creature
+        && matches!(tables.guids.get(id).kind, UnitKind::Creature | UnitKind::Vehicle)
         && player_of(tables, id).is_none()
 }
 
@@ -202,6 +207,14 @@ pub struct ReplayUnit {
     /// was never the dest of a positioned damage/heal). The Replay view
     /// sizes creatures by their share of the biggest creature's health.
     pub max_hp: i64,
+    /// The unit's self-reported `level` -- the last field of its own
+    /// advanced block (`raw_fields[18]`). 0 if it never carried one. A
+    /// skull / `??` boss logs its effective level (`maxPlayerLevel + 3`),
+    /// which reads a clear tier above trash, so the Replay view can flag
+    /// a co-boss whose health pool alone wouldn't (`docs/replay-view.md`
+    /// §5). Player-owned units inherit a bogus owner value -- trust it
+    /// only for real enemies.
+    pub level: i32,
     pub samples: Vec<Sample>,
     pub death_spans: Vec<DeathSpan>,
     pub cast_spans: Vec<CastSpan>,
@@ -225,6 +238,9 @@ pub struct ReplaySeries {
     pub cast_lines: Vec<CastLine>,
     /// Player DoT ticks on hostile creatures, ascending by `t_ms`.
     pub periodic_hits: Vec<PeriodicHit>,
+    /// Hostile-creature DoT ticks on players, ascending by `t_ms` -- red
+    /// particle bursts off the struck player.
+    pub hostile_periodic_hits: Vec<PeriodicHit>,
     /// Same-side (player) HoT ticks on players, ascending by `t_ms` --
     /// green particle bursts.
     pub periodic_heals: Vec<PeriodicHit>,
@@ -251,6 +267,8 @@ struct Acc {
     empower_open: Option<(i64, u16)>,
     /// Largest `maxHP` seen in this unit's advanced blocks.
     max_hp: i64,
+    /// Largest `level` (advanced-block last field) seen self-reported.
+    level: i32,
     /// Pending `(t_ms, target_unit)` face hints -- resolved to positions
     /// in a second pass once every unit's samples are known.
     raw_faces: Vec<(i64, u32)>,
@@ -293,6 +311,7 @@ pub fn series(
         units: Vec::new(),
         cast_lines: Vec::new(),
         periodic_hits: Vec::new(),
+        hostile_periodic_hits: Vec::new(),
         periodic_heals: Vec::new(),
         env_hits: Vec::new(),
         fit_box: None,
@@ -600,15 +619,20 @@ pub fn series(
                     }
                 }
             }
-            // Player DoT ticks on a hostile creature -- no line, just a
-            // small upward particle burst from the target (drawn in the
-            // casting player's class colour). Only player -> creature.
+            // DoT ticks -- no line, just a particle burst on the struck
+            // unit: player -> creature in the caster's class colour,
+            // creature -> player in hostile red.
             LineKind::Composed {
                 prefix: Prefix::SpellPeriodic,
                 suffix: Suffix::Damage,
             } => {
-                if let Some((source_unit, target_unit, true)) = attack_pair(tables, src, dst) {
-                    out.periodic_hits.push(PeriodicHit { source_unit, target_unit, t_ms: ts });
+                if let Some((source_unit, target_unit, from_player)) = attack_pair(tables, src, dst) {
+                    let hit = PeriodicHit { source_unit, target_unit, t_ms: ts };
+                    if from_player {
+                        out.periodic_hits.push(hit);
+                    } else {
+                        out.hostile_periodic_hits.push(hit);
+                    }
                 }
             }
             // Player HoT ticks on a player -- a small green particle burst
@@ -679,7 +703,9 @@ pub fn series(
         }
 
         // Position -- `pos_unit` is `NO_UNIT` exactly when there's no
-        // advanced block, so a real id guarantees a coord pair.
+        // advanced block, so a real id guarantees a coord pair. The same
+        // block's last field is the info unit's own `level` -- capture it
+        // here (self-report, so never an owner's value).
         let pu = events.pos_unit[row];
         if pu != NO_UNIT {
             let (x, y) = (events.pos_x[row], events.pos_y[row]);
@@ -688,7 +714,13 @@ pub fn series(
             b[1] = b[1].max(x);
             b[2] = b[2].min(y);
             b[3] = b[3].max(y);
-            accs.entry(pu).or_default().samples.push(Sample { t_ms: ts, x, y });
+            let a = accs.entry(pu).or_default();
+            a.samples.push(Sample { t_ms: ts, x, y });
+            if let Some(lvl) = events.raw_fields(row).get(18).and_then(|f| {
+                f.resolve_str(mmap).parse::<i32>().ok()
+            }) {
+                a.level = a.level.max(lvl);
+            }
         }
     }
 
@@ -741,6 +773,7 @@ pub fn series(
             guid: tables.guids.get(unit_id).guid.to_string(),
             kind: tables.guids.get(unit_id).kind.as_str(),
             max_hp: a.max_hp,
+            level: a.level,
             samples,
             death_spans,
             cast_spans,
@@ -751,6 +784,7 @@ pub fn series(
     out.units.sort_by_key(|u| u.unit_id);
     out.cast_lines.sort_by_key(|c| c.t0);
     out.periodic_hits.sort_by_key(|h| h.t_ms);
+    out.hostile_periodic_hits.sort_by_key(|h| h.t_ms);
     out.periodic_heals.sort_by_key(|h| h.t_ms);
     out.env_hits.sort_by_key(|h| h.t_ms);
     out
@@ -837,13 +871,18 @@ mod tests {
         let (tables, store, mmap) = store_from(&[
             spell_periodic("01.000", p1, boss),   // player DoT on boss -> a hit
             spell_periodic("02.000", p1, boss),   // second tick -> another hit
-            spell_periodic("02.500", boss, p1),   // boss DoT on player -> ignored
+            spell_periodic("02.500", boss, p1),   // boss DoT on player -> hostile bucket
         ]);
         let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[2] + 1);
         assert_eq!(s.periodic_hits.len(), 2, "only player -> creature ticks");
         assert_eq!(s.periodic_hits[0].source_unit, store.source_unit[0]);
         assert_eq!(s.periodic_hits[0].target_unit, store.dest_unit[0]);
         assert!(s.periodic_hits[0].t_ms < s.periodic_hits[1].t_ms);
+
+        assert_eq!(s.hostile_periodic_hits.len(), 1, "boss -> player tick");
+        assert_eq!(s.hostile_periodic_hits[0].source_unit, store.source_unit[2]);
+        assert_eq!(s.hostile_periodic_hits[0].target_unit, store.dest_unit[2]);
+
         assert!(s.cast_lines.is_empty(), "DoT ticks never draw a line");
     }
 
@@ -930,6 +969,32 @@ mod tests {
     }
 
     #[test]
+    fn a_vehicle_boss_is_hostile_for_lines_and_bursts() {
+        // Council / vehicle fights (Zul'jan, Ula'tek) log the boss as a
+        // `Vehicle-` GUID. It must still count as an enemy: damage arcs
+        // both ways, and DoT ticks land in the hostile bucket.
+        let boss = "Vehicle-0-0-0-0-9-1";
+        let player = "Player-1-1";
+        let (tables, store, mmap) = store_from(&[
+            spell_damage("01.000", player, boss, 9_000_000, "6.0,6.0"), // player -> boss
+            format!(
+                "9/3/2026 19:23:02.000-6  SPELL_DAMAGE,{boss},\"Boss\",0x10a48,0x0,\
+                 {player},\"Pl-R-US\",0x512,0x0,300,\"Slam\",0x1,\
+                 {player},0000000000000000,50,100,0,0,0,0,0,0,0,0,0,0,1.0,1.0,2607,0,1,\
+                 700,0,-1,1,0,0,0,nil,nil,nil"
+            ), // boss -> player
+            spell_periodic("03.000", player, boss), // player DoT tick on the boss
+            spell_periodic("03.500", boss, player), // boss DoT tick on the player
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[3] + 1);
+        assert_eq!(s.cast_lines.len(), 2, "player->boss and boss->player both draw");
+        assert!(s.cast_lines.iter().any(|c| c.from_player));
+        assert!(s.cast_lines.iter().any(|c| !c.from_player));
+        assert_eq!(s.periodic_hits.len(), 1, "player DoT on the vehicle boss");
+        assert_eq!(s.hostile_periodic_hits.len(), 1, "vehicle boss DoT on a player");
+    }
+
+    #[test]
     fn multi_target_spell_draws_a_line_to_every_target() {
         let boss = "Creature-0-0-0-0-9-1";
         let p1 = "Player-1-1";
@@ -1012,6 +1077,32 @@ mod tests {
         let small = s.units.iter().find(|u| u.guid.ends_with("9-2")).unwrap();
         assert_eq!(big.max_hp, 500_000, "keeps the largest maxHP seen, not the last");
         assert_eq!(small.max_hp, 90_000);
+    }
+
+    #[test]
+    fn captures_self_reported_level_from_the_advanced_block() {
+        // The advanced block's last field (raw_fields[18]) is the info
+        // unit's own level. A cast_success line ends `...,2607,0,<lvl>`;
+        // build a couple with an explicit level.
+        let lvl_cast = |t: &str, actor: &str, xy: &str, lvl: i32| {
+            format!(
+                "9/3/2026 19:23:{t}-6  SPELL_CAST_SUCCESS,{actor},\"A-R-US\",0x10a48,0x0,\
+                 0000000000000000,nil,0x80000000,0x80000000,100,\"Zap\",0x1,\
+                 {actor},0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,{xy},2607,0,{lvl}"
+            )
+        };
+        let boss = "Creature-0-0-0-0-9-1";
+        let add = "Creature-0-0-0-0-9-2";
+        let (tables, store, mmap) = store_from(&[
+            lvl_cast("01.000", boss, "40.0,40.0", 93),
+            lvl_cast("02.000", boss, "41.0,40.0", 93),
+            lvl_cast("02.500", add, "10.0,10.0", 90),
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[2] + 1);
+        let b = s.units.iter().find(|u| u.guid.ends_with("9-1")).unwrap();
+        let a = s.units.iter().find(|u| u.guid.ends_with("9-2")).unwrap();
+        assert_eq!(b.level, 93, "skull-tier boss level");
+        assert_eq!(a.level, 90, "trash add level");
     }
 
     #[test]

@@ -540,22 +540,32 @@ body {
   background-color: var(--accent-bg-hover);
 }
 
+/* Stack the two sections: Recent logs (2-up) above Recent locations (1-up). */
 .launch-cols {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 24px;
 }
 
-/* Grid items default to min-width:auto, so a long unbreakable file path
-   (the rows are white-space:nowrap) blows the 1fr track past its share and
-   scrolls the page sideways. Let the track win; the text ellipsizes. */
+/* Grid tracks default to min-width:auto, so a long unbreakable file path
+   (the rows are white-space:nowrap) blows a track past its share and
+   scrolls the page sideways. minmax(0, ...) lets the track win; the text
+   ellipsizes. */
 .launch-col {
   min-width: 0;
 }
 
+/* Recent logs -- two columns. Recent locations stays single-column (the
+   default .launch-list flex column). */
+#launch-files {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 24px;
+}
+
 @media (max-width: 620px) {
-  .launch-cols {
-    grid-template-columns: 1fr;
+  #launch-files {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1161,6 +1171,11 @@ body {
    (#encounters-grid). */
 .encounters-view {
   flex: 1;
+  /* .content centres its child on the cross axis when there's no log
+     loaded; without this the view sizes to its content and a tall
+     recent-logs list overflows upward, painting over the toolbar.
+     Stretch to fill .content instead and scroll internally. */
+  align-self: stretch;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;

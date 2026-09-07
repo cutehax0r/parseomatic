@@ -36,7 +36,7 @@ export interface ReplaySceneUnitInput {
   color: string; // "var(--token)" or a literal CSS colour
   team: ReplayTeam;
   shape: ReplayShape;
-  size: number; // world yд -- cube side / pyramid height
+  size: number; // world yards -- cube side / pyramid height
   // Vertical stack order for overlapping player cubes (lower = bottom):
   // tank 0, melee 1, ranged 2, healer 3, unknown 4. Unused for enemies.
   stackRank: number;
@@ -50,6 +50,7 @@ export interface ReplaySceneProps {
   units: ReplaySceneUnitInput[];
   castLines: ReplayCastLine[];
   periodicHits: ReplayPeriodicHit[];
+  hostilePeriodicHits: ReplayPeriodicHit[];
   periodicHeals: ReplayPeriodicHit[];
   envHits: ReplayPeriodicHit[];
   fitBox: [number, number, number, number] | null;
@@ -61,8 +62,8 @@ const CELL = 8; // major grid cell, yards
 const SUBDIV = 5; // minor subdivisions per major cell
 const MIN_SPAN = 32; // floor on the framed span so a still fight isn't a postage stamp
 const PAD_CELLS = 1; // whole cells of margin around the fit box
-const PILLAR_DEPTH = 90; // yд of side wall dropping into the mist / void
-const FLOOR_LIFT = 3; // yд the floor sits above y=0 (the "few yards above the void")
+const PILLAR_DEPTH = 90; // yards of side wall dropping into the mist / void
+const FLOOR_LIFT = 3; // yards the floor sits above y=0 (the "few yards above the void")
 // Three stacked translucent discs sitting just below the floor -- the
 // "cloudy mist" the pillar rises out of. [y offset from floor, radius x
 // span, opacity, tint].
@@ -71,7 +72,7 @@ const MIST_LAYERS: ReadonlyArray<readonly [number, number, number, number]> = [
   [-7, 3.4, 0.7, 0x12141f],
   [-13, 4.4, 0.88, 0x0b0c14],
 ];
-const HOVER = 0.35; // yд a shape floats above the floor
+const HOVER = 0.35; // yards a shape floats above the floor
 // De-conflicting overlaps (`deconflictOverlaps`). `STACK_DIST` x the
 // mean shape size is the "overlapping" threshold. Player cubes fan up
 // `PLAYER_STEP` x height per tier; an add over a player drops flush to
@@ -86,13 +87,13 @@ const smoothstep = (k: number): number => k * k * (3 - 2 * k);
 const lerp = (a: number, b: number, k: number): number => a + (b - a) * k;
 
 // Spawn-in: an enemy that isn't active at the window start sits
-// `SPAWN_RISE` yд above its spot at 0 opacity until `SPAWN_LEAD_MS`
+// `SPAWN_RISE` yards above its spot at 0 opacity until `SPAWN_LEAD_MS`
 // before its first activity, then slides down + fades to full, arriving
 // on time. "First activity" = its first position fix (`samples[0]`).
 const SPAWN_RISE = 50;
 const SPAWN_LEAD_MS = 1000;
 
-// yд-above-normal + opacity for an enemy whose first activity is
+// yards-above-normal + opacity for an enemy whose first activity is
 // `firstMs`, viewed at `t`. Smoothstepped.
 function spawnAt(firstMs: number, t: number): { yOffset: number; opacity: number } {
   const lead = firstMs - t;
@@ -199,18 +200,18 @@ function despawnPoseAt(lastMs: number, t: number, size: number): DeathPose | nul
 const CAST_SEGMENTS = 24; // bezier samples per line
 const CAST_FADE_MS = 125; // line fade in / out
 const CAST_BALL_MS = 500; // projectile flight time
-// Arc peak: [min, min+rand] yд. Creature attacks lob high; player
+// Arc peak: [min, min+rand] yards. Creature attacks lob high; player
 // attacks are much flatter.
 const CAST_PEAK_ENEMY = 10;
 const CAST_PEAK_ENEMY_RAND = 5;
 const CAST_PEAK_PLAYER = 3;
 const CAST_PEAK_PLAYER_RAND = 3;
-const CAST_SPREAD = 8; // yд lateral jitter on the control point
+const CAST_SPREAD = 8; // yards lateral jitter on the control point
 const CAST_LINE_OPACITY = 0.5; // attack beams peak here
 const CAST_HEAL_OPACITY = 0.05; // heal beams are a barely-there hint
 const CAST_SECONDARY_DIM = 0.2; // splash/cleave lines: 20% brightness of a direct hit
 const CAST_POOL = 96; // max lines drawn at once (both directions)
-// Camera-facing ribbon half-width (yд) and projectile radius. Creature
+// Camera-facing ribbon half-width (yards) and projectile radius. Creature
 // attacks are 3x -- thick and loud.
 const CAST_HALFW_PLAYER = 0.12;
 const CAST_HALFW_ENEMY = 0.36;
@@ -225,7 +226,7 @@ const CAST_HEAL_COLOR = "var(--ctp-green)"; // heal beams / teardrops
 const PART_COUNT = 20; // damage particles per tick burst
 const PART_COUNT_HEAL = 10; // heal bursts get ~half as many
 const PART_LIFE_MS = 250; // rise + fade duration
-const PART_RISE = 12.4; // yд a particle climbs over its life
+const PART_RISE = 12.4; // yards a particle climbs over its life
 const PART_TILT = 0.12; // rad max cone half-angle off straight up (heals); damage doubles it
 const PART_SIZE = 10; // point sprite size factor (screen px at mid distance)
 const PART_HEAL_SIZE = 0.5; // heal particles render at half the damage size
@@ -589,6 +590,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   // ---- periodic-damage particle bursts ----
   private partGroup = new THREE.Group();
   private periodicHits: ReplayPeriodicHit[] = [];
+  private hostilePeriodicHits: ReplayPeriodicHit[] = [];
   private periodicHeals: ReplayPeriodicHit[] = [];
   private envHits: ReplayPeriodicHit[] = [];
   private partPoints!: THREE.Points;
@@ -686,10 +688,11 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     const speed = document.createElement("select");
     speed.className = "rt-speed";
     speed.title = "Playback speed";
-    for (const v of [1, 2, 3, 5, 8, 10]) {
+    for (const v of [0.25, 0.5, 1, 2, 3, 5, 8, 10]) {
       const o = document.createElement("option");
       o.value = String(v);
       o.textContent = `${v}×`;
+      o.selected = v === 1;
       speed.appendChild(o);
     }
 
@@ -801,7 +804,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
     if (this.platform) this.platform.scale.set(span, 1, span);
     // Top face: `span/CELL` cells each way. Side faces: `span/CELL`
-    // across, `PILLAR_DEPTH/CELL` down -- so cells are CELL-yд on every
+    // across, `PILLAR_DEPTH/CELL` down -- so cells are CELL-yards on every
     // face and the grid lines line up where the top meets the sides.
     this.gridTexTop?.repeat.set(span / CELL, span / CELL);
     this.gridTexSide?.repeat.set(span / CELL, PILLAR_DEPTH / CELL);
@@ -856,6 +859,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.playhead = props.startMs;
     this.castLines = props.castLines ?? [];
     this.periodicHits = props.periodicHits ?? [];
+    this.hostilePeriodicHits = props.hostilePeriodicHits ?? [];
     this.periodicHeals = props.periodicHeals ?? [];
     this.envHits = props.envHits ?? [];
     this.setPlaying(false);
@@ -1182,27 +1186,55 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   // Rebuild the particle cloud for time `t`, deterministic over `t`
   // (scrub-safe, no spawn bookkeeping):
   //  - player DoT ticks fly caster -> target on lazy asymmetric arcs,
-  //  - environmental damage is a purple ballistic burst off the victim,
+  //  - creature DoT ticks on players are a red ballistic burst off the
+  //    struck player; environmental damage the same, in purple,
   //  - player HoT ticks are a small green burst off the healed unit.
   private updateParticles(t: number): void {
     let n = 0;
     n = this.writeFlights(t, n);
 
-    const purple = cssColor(ENV_COLOR);
+    // Ballistic up-burst. Environmental damage uses it at full scale;
+    // creature DoTs on players get a smaller, slower, sparser version.
+    const envStyle = {
+      count: PART_COUNT,
+      size: 1,
+      rise: 1,
+      tilt: PART_TILT * 2,
+      up: PART_ARC_UP,
+      grav: PART_ARC_GRAV,
+      life: PART_LIFE_MS,
+    };
+    const red = cssColor(CAST_ENEMY_COLOR);
     n = this.writeBursts(
-      this.envHits,
+      this.hostilePeriodicHits,
       t,
       n,
-      { count: PART_COUNT, size: 1, rise: 1, tilt: PART_TILT * 2, up: PART_ARC_UP, grav: PART_ARC_GRAV },
-      () => purple,
+      {
+        ...envStyle,
+        count: PART_COUNT / 2, // half the particles
+        rise: 0.5, // half as tall
+        life: PART_LIFE_MS * 2, // half as fast
+      },
+      () => red,
     );
+
+    const purple = cssColor(ENV_COLOR);
+    n = this.writeBursts(this.envHits, t, n, envStyle, () => purple);
 
     const green = cssColor(CAST_HEAL_COLOR);
     n = this.writeBursts(
       this.periodicHeals,
       t,
       n,
-      { count: PART_COUNT_HEAL, size: PART_HEAL_SIZE, rise: PART_HEAL_RISE, tilt: PART_TILT, up: 1, grav: 0 },
+      {
+        count: PART_COUNT_HEAL,
+        size: PART_HEAL_SIZE,
+        rise: PART_HEAL_RISE,
+        tilt: PART_TILT,
+        up: 1,
+        grav: 0,
+        life: PART_LIFE_MS,
+      },
       () => green,
     );
 
@@ -1303,21 +1335,30 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
   // Write every burst in `hits` alive at `t` into the particle buffers
   // starting at particle index `n`; returns the new `n`. `style` sets the
-  // per-burst count, point size, fly distance, cone angle, and the
-  // ballistic `up`/`grav` arc coefficients; `colorOf` picks the tint per
-  // hit. `hits` must ascend by tMs.
+  // per-burst count, point size, fly distance, cone angle, the ballistic
+  // `up`/`grav` arc coefficients, and `life` (ms the burst plays over --
+  // bigger = slower); `colorOf` picks the tint per hit. `hits` must
+  // ascend by tMs.
   private writeBursts(
     hits: ReplayPeriodicHit[],
     t: number,
     n: number,
-    style: { count: number; size: number; rise: number; tilt: number; up: number; grav: number },
+    style: {
+      count: number;
+      size: number;
+      rise: number;
+      tilt: number;
+      up: number;
+      grav: number;
+      life: number;
+    },
     colorOf: (h: ReplayPeriodicHit) => THREE.Color,
   ): number {
-    const { count, size: sizeMul, rise: riseMul, tilt: tiltMax, up, grav } = style;
+    const { count, size: sizeMul, rise: riseMul, tilt: tiltMax, up, grav, life } = style;
     const { cx, cy } = this.framing;
     let lo = 0;
     let hi = hits.length;
-    const from = t - PART_LIFE_MS;
+    const from = t - life;
     while (lo < hi) {
       const m = (lo + hi) >> 1;
       if (hits[m].tMs < from) lo = m + 1;
@@ -1336,7 +1377,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       const bx = at.x - cx;
       const by = FLOOR_LIFT + HOVER + tgt.size + 0.2;
       const bz = at.y - cy;
-      const f = age / PART_LIFE_MS; // 0 -> 1 over the life
+      const f = age / life; // 0 -> 1 over the life
       const alpha = PART_MAX_ALPHA * (1 - f);
 
       for (let k = 0; k < count && n < PART_POOL; k++, n++) {
@@ -1392,6 +1433,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       units: [],
       castLines: [],
       periodicHits: [],
+      hostilePeriodicHits: [],
       periodicHeals: [],
       envHits: [],
       fitBox: null,

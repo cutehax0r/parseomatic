@@ -188,15 +188,15 @@ Panel/Widget spec (`docs/ui-widgets.md`).
   *is* the floor, the same grid **continuing down the four sides**. The
   grid is a tileable canvas texture (`gridTexture()`): a **dark** base
   fill in Catppuccin **`--ctp-base`** with **lighter** lines drawn on top
-  — a **major** cell border every `CELL` (8) yд in **`--ctp-surface1`**
+  — a **major** cell border every `CELL` (8) yards in **`--ctp-surface1`**
   and `SUBDIV - 1` (4) dimmer **minor** lines per cell in
   **`--ctp-surface0`**.
   Per-face `repeat` (top `span/CELL` both ways, sides `span/CELL` ×
-  `PILLAR_DEPTH/CELL`) keeps cells 8 yд on every face and aligned where
+  `PILLAR_DEPTH/CELL`) keeps cells 8 yards on every face and aligned where
   the top meets the sides. "80s wireframe game in our palette." Extent =
   `fit_box` padded one cell and snapped to whole cells; a fixed minimum
   span so a stationary fight isn't a postage stamp.
-- **The pillar & mist** — that same box is tall (`PILLAR_DEPTH` ≈ 90 yд),
+- **The pillar & mist** — that same box is tall (`PILLAR_DEPTH` ≈ 90 yards),
   rising out of a **cloudy mist** into the void. The void colour is
   Catppuccin **`--ctp-crust`** — used for the `.replay-scene` background,
   the box's unseen bottom face, and `THREE.Fog` (linear, `near`/`far`
@@ -225,20 +225,26 @@ Panel/Widget spec (`docs/ui-widgets.md`).
 
 ## 5. Unit models
 
-`PLAYER_SIZE` ≈ 1.6 yд; `BOSS_SIZE` = `PLAYER_SIZE × 4.8`. Every shape
+`PLAYER_SIZE` ≈ 1.6 yards; `BOSS_SIZE` = `PLAYER_SIZE × 4.8`. Every shape
 hovers `HOVER` above the deck.
 
 | Unit | Shape | Size | Colour |
 |---|---|---|---|
 | Player | Cube | `PLAYER_SIZE` | spec → `--class-*`; `--ctp-overlay1` with no `COMBATANT_INFO` |
-| Vehicle / other | Cube | `PLAYER_SIZE` | `--ctp-overlay2` |
-| Creature | Sphere | by health (below) | Catppuccin grey by tier (below) — read against the class-coloured players |
+| other (cast anchors, …) | Cube | `PLAYER_SIZE` | `--ctp-overlay2` |
+| Creature / **Vehicle** | Sphere | by health (below) | Catppuccin grey by tier (below) — read against the class-coloured players |
+
+`Vehicle` is an enemy kind, not "other": the boss half of council /
+vehicle fights (Zul'jan on The Coiled Altar, Ula'tek's head + tail) logs
+as `Vehicle`, so it sizes / colours / spheres like any creature.
+Player-owned creatures *and vehicles* (pets, a raider in a turret) are
+still dropped.
 
 **Creatures are sized *and coloured* by max health.** `bossHp` = the
-largest advanced-block `maxHP` seen for any creature in the window
-(`replay.rs` keeps a per-unit max; "boss" = *the creature with the
-biggest health*, the user's definition — not a name match). For a
-creature with fraction `f = maxHp / bossHp`:
+largest advanced-block `maxHP` seen for any enemy (creature or vehicle)
+in the window (`replay.rs` keeps a per-unit max; "boss" = *the enemy with
+the biggest health*, the user's definition — not a name match). For an
+enemy with fraction `f = maxHp / bossHp`:
 
 | `f` | size | colour |
 |---|---|---|
@@ -249,6 +255,39 @@ creature with fraction `f = maxHp / bossHp`:
 | no health data | `PLAYER_SIZE` | `--ctp-overlay0` |
 
 `views/replay.ts` (`enemyColor`).
+
+**Level as a second boss signal.** The advanced block's last field
+(`raw_fields[18]`) is the info unit's self-reported `level`; `replay.rs`
+keeps the largest seen per unit (`ReplayUnit.level`, 0 if it never
+carried an advanced block). A skull / `??` boss logs its *effective*
+level — `maxPlayerLevel + 3` — a clear tier above trash (`maxPlayerLevel`)
+and elites (in between). `views/replay.ts` flags any enemy at the top of
+the pack's level range as boss-tier **when the pack spans ≥
+`BOSS_LEVEL_SPREAD` (2) levels** — so a same-level trash pull doesn't all
+inflate. Catches a co-boss like Hex Lord Malacrass (level 93 next to
+90–92 adds) whose ~0.38 health fraction would otherwise shrink it.
+Player-owned units inherit a bogus owner value in this field — it's read
+only for real enemies. Aura-only units (no advanced block) report no
+level, the same blind spot as position.
+
+**Phased / council bosses — GUID fold.** A phased boss re-spawns a fresh
+GUID (sometimes a fresh npcId) each stage, and `replay.rs` returns each
+as its own unit — so the sphere pops in late, freezes when its stage
+ends, and a stage-transition `UNIT_DIED` paints it dead for the rest of
+the pull. `mergeBossGuids` folds every same-npcId enemy spawn into one
+unit whose track is the concatenation of its spawns'; an open (never
+resurrected) death span survives only if nothing in the stitched track
+moves after it — i.e. it's the real death at the pull's end. Merged
+co-bosses are forced to `BOSS_SIZE` / boss colour even when their own
+health pool is a fraction of the biggest's (Hex Lord Malacrass sits at
+~0.38). Gated so swarms never collapse into one teleporting blob: at most
+`BOSS_MERGE_MAX_SPAWNS` (8) spawns, and together they must cover
+≥ `BOSS_MERGE_MIN_COVERAGE` (0.35) of the window — 82 Manifestations /
+133 venom stalkers stay separate. Cast lines and particle bursts pointing
+at an absorbed spawn are re-pointed to the merged unit before the
+on-screen filter. A stage whose boss carries **no** position fixes at all
+(Ula'tek P3, an aura-only unit) is still dropped — reconstructing it from
+its victims' positions is future work.
 
 "Front" is one face of the cube (a darker panel so the facing is legible
 at the camera angle). Colour is applied as the material colour; a faint
@@ -295,7 +334,7 @@ recomputed each frame, no tweening state that can desync from a scrub.
      target's snapshot position, and **stay** facing it until **2 s after
      the unit's last action** (last `face_event` or `cast_span` end) —
      "sticky".
-  2. **Otherwise**, when the unit is about to move to a fix **> 8 yд**
+  2. **Otherwise**, when the unit is about to move to a fix **> 8 yards**
      away (one grid cell), face that direction of travel.
   3. Otherwise hold the current facing.
   Best-effort for creatures too (bosses have weak facing data, but the

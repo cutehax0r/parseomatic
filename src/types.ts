@@ -234,6 +234,7 @@ export interface ReplayUnit {
   guid: string; // raw GUID -- disambiguates same-named adds
   kind: string; // "Player" | "Pet" | "Creature" | ...
   maxHp: number; // largest advanced-block maxHP seen; 0 if unknown
+  level: number; // self-reported level (advanced-block last field); 0 if unknown. Skull/?? boss = maxPlayerLevel + 3
   samples: ReplaySample[];
   deathSpans: ReplayDeathSpan[];
   castSpans: ReplayCastSpan[];
@@ -271,6 +272,7 @@ export interface ReplaySeries {
   units: ReplayUnit[];
   castLines: ReplayCastLine[]; // hostile -> player attack lines, ascending by t0
   periodicHits: ReplayPeriodicHit[]; // player DoT ticks on creatures, ascending by tMs
+  hostilePeriodicHits: ReplayPeriodicHit[]; // creature DoT ticks on players, ascending by tMs
   periodicHeals: ReplayPeriodicHit[]; // player HoT ticks on players, ascending by tMs
   envHits: ReplayPeriodicHit[]; // environmental damage on players (sourceUnit unused), ascending by tMs
   // Tight [minX, maxX, minY, maxY] over every unit's fixes -- the scene's

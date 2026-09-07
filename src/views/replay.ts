@@ -14,7 +14,12 @@ import { createViewContext, type ViewContext } from "../ui/context";
 import { replaySeries } from "../ui/replay-series";
 import type { NodeSpec } from "../ui/spec";
 import type { ReplaySceneUnitInput, ReplayShape } from "../ui/widgets/replay-scene";
-import type { EncounterRow, ReplayUnit } from "../types";
+import type {
+  EncounterRow,
+  ReplayCastLine,
+  ReplayPeriodicHit,
+  ReplayUnit,
+} from "../types";
 import {
   classColorVar,
   formatDifficulty,
@@ -41,6 +46,7 @@ const spec: NodeSpec = {
         units: [],
         castLines: [],
         periodicHits: [],
+        hostilePeriodicHits: [],
         periodicHeals: [],
         envHits: [],
         fitBox: null,
@@ -56,7 +62,7 @@ const spec: NodeSpec = {
 // pets, ...) never have meaningful positions.
 const RENDER_KINDS = new Set(["Player", "Creature", "Vehicle"]);
 
-// Player cube side (yд); the big-creature ("boss") size, +100% over the
+// Player cube side (yards); the big-creature ("boss") size, +100% over the
 // first cut. Creatures are sized by their share of the biggest
 // creature's max health -- see `enemySize`.
 const PLAYER_SIZE = 1.6;
@@ -82,6 +88,138 @@ function enemyColor(frac: number | null): string {
   if (frac !== null && frac >= 0.75) return "var(--ctp-surface2)"; // boss
   if (frac !== null && frac < 0.1) return "var(--ctp-overlay2)"; // trash
   return "var(--ctp-overlay0)"; // mid
+}
+
+// Enemy unit kinds: a real creature, or a `Vehicle` -- the boss half of
+// council / vehicle fights (Zul'jan on The Coiled Altar, Ula'tek's head
+// and tail) logs as `Vehicle`, so it has to size + colour + shape like
+// any other enemy, not fall through to the grey player-cube branch.
+const ENEMY_KINDS = new Set(["Creature", "Vehicle"]);
+
+// `Creature-0-<server>-<inst>-<zone>-<npcId>-<spawn>` -- the npcId is the
+// stable identity across a unit's spawns. Same shape for `Vehicle-`.
+// `null` for players / anything without the 6-dash creature form.
+function npcIdOf(guid: string): string | null {
+  const m = /^(?:Creature|Vehicle)-\d+-\d+-\d+-\d+-(\d+)-/.exec(guid);
+  return m ? m[1] : null;
+}
+
+// A phased / council boss re-spawns a fresh GUID (sometimes a fresh
+// npcId) each stage, and `replay.rs` hands each back as its own unit --
+// so the sphere pops in late, freezes when its stage ends, and a
+// `UNIT_DIED` at a stage change paints it dead for the rest of the pull.
+// Fold every same-npcId enemy spawn into one logical unit whose track is
+// the concatenation of its spawns', so the boss hands off across stages.
+// Gated hard so swarms (82 Manifestations, 133 venom stalkers) never
+// collapse into one teleporting blob: few spawns, and together they must
+// cover most of the pull.
+const BOSS_MERGE_MAX_SPAWNS = 8;
+const BOSS_MERGE_MIN_COVERAGE = 0.35; // union of spawn lifetimes / window
+const BOSS_MERGE_MIN_FRAC = 0.15; // vs the biggest enemy's max health
+
+// An enemy at the top of the pack's level range reads as a boss only when
+// the pack spans at least this many levels -- a skull boss is
+// `maxPlayerLevel + 3`, trash is `maxPlayerLevel`, elites in between.
+const BOSS_LEVEL_SPREAD = 2;
+
+// Fraction of `[0, windowMs]` covered by the union of `[first, last]`
+// sample spans across `units`.
+function spanCoverage(units: ReplayUnit[], windowMs: number): number {
+  if (windowMs <= 0) return 0;
+  const iv = units
+    .map((u) => u.samples)
+    .filter((s) => s.length > 0)
+    .map((s) => [s[0].tMs, s[s.length - 1].tMs] as [number, number])
+    .sort((a, b) => a[0] - b[0]);
+  let covered = 0;
+  let curLo = Infinity;
+  let curHi = -Infinity;
+  for (const [lo, hi] of iv) {
+    if (lo > curHi) {
+      if (curHi > curLo) covered += curHi - curLo;
+      curLo = lo;
+      curHi = hi;
+    } else {
+      curHi = Math.max(curHi, hi);
+    }
+  }
+  if (curHi > curLo) covered += curHi - curLo;
+  return covered / windowMs;
+}
+
+interface MergeResult {
+  units: ReplayUnit[];
+  // merged-away unitId -> the id its group is now keyed by. Cast lines /
+  // periodic hits referencing an absorbed spawn are re-pointed through
+  // this before the on-screen filter.
+  remap: Map<number, number>;
+  // unitIds that ended up as a merged council/phased boss -- forced to
+  // boss size + colour regardless of their health fraction (a co-boss
+  // like Hex Lord Malacrass sits well below the biggest's health).
+  bossIds: Set<number>;
+}
+
+function mergeBossGuids(
+  enemies: ReplayUnit[],
+  bossHp: number,
+  windowMs: number,
+): MergeResult {
+  const byNpc = new Map<string, ReplayUnit[]>();
+  const passthrough: ReplayUnit[] = [];
+  for (const u of enemies) {
+    const npc = npcIdOf(u.guid);
+    if (npc === null) {
+      passthrough.push(u);
+      continue;
+    }
+    const bucket = byNpc.get(npc);
+    if (bucket) bucket.push(u);
+    else byNpc.set(npc, [u]);
+  }
+
+  const out: ReplayUnit[] = [...passthrough];
+  const remap = new Map<number, number>();
+  const bossIds = new Set<number>();
+
+  for (const group of byNpc.values()) {
+    const groupMaxHp = group.reduce((mx, u) => Math.max(mx, u.maxHp), 0);
+    const mergeable =
+      group.length > 1 &&
+      group.length <= BOSS_MERGE_MAX_SPAWNS &&
+      (bossHp <= 0 || groupMaxHp >= BOSS_MERGE_MIN_FRAC * bossHp) &&
+      spanCoverage(group, windowMs) >= BOSS_MERGE_MIN_COVERAGE;
+
+    if (!mergeable) {
+      out.push(...group);
+      continue;
+    }
+
+    // Key the merged unit on the spawn with the most position fixes.
+    const rep = group.reduce((a, b) => (b.samples.length > a.samples.length ? b : a));
+    const samples = group.flatMap((u) => u.samples).sort((a, b) => a.tMs - b.tMs);
+    const castSpans = group.flatMap((u) => u.castSpans).sort((a, b) => a.startMs - b.startMs);
+    const faceEvents = group.flatMap((u) => u.faceEvents).sort((a, b) => a.tMs - b.tMs);
+    // A stage-transition `UNIT_DIED` leaves an open (endMs null) death
+    // span; keep a span only if it's closed, or nothing in the stitched
+    // track moves after it -- i.e. it's the real death at the pull's end.
+    const deathSpans = group
+      .flatMap((u) => u.deathSpans)
+      .sort((a, b) => a.startMs - b.startMs)
+      .filter((d) => d.endMs !== null || !samples.some((s) => s.tMs > d.startMs + 500));
+
+    for (const u of group) if (u.unitId !== rep.unitId) remap.set(u.unitId, rep.unitId);
+    bossIds.add(rep.unitId);
+    out.push({
+      ...rep,
+      maxHp: groupMaxHp,
+      samples,
+      deathSpans,
+      castSpans,
+      faceEvents,
+    });
+  }
+
+  return { units: out, remap, bossIds };
 }
 
 let ctx: ViewContext | null = null;
@@ -150,24 +288,46 @@ async function paint(): Promise<void> {
   const specByUnit = new Map<number, number>();
   for (const c of ctx.combatants) specByUnit.set(c.unitId, c.specId);
 
-  // Player pets / guardians / totems are `Creature` kind but owned by a
-  // player -- drop them (v1 shows raiders + real enemies only; a modern
-  // pull is ~100 totems/procs of grey clutter otherwise). Boss-summoned
-  // adds also carry an owner (the boss), so check the owner is a Player,
-  // not just that one exists.
+  // Player pets / guardians / totems are `Creature`/`Vehicle` kind but
+  // owned by a player -- drop them (v1 shows raiders + real enemies only;
+  // a modern pull is ~100 totems/procs of grey clutter otherwise).
+  // Boss-summoned adds also carry an owner (the boss), so check the owner
+  // is a Player, not just that one exists.
   const renderable = series.units.filter(
     (u) =>
       RENDER_KINDS.has(u.kind) &&
-      !(u.kind === "Creature" && units[u.unitId]?.owner?.startsWith("Player-")),
+      !(ENEMY_KINDS.has(u.kind) && units[u.unitId]?.owner?.startsWith("Player-")),
   );
 
-  // "Boss" = the creature with the biggest max health (user's
-  // definition). Everything scales off that.
+  // "Boss" = the enemy with the biggest max health (user's definition) --
+  // `Vehicle` counts, it's the boss half of a council fight. Everything
+  // scales off that.
   const bossHp = renderable
-    .filter((u) => u.kind === "Creature")
+    .filter((u) => ENEMY_KINDS.has(u.kind))
     .reduce((mx, u) => Math.max(mx, u.maxHp), 0);
 
-  const sceneUnits: ReplaySceneUnitInput[] = renderable.map((u: ReplayUnit) => {
+  // Fold a phased / council boss's per-stage spawns into one unit so it
+  // hands off across stages instead of popping in late and freezing.
+  const enemies = renderable.filter((u) => ENEMY_KINDS.has(u.kind));
+  const others = renderable.filter((u) => !ENEMY_KINDS.has(u.kind));
+  const merged = mergeBossGuids(enemies, bossHp, win.endMs - win.startMs);
+  const finalUnits = [...others, ...merged.units];
+
+  // Level as a second boss signal: a skull / `??` boss logs its effective
+  // level (`maxPlayerLevel + 3`), a clear tier above trash. Only trust it
+  // when the enemy pack actually spans levels (`BOSS_LEVEL_SPREAD`) --
+  // otherwise a same-level trash pull would all read as boss. Catches a
+  // co-boss like Hex Lord Malacrass, whose health pool alone is ~0.38 of
+  // the biggest's so `enemySize` would shrink it.
+  const enemyLevels = finalUnits
+    .filter((u) => ENEMY_KINDS.has(u.kind) && u.level > 0)
+    .map((u) => u.level);
+  const topEnemyLevel = enemyLevels.length ? Math.max(...enemyLevels) : 0;
+  const enemyLevelSpread = enemyLevels.length ? topEnemyLevel - Math.min(...enemyLevels) : 0;
+  const isBossLevel = (u: ReplayUnit): boolean =>
+    u.level > 0 && u.level >= topEnemyLevel && enemyLevelSpread >= BOSS_LEVEL_SPREAD;
+
+  const sceneUnits: ReplaySceneUnitInput[] = finalUnits.map((u: ReplayUnit) => {
     let team: ReplaySceneUnitInput["team"];
     let color: string;
     let size: number;
@@ -178,9 +338,17 @@ async function paint(): Promise<void> {
       color = classColorVar(specByUnit.get(u.unitId) ?? 0) || "var(--ctp-overlay1)";
       size = PLAYER_SIZE;
       stackRank = STACK_RANK_BY_ROLE[roleRank(specByUnit.get(u.unitId) ?? 0)] ?? 4;
-    } else if (u.kind === "Creature") {
+    } else if (ENEMY_KINDS.has(u.kind)) {
       team = "enemy";
-      const frac = bossHp > 0 && u.maxHp > 0 ? u.maxHp / bossHp : null;
+      // A merged council co-boss, or one flagged by its skull-tier level,
+      // reads as a boss even when its own health pool is a fraction of
+      // the biggest's.
+      const frac =
+        merged.bossIds.has(u.unitId) || isBossLevel(u)
+          ? 1
+          : bossHp > 0 && u.maxHp > 0
+            ? u.maxHp / bossHp
+            : null;
       size = enemySize(frac);
       color = enemyColor(frac);
     } else {
@@ -189,8 +357,8 @@ async function paint(): Promise<void> {
       size = PLAYER_SIZE;
     }
 
-    // Every enemy (boss included) is a sphere; players and vehicles are
-    // cubes.
+    // Every enemy (boss included) is a sphere; players and everything
+    // else are cubes.
     const shape: ReplayShape = team === "enemy" ? "sphere" : "cube";
 
     return {
@@ -210,25 +378,41 @@ async function paint(): Promise<void> {
   });
 
   // Cast lines whose source didn't make the render cut (no position
-  // fixes) can't be drawn -- filter to renderable sources.
+  // fixes) can't be drawn -- filter to on-screen units, re-pointing any
+  // endpoint that was folded into a merged boss.
   const shown = new Set(sceneUnits.map((u) => u.unitId));
-  const castLines = series.castLines.filter(
-    (c) => shown.has(c.sourceUnit) && shown.has(c.targetUnit),
-  );
-  const periodicHits = series.periodicHits.filter(
-    (h) => shown.has(h.sourceUnit) && shown.has(h.targetUnit),
-  );
-  const periodicHeals = series.periodicHeals.filter(
-    (h) => shown.has(h.sourceUnit) && shown.has(h.targetUnit),
-  );
-  // Environmental damage has no source unit -- only the victim needs to
-  // be on screen.
-  const envHits = series.envHits.filter((h) => shown.has(h.targetUnit));
+  const id = (n: number): number => merged.remap.get(n) ?? n;
+  const remapLine = (c: ReplayCastLine): ReplayCastLine => ({
+    ...c,
+    sourceUnit: id(c.sourceUnit),
+    targetUnit: id(c.targetUnit),
+  });
+  const remapHit = (h: ReplayPeriodicHit): ReplayPeriodicHit => ({
+    ...h,
+    sourceUnit: id(h.sourceUnit),
+    targetUnit: id(h.targetUnit),
+  });
+  const castLines = series.castLines
+    .map(remapLine)
+    .filter((c) => shown.has(c.sourceUnit) && shown.has(c.targetUnit));
+  const periodicHits = series.periodicHits
+    .map(remapHit)
+    .filter((h) => shown.has(h.sourceUnit) && shown.has(h.targetUnit));
+  const periodicHeals = series.periodicHeals
+    .map(remapHit)
+    .filter((h) => shown.has(h.sourceUnit) && shown.has(h.targetUnit));
+  // Bursts anchored on the struck player -- the source (a creature, or
+  // nothing for environmental) doesn't need to be on screen.
+  const hostilePeriodicHits = series.hostilePeriodicHits
+    .map(remapHit)
+    .filter((h) => shown.has(h.targetUnit));
+  const envHits = series.envHits.map(remapHit).filter((h) => shown.has(h.targetUnit));
 
   built.get("scene")?.update({
     units: sceneUnits,
     castLines,
     periodicHits,
+    hostilePeriodicHits,
     periodicHeals,
     envHits,
     fitBox: series.fitBox,
