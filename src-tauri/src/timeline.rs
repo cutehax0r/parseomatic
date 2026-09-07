@@ -6,16 +6,21 @@
 //!
 //! - **instants** -- the player's damage/heal events (no real duration;
 //!   the view draws each at ~1.5s or a min sliver). Direction + the
-//!   same-ms `SWING_DAMAGE` / `SWING_DAMAGE_LANDED` dedup are lifted from
-//!   `movement::events`.
+//!   same-ms `SWING_DAMAGE` / `SWING_DAMAGE_LANDED` dedup are the shared
+//!   `hits::HitScanner`, the same one `movement::events` uses.
 //! - **auras** -- `SPELL_AURA_APPLIED` .. `SPELL_AURA_REMOVED` spans on
 //!   the player, split buff vs debuff off the `auraType` field. These are
 //!   the lanes with genuine width.
 //! - **deaths** -- `UNIT_DIED` .. `SPELL_RESURRECT`, same as
 //!   `movement::series`, drawn as rules across every lane.
+//! - **samples** -- the player's own `(t, x, y)` fixes, so the view's
+//!   Movement lane needs no separate `movement_series` round trip.
 
-use crate::movement::DeathSpan;
-use crate::parser::event::{EventStore, LineKind, Prefix, StandaloneKind, Suffix};
+use std::collections::HashMap;
+
+use crate::hits::HitScanner;
+use crate::movement::{DeathSpan, Sample};
+use crate::parser::event::{EventStore, LineKind, StandaloneKind, Suffix};
 use crate::parser::intern::NO_UNIT;
 
 /// One instantaneous damage/heal event involving the player.
@@ -80,6 +85,9 @@ pub struct TimelineSeries {
     pub instants: Vec<Instant>,
     pub auras: Vec<AuraSpan>,
     pub deaths: Vec<DeathSpan>,
+    /// The player's own `(t, x, y)` fixes in the window, chronological --
+    /// feeds the view's Movement lane (no `movement_series` fetch needed).
+    pub samples: Vec<Sample>,
 }
 
 /// Walk `[start_ms, end_ms]` once, classifying every row that involves
@@ -93,24 +101,36 @@ pub fn series(
     start_ms: i64,
     end_ms: i64,
 ) -> TimelineSeries {
-    let mut out = TimelineSeries {
-        start_ms,
-        end_ms,
-        instants: Vec::new(),
-        auras: Vec::new(),
-        deaths: Vec::new(),
-    };
     if unit_id == NO_UNIT || end_ms <= start_ms {
-        return out;
+        return TimelineSeries {
+            start_ms,
+            end_ms,
+            instants: Vec::new(),
+            auras: Vec::new(),
+            deaths: Vec::new(),
+            samples: Vec::new(),
+        };
     }
 
     let (lo, hi) = crate::query::window(events, start_ms, end_ms);
+    let mut out = TimelineSeries {
+        start_ms,
+        end_ms,
+        // Rough headroom -- a heavy pull is thousands of instants.
+        instants: Vec::with_capacity(hi.saturating_sub(lo) / 16),
+        auras: Vec::with_capacity(64),
+        deaths: Vec::new(),
+        samples: Vec::with_capacity(hi.saturating_sub(lo) / 16),
+    };
 
-    // Last kept (ts, kind, source, dest, spell, amount) -- collapses the
-    // same-ms SWING_DAMAGE / SWING_DAMAGE_LANDED pair the parser can't
-    // tell apart (identical fields, one row the attacker's, one the
-    // victim's), exactly as `movement::events` does.
-    let mut prev: Option<(i64, InstKind, u32, u32, u16, i64)> = None;
+    // Damage/heal direction + the SWING_DAMAGE / SWING_DAMAGE_LANDED
+    // dedup -- shared with `movement::events` so they never drift.
+    let mut scan = HitScanner::default();
+    // spell_id -> index of its currently-open span in `out.auras`, so
+    // applied/removed/dose lookups stay O(1) instead of rescanning every
+    // span accumulated over the window. Matches the old spell_id-only
+    // match (a second caster's application still folds onto the one span).
+    let mut open: HashMap<u16, usize> = HashMap::new();
 
     for row in lo..hi {
         let ts = events.timestamp_ms[row];
@@ -119,6 +139,12 @@ pub fn series(
         }
         let src = events.source_unit[row];
         let dst = events.dest_unit[row];
+
+        // The player's own position fixes (same rule as `movement::series`
+        // -- `pos_unit` is `NO_UNIT` exactly when the row has no coords).
+        if events.pos_unit[row] == unit_id {
+            out.samples.push(Sample { t_ms: ts, x: events.pos_x[row], y: events.pos_y[row] });
+        }
 
         // --- deaths -------------------------------------------------------
         if let LineKind::Standalone(StandaloneKind::UnitDied) = events.kind[row] {
@@ -135,11 +161,7 @@ pub fn series(
                 ..
             } if dst == unit_id => {
                 let spell = events.spell[row];
-                let already_open = out
-                    .auras
-                    .iter()
-                    .any(|a| a.end_ms.is_none() && a.spell_id == spell);
-                if !already_open {
+                if !open.contains_key(&spell) {
                     // `raw_fields` for a composed aura row is just the
                     // leftover suffix params -- `[auraType]`, plus an
                     // amount for absorb auras. The subevent name is NOT
@@ -155,6 +177,7 @@ pub fn series(
                         .find_map(|f| f.resolve_str(mmap).parse::<u32>().ok())
                         .filter(|&n| (1..=999).contains(&n))
                         .unwrap_or(1);
+                    open.insert(spell, out.auras.len());
                     out.auras.push(AuraSpan {
                         spell_id: spell,
                         start_ms: ts,
@@ -172,31 +195,19 @@ pub fn series(
                 suffix: Suffix::AuraAppliedDose | Suffix::AuraRemovedDose,
                 ..
             } if dst == unit_id => {
-                let spell = events.spell[row];
-                if let Some(open) = out
-                    .auras
-                    .iter_mut()
-                    .rev()
-                    .find(|a| a.end_ms.is_none() && a.spell_id == spell)
-                {
+                if let Some(&idx) = open.get(&events.spell[row]) {
                     if let Some(n) = events
                         .raw_fields(row)
                         .iter()
                         .find_map(|f| f.resolve_str(mmap).parse::<u32>().ok())
                     {
-                        open.max_stacks = open.max_stacks.max(n);
+                        out.auras[idx].max_stacks = out.auras[idx].max_stacks.max(n);
                     }
                 }
             }
             LineKind::Composed { suffix: Suffix::AuraRemoved, .. } if dst == unit_id => {
-                let spell = events.spell[row];
-                if let Some(open) = out
-                    .auras
-                    .iter_mut()
-                    .rev()
-                    .find(|a| a.end_ms.is_none() && a.spell_id == spell)
-                {
-                    open.end_ms = Some(ts);
+                if let Some(idx) = open.remove(&events.spell[row]) {
+                    out.auras[idx].end_ms = Some(ts);
                 }
             }
 
@@ -206,78 +217,37 @@ pub fn series(
                     span.end_ms.get_or_insert(ts);
                 }
             }
-
-            // --- instants (damage / heal) -----------------------------
-            LineKind::Composed { prefix, suffix: Suffix::Damage } => {
-                let kind = if src == unit_id {
-                    InstKind::DmgOut
-                } else if dst == unit_id {
-                    InstKind::DmgIn
-                } else {
-                    continue;
-                };
-                let periodic = prefix == Prefix::SpellPeriodic;
-                push_instant(events, row, &mut out, &mut prev, unit_id, kind, src, dst, periodic);
-            }
-            LineKind::Composed { prefix, suffix: Suffix::Heal } => {
-                let kind = if src == unit_id {
-                    InstKind::HealOut
-                } else if dst == unit_id {
-                    InstKind::HealIn
-                } else {
-                    continue;
-                };
-                let periodic = prefix == Prefix::SpellPeriodic;
-                push_instant(events, row, &mut out, &mut prev, unit_id, kind, src, dst, periodic);
-            }
             _ => {}
+        }
+
+        // --- instants (damage / heal) --------------------------------
+        if let Some(h) = scan.classify(events, row, unit_id) {
+            let kind = match (h.heal, h.done) {
+                (false, true) => InstKind::DmgOut,
+                (false, false) => InstKind::DmgIn,
+                (true, true) => InstKind::HealOut,
+                (true, false) => InstKind::HealIn,
+            };
+            // Only trust the row's coords when they describe the player.
+            let (x, y) = if events.pos_unit[row] == unit_id {
+                (events.pos_x[row], events.pos_y[row])
+            } else {
+                (f32::NAN, f32::NAN)
+            };
+            out.instants.push(Instant {
+                t_ms: h.t_ms,
+                kind,
+                spell_id: h.spell_id,
+                amount: h.amount,
+                other_unit: h.other_unit,
+                periodic: h.periodic,
+                x,
+                y,
+            });
         }
     }
 
     out
-}
-
-#[allow(clippy::too_many_arguments)]
-fn push_instant(
-    events: &EventStore,
-    row: usize,
-    out: &mut TimelineSeries,
-    prev: &mut Option<(i64, InstKind, u32, u32, u16, i64)>,
-    unit_id: u32,
-    kind: InstKind,
-    src: u32,
-    dst: u32,
-    periodic: bool,
-) {
-    let ts = events.timestamp_ms[row];
-    let spell = events.spell[row];
-    let amount = events.amount[row];
-    let key = (ts, kind, src, dst, spell, amount);
-    if *prev == Some(key) {
-        return;
-    }
-    *prev = Some(key);
-
-    let other = match kind {
-        InstKind::DmgOut | InstKind::HealOut => dst,
-        InstKind::DmgIn | InstKind::HealIn => src,
-    };
-    // Only trust the row's coords when they describe the player.
-    let (x, y) = if events.pos_unit[row] == unit_id {
-        (events.pos_x[row], events.pos_y[row])
-    } else {
-        (f32::NAN, f32::NAN)
-    };
-    out.instants.push(Instant {
-        t_ms: ts,
-        kind,
-        spell_id: spell,
-        amount,
-        other_unit: other,
-        periodic,
-        x,
-        y,
-    });
 }
 
 #[cfg(test)]
@@ -372,6 +342,22 @@ mod tests {
         assert_eq!(kinds, vec!["dmgOut", "dmgIn"]);
         assert_eq!(s.instants[0].amount, 900);
         assert_eq!(s.instants[1].amount, 500);
+    }
+
+    #[test]
+    fn collects_the_players_own_position_fixes() {
+        // A cast-success row: `infoGUID` is the source, so the coords are
+        // the caster's own -- one sample. An outgoing SPELL_DAMAGE carries
+        // the target's coords -- no sample.
+        let cast = "SPELL_CAST_SUCCESS,Player-1-1,\"Mv-R-US\",0x512,0x0,0000000000000000,nil,0x80000000,0x80000000,\
+                    100,\"Spell\",0x1,Player-1-1,0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,12.5,-7.0,2607,0,1";
+        let dmg = "SPELL_DAMAGE,Player-1-1,\"Mv-R-US\",0x512,0x0,Creature-0-0-0-0-1-0,\"Boss\",0x10a48,0x0,\
+                   100,\"Zap\",0x1,Creature-0-0-0-0-1-0,0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,500,500,2607,0,93,9,0,-1,1,0,0,0,nil,nil,ST";
+        let (_t, store, data) = store_from(&[cast, dmg]);
+        let unit = store.source_unit[0];
+        let s = series(&store, &data, unit, store.timestamp_ms[0] - 1, store.timestamp_ms[1] + 1);
+        assert_eq!(s.samples.len(), 1);
+        assert_eq!((s.samples[0].x, s.samples[0].y), (12.5, -7.0));
     }
 
     #[test]

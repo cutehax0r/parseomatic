@@ -46,6 +46,7 @@ import { renderDeaths } from "./views/deaths";
 import { renderMovement } from "./views/movement";
 import { renderTimeline } from "./views/timeline";
 import { renderReplay } from "./views/replay";
+import { renderInterrupts } from "./views/interrupts";
 import { renderLaunch } from "./views/launch";
 import { renderEncounterGrid } from "./views/encounter-grid";
 
@@ -139,6 +140,7 @@ type ViewMode =
   | "encounters"
   | "overview"
   | "replay"
+  | "interrupts"
   | "character"
   | "damage"
   | "healing"
@@ -1385,6 +1387,7 @@ async function refreshStatus() {
   const rawView = document.querySelector<HTMLElement>("#raw-view");
   const overviewView = document.querySelector<HTMLElement>("#overview-view");
   const replayView = document.querySelector<HTMLElement>("#replay-view");
+  const interruptsView = document.querySelector<HTMLElement>("#interrupts-view");
   const characterView = document.querySelector<HTMLElement>("#character-view");
   const damageView = document.querySelector<HTMLElement>("#damage-view");
   const healingView = document.querySelector<HTMLElement>("#healing-view");
@@ -1395,6 +1398,7 @@ async function refreshStatus() {
   const encountersBtn = document.querySelector<HTMLButtonElement>("#view-encounters-btn");
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
   const replayBtn = document.querySelector<HTMLButtonElement>("#view-replay-btn");
+  const interruptsBtn = document.querySelector<HTMLButtonElement>("#view-interrupts-btn");
   const characterBtn = document.querySelector<HTMLButtonElement>("#view-character-btn");
   const damageBtn = document.querySelector<HTMLButtonElement>("#view-damage-btn");
   const healingBtn = document.querySelector<HTMLButtonElement>("#view-healing-btn");
@@ -1416,6 +1420,7 @@ async function refreshStatus() {
     !rawView ||
     !overviewView ||
     !replayView ||
+    !interruptsView ||
     !characterView ||
     !damageView ||
     !healingView ||
@@ -1426,6 +1431,7 @@ async function refreshStatus() {
     !encountersBtn ||
     !overviewBtn ||
     !replayBtn ||
+    !interruptsBtn ||
     !characterBtn ||
     !damageBtn ||
     !healingBtn ||
@@ -1449,6 +1455,7 @@ async function refreshStatus() {
       "encounters",
       "overview",
       "replay",
+      "interrupts",
       "character",
       "damage",
       "healing",
@@ -1483,6 +1490,7 @@ async function refreshStatus() {
   encountersBtn.setAttribute("aria-pressed", String(currentViewMode === "encounters"));
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
   replayBtn.setAttribute("aria-pressed", String(currentViewMode === "replay"));
+  interruptsBtn.setAttribute("aria-pressed", String(currentViewMode === "interrupts"));
   characterBtn.setAttribute("aria-pressed", String(currentViewMode === "character"));
   damageBtn.setAttribute("aria-pressed", String(currentViewMode === "damage"));
   healingBtn.setAttribute("aria-pressed", String(currentViewMode === "healing"));
@@ -1626,6 +1634,7 @@ async function refreshStatus() {
   rawView.hidden = currentViewMode !== "raw";
   overviewView.hidden = currentViewMode !== "overview";
   replayView.hidden = currentViewMode !== "replay";
+  interruptsView.hidden = currentViewMode !== "interrupts";
   characterView.hidden = currentViewMode !== "character";
   damageView.hidden = currentViewMode !== "damage";
   healingView.hidden = currentViewMode !== "healing";
@@ -1642,6 +1651,8 @@ async function refreshStatus() {
     renderOverview();
   } else if (currentViewMode === "replay") {
     renderReplay();
+  } else if (currentViewMode === "interrupts") {
+    renderInterrupts();
   } else if (currentViewMode === "character") {
     renderCharacter();
   } else if (currentViewMode === "damage") {
@@ -1712,6 +1723,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.querySelector("#view-replay-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "replay" });
+  });
+  document.querySelector("#view-interrupts-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "interrupts" });
   });
 
   document.querySelector("#view-character-btn")?.addEventListener("click", () => {

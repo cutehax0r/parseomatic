@@ -391,6 +391,13 @@ impl SpellTable {
         &self.records[id as usize]
     }
 
+    /// Dense id of an already-interned real spellId, without creating a
+    /// record for an unknown one (the interrupts scan resolves the
+    /// `extraSpellId` on `SPELL_INTERRUPT`). Mirrors `GuidTable::get_id`.
+    pub fn get_dense(&self, spell_id: u32) -> Option<u16> {
+        self.index.get(&spell_id).copied()
+    }
+
     pub fn len(&self) -> usize {
         self.records.len()
     }

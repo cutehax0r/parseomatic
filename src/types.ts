@@ -338,6 +338,33 @@ export interface TimelineSeries {
   instants: TimelineInstant[];
   auras: TimelineAura[];
   deaths: MovementDeathSpan[]; // player death intervals -- rules across every lane
+  samples: MovementSample[]; // the player's own (t,x,y) fixes -- feeds the Movement lane
+}
+
+// ---- interrupts command (src-tauri/src/interrupts.rs) ----------------
+// Raid-level interrupt list for one UI-picked window. Backs the
+// Interrupts view. See docs/interrupts-view.md.
+
+export interface InterruptRow {
+  tMs: number;
+  sourceUnit: number; // the interrupter
+  targetUnit: number; // whose cast was interrupted
+  abilityId: number | null; // the interrupt ability (Kick, ...)
+  interruptedId: number | null; // the spell that was being cast
+  elapsedMs: number | null; // interrupt ts - CAST_START ts, when a matching cast was seen
+}
+
+export interface FailedCastRow {
+  tMs: number;
+  sourceUnit: number;
+  abilityId: number | null;
+  reason: string; // the SPELL_CAST_FAILED failedType
+  count: number; // adjacent identical failures collapsed; 1 for a lone one
+}
+
+export interface InterruptReport {
+  interrupts: InterruptRow[];
+  failedCasts: FailedCastRow[];
 }
 
 // ---- Encounter-picker selection ----------------------------------------

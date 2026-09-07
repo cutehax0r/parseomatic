@@ -58,7 +58,8 @@ everything at that timestamp.
 The **Movement** lane reuses the Movement view's standstill model
 (`src/ui/movement-segments.ts` — a run of fixes within 1.5 yd of an
 anchor for ≥3 s is a stop; a >5 s fix gap breaks it), fed by the
-existing `movement_series` command's `samples`. Moving segments carry the
+player position `samples` that `timeline_series` returns in the same
+pass (no separate `movement_series` fetch). Moving segments carry the
 summed fix-to-fix distance; stops carry their duration and anchor
 position (shown in the hover tooltip).
 
@@ -69,13 +70,16 @@ needs a curated spell list — not yet designed.
 
 `src-tauri/src/timeline.rs`, wired in `lib.rs`, fetched/cached by
 `src/ui/timeline-series.ts` (keyed `unitId:startMs:endMs`, cleared on log
-change). One `query::window` + one row loop over the window, reusing
-`movement.rs`'s patterns:
+change). One `query::window` + one row loop over the window producing
+four streams:
 
 - **instants** — direction classification and the same-ms
-  `SWING_DAMAGE` / `SWING_DAMAGE_LANDED` dedup are the same as
-  `movement::events`. `x`/`y` are the player's own coords
+  `SWING_DAMAGE` / `SWING_DAMAGE_LANDED` dedup are `hits::HitScanner`
+  (`src-tauri/src/hits.rs`), the exact same per-row classifier
+  `movement::events` feeds. `x`/`y` are the player's own coords
   (`pos_unit == unit_id`), else `null`.
+- **samples** — every row whose `pos_unit == unit_id`, i.e. the player's
+  own `(t, x, y)` fixes; feeds the Movement lane.
 - **auras** — `APPLIED`/`REFRESH` opens a span for a spell id if none is
   open for it; `REMOVED` closes the newest open one. `is_debuff` is read
   from the leftover `auraType` raw field (`"DEBUFF"`). `_DOSE` events

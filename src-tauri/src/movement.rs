@@ -16,6 +16,7 @@
 //! `query_events` bucketed series. The unit's death timestamps within the
 //! window ride along for the chart's death rules.
 
+use crate::hits::HitScanner;
 use crate::parser::event::{EventStore, LineKind, StandaloneKind, Suffix};
 use crate::parser::intern::{InternTables, UnitKind, NO_UNIT};
 use crate::query;
@@ -211,50 +212,50 @@ pub struct EventRow {
 
 /// Every cast / damage / heal event involving `unit_id` in
 /// `[start_ms, end_ms]`, in file order. `SPELL_CAST_SUCCESS` only for
-/// casts (start events carry no useful detail here). Adjacent exact
-/// duplicates are dropped -- that collapses the `SWING_DAMAGE` /
-/// `SWING_DAMAGE_LANDED` pair the parser can't tell apart.
+/// casts (start events carry no useful detail here). The damage/heal
+/// classification + `SWING_DAMAGE` / `SWING_DAMAGE_LANDED` dedup is the
+/// shared `hits::HitScanner`, so this and `timeline::series` stay in
+/// lockstep.
 pub fn events(events: &EventStore, unit_id: u32, start_ms: i64, end_ms: i64) -> Vec<EventRow> {
     let mut out = Vec::new();
     if unit_id == NO_UNIT || end_ms <= start_ms {
         return out;
     }
     let (lo, hi) = query::window(events, start_ms, end_ms);
-    // Last kept (ts, kind, source, dest, spell, amount) for dedup.
-    let mut prev: Option<(i64, EventKind, u32, u32, u16, i64)> = None;
+    let mut scan = HitScanner::default();
     for row in lo..hi {
         let ts = events.timestamp_ms[row];
         if ts < start_ms || ts > end_ms {
             continue;
         }
-        let src = events.source_unit[row];
-        let dst = events.dest_unit[row];
-        let (kind, other) = match events.kind[row] {
-            LineKind::Composed { suffix: Suffix::CastSuccess, .. } if src == unit_id => {
-                (EventKind::Cast, dst)
+        // Casts have no SWING twin -- classified directly, not via the scanner.
+        if let LineKind::Composed { suffix: Suffix::CastSuccess, .. } = events.kind[row] {
+            if events.source_unit[row] == unit_id {
+                out.push(EventRow {
+                    t_ms: ts,
+                    kind: EventKind::Cast,
+                    spell_id: events.spell[row],
+                    amount: 0,
+                    other_unit: events.dest_unit[row],
+                });
             }
-            LineKind::Composed { suffix: Suffix::Damage, .. } if src == unit_id => {
-                (EventKind::DamageDone, dst)
-            }
-            LineKind::Composed { suffix: Suffix::Damage, .. } if dst == unit_id => {
-                (EventKind::DamageTaken, src)
-            }
-            LineKind::Composed { suffix: Suffix::Heal, .. } if src == unit_id => {
-                (EventKind::HealDone, dst)
-            }
-            LineKind::Composed { suffix: Suffix::Heal, .. } if dst == unit_id => {
-                (EventKind::HealTaken, src)
-            }
-            _ => continue,
-        };
-        let spell = events.spell[row];
-        let amount = events.amount[row];
-        let key = (ts, kind, src, dst, spell, amount);
-        if prev == Some(key) {
             continue;
         }
-        prev = Some(key);
-        out.push(EventRow { t_ms: ts, kind, spell_id: spell, amount, other_unit: other });
+        if let Some(h) = scan.classify(events, row, unit_id) {
+            let kind = match (h.heal, h.done) {
+                (false, true) => EventKind::DamageDone,
+                (false, false) => EventKind::DamageTaken,
+                (true, true) => EventKind::HealDone,
+                (true, false) => EventKind::HealTaken,
+            };
+            out.push(EventRow {
+                t_ms: h.t_ms,
+                kind,
+                spell_id: h.spell_id,
+                amount: h.amount,
+                other_unit: h.other_unit,
+            });
+        }
     }
     out
 }

@@ -7,16 +7,16 @@
 // Buffs / debuffs carry real durations (AURA_APPLIED..AURA_REMOVED); the
 // damage / heal lanes are instants drawn ~1.5s wide; Movement is an
 // always-full strip of alternating Moving / Stopped segments (the
-// Movement view's standstill model, `movement-segments.ts`). Backed by a
-// `timeline_series` + `movement_series` fetch. Gated like Movement: needs
-// a picked player and a bounded window, not the whole log.
+// Movement view's standstill model, `movement-segments.ts`, fed by the
+// player position fixes `timeline_series` returns). One `timeline_series`
+// fetch. Gated like Movement: needs a picked player and a bounded
+// window, not the whole log.
 
 import "../ui/widgets"; // registers timeline-lanes / encounter-title / ...
 
 import { buildView, type BuiltView } from "../ui/panel";
 import { createViewContext, type ViewContext } from "../ui/context";
 import { timelineSeries } from "../ui/timeline-series";
-import { movementSeries } from "../ui/movement-series";
 import { movementSegments } from "../ui/movement-segments";
 import type { NodeSpec } from "../ui/spec";
 import type {
@@ -116,11 +116,7 @@ async function paint(): Promise<void> {
   if (!ready || !unit || unitId === null) return;
 
   const { startMs, endMs } = ctx.range;
-  const [series, move] = await Promise.all([
-    timelineSeries(unitId, startMs, endMs),
-    // buckets is irrelevant here -- we only read `.samples`.
-    movementSeries(unitId, startMs, endMs, 120),
-  ]);
+  const series = await timelineSeries(unitId, startMs, endMs);
   if (seq !== paintSeq || !series) return;
 
   const spells = ctx.spells;
@@ -167,8 +163,8 @@ async function paint(): Promise<void> {
 
   // Movement: the same standstill model the Movement view uses, drawn as
   // an always-full strip of alternating Moving / Stopped segments.
-  if (move) {
-    for (const seg of movementSegments(move.samples, series.startMs, series.endMs)) {
+  if (series.samples.length) {
+    for (const seg of movementSegments(series.samples, series.startMs, series.endMs)) {
       byLane.get("Movement")!.push({
         startMs: seg.startMs,
         endMs: seg.endMs,

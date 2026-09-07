@@ -15,4 +15,5 @@ import "./bar-chart";
 import "./pie-chart";
 import "./hp-chart";
 import "./timeline-lanes";
+import "./interrupt-list";
 import "./replay-scene";

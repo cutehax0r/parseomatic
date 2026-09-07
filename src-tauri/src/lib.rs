@@ -1,5 +1,7 @@
 mod damage;
 mod deaths;
+mod hits;
+mod interrupts;
 mod movement;
 mod parser;
 mod query;
@@ -70,6 +72,7 @@ enum ViewKind {
     Encounters,
     Overview,
     Replay,
+    Interrupts,
     Character,
     Damage,
     Healing,
@@ -84,10 +87,11 @@ enum ViewKind {
 // Every view in the radio group, in toolbar/menu display order -- the
 // single source of truth for `sync_view_menu`'s loop and anywhere else
 // that has to touch them all.
-const ALL_VIEWS: [ViewKind; 12] = [
+const ALL_VIEWS: [ViewKind; 13] = [
     ViewKind::Encounters,
     ViewKind::Overview,
     ViewKind::Replay,
+    ViewKind::Interrupts,
     ViewKind::Character,
     ViewKind::Damage,
     ViewKind::Healing,
@@ -113,6 +117,7 @@ impl ViewKind {
             ViewKind::Encounters => "encounters",
             ViewKind::Overview => "overview",
             ViewKind::Replay => "replay",
+            ViewKind::Interrupts => "interrupts",
             ViewKind::Character => "character",
             ViewKind::Damage => "damage",
             ViewKind::Healing => "healing",
@@ -130,6 +135,7 @@ impl ViewKind {
             ViewKind::Encounters => "view_encounters",
             ViewKind::Overview => "view_overview",
             ViewKind::Replay => "view_replay",
+            ViewKind::Interrupts => "view_interrupts",
             ViewKind::Character => "view_character",
             ViewKind::Damage => "view_damage",
             ViewKind::Healing => "view_healing",
@@ -156,6 +162,7 @@ struct ViewMenu {
     encounters: CheckMenuItem<tauri::Wry>,
     overview: CheckMenuItem<tauri::Wry>,
     replay: CheckMenuItem<tauri::Wry>,
+    interrupts: CheckMenuItem<tauri::Wry>,
     character: CheckMenuItem<tauri::Wry>,
     damage: CheckMenuItem<tauri::Wry>,
     healing: CheckMenuItem<tauri::Wry>,
@@ -173,6 +180,7 @@ impl ViewMenu {
             ViewKind::Encounters => &self.encounters,
             ViewKind::Overview => &self.overview,
             ViewKind::Replay => &self.replay,
+            ViewKind::Interrupts => &self.interrupts,
             ViewKind::Character => &self.character,
             ViewKind::Damage => &self.damage,
             ViewKind::Healing => &self.healing,
@@ -1526,6 +1534,9 @@ struct TimelineSeriesRow {
     /// The player's death intervals within the window (rules across every
     /// lane).
     deaths: Vec<MovementDeathSpanRow>,
+    /// The player's own position fixes -- feeds the view's Movement lane
+    /// so it needs no separate `movement_series` call.
+    samples: Vec<MovementSampleRow>,
 }
 
 /// Per-player activity streams for `unit_id` over `[start_ms, end_ms]` --
@@ -1575,6 +1586,81 @@ fn timeline_series(
             .deaths
             .into_iter()
             .map(|d| MovementDeathSpanRow { start_ms: d.start_ms, end_ms: d.end_ms })
+            .collect(),
+        samples: s
+            .samples
+            .into_iter()
+            .map(|p| MovementSampleRow { t_ms: p.t_ms, x: p.x, y: p.y })
+            .collect(),
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InterruptRow {
+    t_ms: i64,
+    /// The interrupter.
+    source_unit: u32,
+    /// The unit whose cast was interrupted.
+    target_unit: u32,
+    /// The interrupt ability; `None` if unresolved.
+    ability_id: Option<u16>,
+    /// The spell that was being cast; `None` if the `extraSpellId` never interned.
+    interrupted_id: Option<u16>,
+    /// `interrupt ts - CAST_START ts`, when a matching open cast was seen.
+    elapsed_ms: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailedCastRow {
+    t_ms: i64,
+    source_unit: u32,
+    ability_id: Option<u16>,
+    reason: String,
+    /// Adjacent identical failures collapsed; `1` for a lone one.
+    count: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InterruptReportRow {
+    interrupts: Vec<InterruptRow>,
+    failed_casts: Vec<FailedCastRow>,
+}
+
+/// Raid-level interrupt list over `[start_ms, end_ms]` -- backs the
+/// Interrupts view (`src/views/interrupts.ts`). Every `SPELL_INTERRUPT`
+/// plus notable player `SPELL_CAST_FAILED`s. `None` before parsing has
+/// finished. See `src/interrupts.rs`.
+#[tauri::command]
+fn interrupts(window: WebviewWindow, start_ms: i64, end_ms: i64) -> Option<InterruptReportRow> {
+    let log = current_log(&window)?;
+    let data = log.data()?;
+    let r = interrupts::series(&data.events, &data.tables, log.mmap_bytes(), start_ms, end_ms);
+    Some(InterruptReportRow {
+        interrupts: r
+            .interrupts
+            .into_iter()
+            .map(|i| InterruptRow {
+                t_ms: i.t_ms,
+                source_unit: i.source_unit,
+                target_unit: i.target_unit,
+                ability_id: (i.ability_id != NO_SPELL).then_some(i.ability_id),
+                interrupted_id: (i.interrupted_id != NO_SPELL).then_some(i.interrupted_id),
+                elapsed_ms: i.elapsed_ms,
+            })
+            .collect(),
+        failed_casts: r
+            .failed_casts
+            .into_iter()
+            .map(|f| FailedCastRow {
+                t_ms: f.t_ms,
+                source_unit: f.source_unit,
+                ability_id: (f.ability_id != NO_SPELL).then_some(f.ability_id),
+                reason: f.reason,
+                count: f.count,
+            })
             .collect(),
     })
 }
@@ -1937,6 +2023,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    let interrupts_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Interrupts.menu_id(),
+        "Interrupts",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let character_view_item = CheckMenuItem::with_id(
         app,
         ViewKind::Character.menu_id(),
@@ -2017,6 +2111,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&encounters_view_item)
         .item(&overview_view_item)
+        .item(&interrupts_view_item)
         .item(&replay_view_item)
         .separator()
         .item(&character_view_item)
@@ -2102,6 +2197,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             encounters: encounters_view_item,
             overview: overview_view_item,
             replay: replay_view_item,
+            interrupts: interrupts_view_item,
             character: character_view_item,
             damage: damage_view_item,
             healing: healing_view_item,
@@ -2259,6 +2355,7 @@ pub fn run() {
             movement_series,
             movement_events,
             timeline_series,
+            interrupts,
             replay_series,
             zoom
         ])

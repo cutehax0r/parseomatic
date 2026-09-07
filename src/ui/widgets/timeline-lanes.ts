@@ -194,17 +194,47 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
   // laneId -> set of spell labels hidden in that lane (collapsed row AND
   // its sub-lanes). A future global/category config would layer on top.
   const hidden = new Map<string, Set<string>>();
-  // laneId -> its full (unfiltered) distinct spell list, rebuilt per render.
-  let laneSpells = new Map<string, string[]>();
+  // Per-lane data that only changes when `update()` brings new boxes --
+  // sorted-by-start boxes + the distinct spell list. Recomputing these
+  // per render() (zoom / expand / filter all trigger one) meant sorting
+  // thousands of boxes on every zoom click.
+  let laneCache = new Map<string, { sorted: TimelineBox[]; spells: string[] }>();
   let filterOpenLane: string | null = null;
   let pxPerMs: number | null = null; // null -> recompute default on next render
   let layout: Row[] = [];
   let contentW = 1000;
   let totalH = 200;
   let hoverRaf = 0;
+  let renderRaf = 0;
+  let wheelRaf = 0;
+  let wheelAccum = 1;
+  let wheelAnchorX = 0;
   let pendingPtr: [number, number] = [0, 0];
   let lastPaneW = -1;
   let userZoomed = false;
+
+  function rebuildLaneCache() {
+    laneCache = new Map();
+    for (const track of current.tracks) {
+      for (const lane of track.lanes) {
+        const sorted = [...lane.boxes].sort((a, b) => a.startMs - b.startMs);
+        const spells = [...new Set(sorted.map((b) => b.label))].sort((a, b) =>
+          a.localeCompare(b),
+        );
+        laneCache.set(lane.id, { sorted, spells });
+      }
+    }
+  }
+
+  // Coalesce the render() triggers that don't need a synchronous result
+  // (expand / filter / resize) to one rebuild per frame.
+  function scheduleRender() {
+    if (renderRaf) return;
+    renderRaf = requestAnimationFrame(() => {
+      renderRaf = 0;
+      render();
+    });
+  }
 
   const totalMs = () => Math.max(1, current.endMs - current.startMs);
   const paneW = () => Math.max(120, scroll.clientWidth || plot.clientWidth - GUTTER_W || 600);
@@ -238,13 +268,22 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
   zoomIn.addEventListener("click", () => setZoom((pxPerMs ?? fitPxPerMs()) * ZOOM_FACTOR));
   fitBtn.addEventListener("click", () => setZoom(fitPxPerMs()));
   // Wheel with a modifier zooms toward the cursor; plain wheel scrolls.
+  // A trackpad fires many wheel events per frame -- accumulate the factor
+  // and apply one zoom (one render) per frame.
   scroll.addEventListener(
     "wheel",
     (ev) => {
       if (!ev.ctrlKey && !ev.metaKey) return;
       ev.preventDefault();
-      const f = ev.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
-      setZoom((pxPerMs ?? fitPxPerMs()) * f, ev.clientX);
+      wheelAccum *= (ev.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR) ** 0.35;
+      wheelAnchorX = ev.clientX;
+      if (wheelRaf) return;
+      wheelRaf = requestAnimationFrame(() => {
+        wheelRaf = 0;
+        const f = wheelAccum;
+        wheelAccum = 1;
+        setZoom((pxPerMs ?? fitPxPerMs()) * f, wheelAnchorX);
+      });
     },
     { passive: false },
   );
@@ -260,7 +299,7 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
     // the "1 minute or the whole window" default against the true width.
     if (first || !userZoomed) pxPerMs = null;
     else pxPerMs = clampZoom(pxPerMs as number);
-    render();
+    scheduleRender();
   });
   resizeObserver.observe(plot);
 
@@ -280,7 +319,6 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
 
   function buildLayout(): Row[] {
     const rows: Row[] = [];
-    laneSpells = new Map();
     let y = AXIS_H;
     const multi = current.tracks.length > 1;
     for (const track of current.tracks) {
@@ -289,15 +327,11 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
         y += TRACK_HEAD + ROW_GAP;
       }
       for (const lane of track.lanes) {
-        // Full spell list (for the filter popup), then drop hidden ones.
-        const allSpells = [...new Set(lane.boxes.map((b) => b.label))].sort((a, b) =>
-          a.localeCompare(b),
-        );
-        laneSpells.set(lane.id, allSpells);
+        const cache = laneCache.get(lane.id) ?? { sorted: lane.boxes, spells: [] };
         const hide = hidden.get(lane.id);
-        const kept = hide ? lane.boxes.filter((b) => !hide.has(b.label)) : lane.boxes;
-        const sorted = [...kept].sort((a, b) => a.startMs - b.startMs);
-        const hasFilter = allSpells.length > 0;
+        // `cache.sorted` is already start-sorted; filtering preserves order.
+        const sorted = hide ? cache.sorted.filter((b) => !hide.has(b.label)) : cache.sorted;
+        const hasFilter = cache.spells.length > 0;
         const isExpanded = expanded.has(lane.id) && sorted.length > 0;
         if (isExpanded) {
           rows.push({
@@ -359,11 +393,11 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
     filterPop.replaceChildren();
     document.removeEventListener("pointerdown", onDocPointerDown, true);
     document.removeEventListener("keydown", onFilterKey, true);
-    render(); // drop the icon's active state
+    scheduleRender(); // drop the icon's active state
   }
 
   function openFilter(laneId: string, anchor: HTMLElement) {
-    const spells = laneSpells.get(laneId) ?? [];
+    const spells = laneCache.get(laneId)?.spells ?? [];
     filterOpenLane = laneId;
     filterPop.replaceChildren();
 
@@ -375,7 +409,7 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
       if (show) hidden.delete(laneId);
       else hidden.set(laneId, new Set(spells));
       filterPop.querySelectorAll("input").forEach((i) => (i.checked = show));
-      render();
+      scheduleRender();
     };
     const noneBtn = document.createElement("button");
     noneBtn.type = "button";
@@ -410,7 +444,7 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
         if (cb.checked) set.delete(name);
         else set.add(name);
         if (set.size === 0) hidden.delete(laneId);
-        render();
+        scheduleRender();
       });
       const txt = document.createElement("span");
       txt.textContent = name;
@@ -435,6 +469,10 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
   // ---- render ----------------------------------------------------------
 
   function render() {
+    if (renderRaf) {
+      cancelAnimationFrame(renderRaf); // a sync render supersedes the scheduled one
+      renderRaf = 0;
+    }
     ensureZoom();
     layout = buildLayout();
 
@@ -527,7 +565,7 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
         const toggle = () => {
           if (expanded.has(id)) expanded.delete(id);
           else expanded.add(id);
-          render();
+          scheduleRender();
         };
         g.addEventListener("click", toggle);
         g.addEventListener("keydown", (ev) => {
@@ -602,6 +640,12 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
       }
 
       // plot: boxes -- later boxes appended last -> painted on top.
+      // A run of min-width slivers of the same class landing on the same
+      // pixel column collapses to one <rect> (hit-testing still walks the
+      // full box list, so hover is unaffected). At low zoom a dense
+      // damage lane is thousands of stacked 2px boxes without this.
+      let lastPx = Number.NEGATIVE_INFINITY;
+      let lastCls = "";
       for (const box of row.boxes) {
         const x0 = xOf(box.startMs);
         const rawW = box.instant ? xOf(box.startMs + INSTANT_MS) - x0 : xOf(box.endMs) - x0;
@@ -612,6 +656,11 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
         if (box.periodic && tickParity.get(box.label)?.get(box.startMs) === 1) {
           cls += " tl-box--alt";
         }
+        if (w <= MIN_PX + 0.5 && cls === lastCls && Math.round(x) === Math.round(lastPx)) {
+          continue;
+        }
+        lastPx = x;
+        lastCls = cls;
         const rect = el("rect", {
           x,
           y: row.y + 2,
@@ -662,14 +711,17 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
   function boxAt(vx: number, vy: number): { box: TimelineBox; row: Row } | null {
     const startMs = current.startMs;
     const ppm = pxPerMs as number;
-    const xOf = (ms: number) => (ms - startMs) * ppm;
     for (const row of layout) {
       if (!row.boxes.length) continue;
       if (vy < row.y + 2 || vy > row.y + row.h - 2) continue;
       let found: TimelineBox | null = null;
       for (const box of row.boxes) {
-        const x0 = Math.max(0, xOf(box.startMs));
-        const rawW = box.instant ? xOf(box.startMs + INSTANT_MS) - xOf(box.startMs) : xOf(box.endMs) - xOf(box.startMs);
+        const bx = (box.startMs - startMs) * ppm; // unclamped start
+        // Boxes are start-sorted and grow rightward: once one starts to
+        // the right of the cursor, nothing later can contain it.
+        if (bx > vx + 4) break;
+        const x0 = Math.max(0, bx);
+        const rawW = (box.instant ? INSTANT_MS : box.endMs - box.startMs) * ppm;
         const w = Math.max(MIN_PX, rawW);
         const pad = Math.max(0, 3 - w / 2);
         if (vx >= x0 - pad && vx <= x0 + w + pad) found = box; // last match wins (top box)
@@ -745,6 +797,7 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
     if (!tooltip.hidden) tooltip.hidden = true;
   });
 
+  rebuildLaneCache();
   render();
 
   return {
@@ -752,12 +805,15 @@ registerWidget<TimelineLanesProps>("timeline-lanes", (props) => {
     destroy() {
       resizeObserver.disconnect();
       if (hoverRaf) cancelAnimationFrame(hoverRaf);
+      if (renderRaf) cancelAnimationFrame(renderRaf);
+      if (wheelRaf) cancelAnimationFrame(wheelRaf);
       document.removeEventListener("pointerdown", onDocPointerDown, true);
       document.removeEventListener("keydown", onFilterKey, true);
     },
     update(next) {
       const sameWindow = next.startMs === current.startMs && next.endMs === current.endMs;
       current = next;
+      rebuildLaneCache();
       tooltip.hidden = true;
       if (!sameWindow) {
         pxPerMs = null; // recompute default zoom

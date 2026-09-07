@@ -4,11 +4,11 @@ Material Design Icons (https://pictogrammers.com/library/mdi/)
   The `sword` and `bow-arrow` glyph outlines used for role icons in the
   Overview players table (src/ui/widgets/role-icon.ts), and the
   `sword-cross` / `heart-plus` / `grave-stone` / `shoe-print` / `chart-timeline`
-  (Nerd Fonts aliases `nf-md-grave_stone` / `nf-md-shoe_print` /
-  `nf-md-chart_timeline`) toolbar icons for the Damage / Healing / Deaths /
-  Movement / Timeline character views (index.html), and the `filter-variant`
-  glyph used for the Timeline view's per-lane ability filter
-  (src/ui/widgets/timeline-lanes.ts).
+  / `head-remove` (Nerd Fonts aliases `nf-md-grave_stone` / `nf-md-shoe_print` /
+  `nf-md-chart_timeline` / `nf-md-head_remove`) toolbar icons for the Damage /
+  Healing / Deaths / Movement / Timeline / Interrupts views (index.html), and
+  the `filter-variant` glyph used for the Timeline view's per-lane ability
+  filter (src/ui/widgets/timeline-lanes.ts).
   Copyright Pictogrammers contributors.
   Licensed under the Apache License, Version 2.0
   (https://www.apache.org/licenses/LICENSE-2.0).
