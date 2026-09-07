@@ -302,6 +302,44 @@ export interface PlayerStatsRow {
   movementBins: number[]; // distance travelled in the decile
 }
 
+// ---- timeline_series command (src-tauri/src/timeline.rs) --------------
+// Per-player activity streams for one UI-picked window -- backs the
+// Timeline view. One fetch per player + window; the view lays these out
+// as stacked lanes. See docs/timeline-view.md.
+
+export type TimelineInstantKind = "dmgOut" | "dmgIn" | "healOut" | "healIn";
+
+// One instantaneous damage/heal event involving the player -- no real
+// duration (the view draws each ~1.5s wide, shrinking to a sliver).
+export interface TimelineInstant {
+  tMs: number;
+  kind: TimelineInstantKind;
+  spellId: number | null; // null = melee swing
+  amount: number;
+  otherUnit: number | null; // target for *Out, source for *In
+  periodic: boolean; // SPELL_PERIODIC_* -- a DoT / HoT tick
+  x: number | null; // the player's own position at that moment, if known
+  y: number | null;
+}
+
+// One aura on the player: APPLIED/REFRESH .. REMOVED.
+export interface TimelineAura {
+  spellId: number | null;
+  startMs: number;
+  endMs: number | null; // null = still active at the window's end
+  isDebuff: boolean;
+  sourceUnit: number | null;
+  maxStacks: number; // peak stack count over the span; 1 = non-stacking
+}
+
+export interface TimelineSeries {
+  startMs: number;
+  endMs: number;
+  instants: TimelineInstant[];
+  auras: TimelineAura[];
+  deaths: MovementDeathSpan[]; // player death intervals -- rules across every lane
+}
+
 // ---- Encounter-picker selection ----------------------------------------
 
 // The picker's filter is always a concrete [startMs, endMs]. `source` is

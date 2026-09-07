@@ -5,6 +5,7 @@ mod parser;
 mod query;
 mod replay;
 mod stats;
+mod timeline;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -75,6 +76,7 @@ enum ViewKind {
     DamageTaken,
     Deaths,
     Movement,
+    Timeline,
     Debug,
     Raw,
 }
@@ -82,7 +84,7 @@ enum ViewKind {
 // Every view in the radio group, in toolbar/menu display order -- the
 // single source of truth for `sync_view_menu`'s loop and anywhere else
 // that has to touch them all.
-const ALL_VIEWS: [ViewKind; 11] = [
+const ALL_VIEWS: [ViewKind; 12] = [
     ViewKind::Encounters,
     ViewKind::Overview,
     ViewKind::Replay,
@@ -92,6 +94,7 @@ const ALL_VIEWS: [ViewKind; 11] = [
     ViewKind::DamageTaken,
     ViewKind::Deaths,
     ViewKind::Movement,
+    ViewKind::Timeline,
     ViewKind::Debug,
     ViewKind::Raw,
 ];
@@ -116,6 +119,7 @@ impl ViewKind {
             ViewKind::DamageTaken => "damage-taken",
             ViewKind::Deaths => "deaths",
             ViewKind::Movement => "movement",
+            ViewKind::Timeline => "timeline",
             ViewKind::Debug => "debug",
             ViewKind::Raw => "raw",
         }
@@ -132,6 +136,7 @@ impl ViewKind {
             ViewKind::DamageTaken => "view_damage_taken",
             ViewKind::Deaths => "view_deaths",
             ViewKind::Movement => "view_movement",
+            ViewKind::Timeline => "view_timeline",
             ViewKind::Debug => "view_debug",
             ViewKind::Raw => "view_raw",
         }
@@ -157,6 +162,7 @@ struct ViewMenu {
     damage_taken: CheckMenuItem<tauri::Wry>,
     deaths: CheckMenuItem<tauri::Wry>,
     movement: CheckMenuItem<tauri::Wry>,
+    timeline: CheckMenuItem<tauri::Wry>,
     debug: CheckMenuItem<tauri::Wry>,
     raw: CheckMenuItem<tauri::Wry>,
 }
@@ -173,6 +179,7 @@ impl ViewMenu {
             ViewKind::DamageTaken => &self.damage_taken,
             ViewKind::Deaths => &self.deaths,
             ViewKind::Movement => &self.movement,
+            ViewKind::Timeline => &self.timeline,
             ViewKind::Debug => &self.debug,
             ViewKind::Raw => &self.raw,
         }
@@ -1479,6 +1486,101 @@ fn movement_events(
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct TimelineInstantRow {
+    t_ms: i64,
+    /// `dmgOut` | `dmgIn` | `healOut` | `healIn`.
+    kind: &'static str,
+    /// `None` for a melee swing.
+    spell_id: Option<u16>,
+    amount: i64,
+    /// Target for `*Out`, source for `*In`; `None` if unset.
+    other_unit: Option<u32>,
+    /// `SPELL_PERIODIC_*` -- a DoT / HoT tick rather than a direct hit.
+    periodic: bool,
+    /// The player's own position at that moment; `None` when the row
+    /// carried someone else's coords / none.
+    x: Option<f32>,
+    y: Option<f32>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuraSpanRow {
+    spell_id: Option<u16>,
+    start_ms: i64,
+    /// `null` = still active at the window's end.
+    end_ms: Option<i64>,
+    is_debuff: bool,
+    source_unit: Option<u32>,
+    /// Peak stack count over the span; 1 for a non-stacking aura.
+    max_stacks: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineSeriesRow {
+    start_ms: i64,
+    end_ms: i64,
+    instants: Vec<TimelineInstantRow>,
+    auras: Vec<AuraSpanRow>,
+    /// The player's death intervals within the window (rules across every
+    /// lane).
+    deaths: Vec<MovementDeathSpanRow>,
+}
+
+/// Per-player activity streams for `unit_id` over `[start_ms, end_ms]` --
+/// backs the Timeline view (`src/views/timeline.ts`). One windowed scan;
+/// `None` before parsing has finished. See `src/timeline.rs`.
+#[tauri::command]
+fn timeline_series(
+    window: WebviewWindow,
+    unit_id: u32,
+    start_ms: i64,
+    end_ms: i64,
+) -> Option<TimelineSeriesRow> {
+    let log = current_log(&window)?;
+    let data = log.data()?;
+    let s = timeline::series(&data.events, log.mmap_bytes(), unit_id, start_ms, end_ms);
+    let finite = |v: f32| v.is_finite().then_some(v);
+    Some(TimelineSeriesRow {
+        start_ms: s.start_ms,
+        end_ms: s.end_ms,
+        instants: s
+            .instants
+            .into_iter()
+            .map(|i| TimelineInstantRow {
+                t_ms: i.t_ms,
+                kind: i.kind.as_str(),
+                spell_id: (i.spell_id != NO_SPELL).then_some(i.spell_id),
+                amount: i.amount,
+                other_unit: (i.other_unit != NO_UNIT).then_some(i.other_unit),
+                periodic: i.periodic,
+                x: finite(i.x),
+                y: finite(i.y),
+            })
+            .collect(),
+        auras: s
+            .auras
+            .into_iter()
+            .map(|a| AuraSpanRow {
+                spell_id: (a.spell_id != NO_SPELL).then_some(a.spell_id),
+                start_ms: a.start_ms,
+                end_ms: a.end_ms,
+                is_debuff: a.is_debuff,
+                source_unit: (a.source_unit != NO_UNIT).then_some(a.source_unit),
+                max_stacks: a.max_stacks,
+            })
+            .collect(),
+        deaths: s
+            .deaths
+            .into_iter()
+            .map(|d| MovementDeathSpanRow { start_ms: d.start_ms, end_ms: d.end_ms })
+            .collect(),
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ReplaySampleRow {
     t_ms: i64,
     x: f32,
@@ -1883,6 +1985,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    let timeline_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Timeline.menu_id(),
+        "Timeline",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let debug_view_item =
         CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
     let raw_view_item =
@@ -1915,6 +2025,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         .item(&damage_taken_view_item)
         .item(&deaths_view_item)
         .item(&movement_view_item)
+        .item(&timeline_view_item)
         .separator()
         .item(&developer_menu)
         .separator()
@@ -1997,6 +2108,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             damage_taken: damage_taken_view_item,
             deaths: deaths_view_item,
             movement: movement_view_item,
+            timeline: timeline_view_item,
             debug: debug_view_item,
             raw: raw_view_item,
         },
@@ -2146,6 +2258,7 @@ pub fn run() {
             death_detail,
             movement_series,
             movement_events,
+            timeline_series,
             replay_series,
             zoom
         ])

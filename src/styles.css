@@ -2252,7 +2252,8 @@ body {
 .healing-view,
 .damage-taken-view,
 .deaths-view,
-.movement-view {
+.movement-view,
+.timeline-view {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -2264,7 +2265,8 @@ body {
 .healing-view[hidden],
 .damage-taken-view[hidden],
 .deaths-view[hidden],
-.movement-view[hidden] {
+.movement-view[hidden],
+.timeline-view[hidden] {
   display: none;
 }
 
@@ -2272,7 +2274,8 @@ body {
 .healing-hint,
 .damage-taken-hint,
 .deaths-hint,
-.movement-hint {
+.movement-hint,
+.timeline-hint {
   margin: 48px auto 0;
   text-align: center;
   color: var(--text-muted);
@@ -2283,8 +2286,413 @@ body {
 .healing-hint[hidden],
 .damage-taken-hint[hidden],
 .deaths-hint[hidden],
-.movement-hint[hidden] {
+.movement-hint[hidden],
+.timeline-hint[hidden] {
   display: none;
+}
+
+/* ===========================================================================
+   Timeline view -- per-player activity lanes (src/ui/widgets/timeline-lanes.ts).
+   Video-editor strip: a zoomable, horizontally-scrollable time axis + a stack
+   of collapsible lanes, each a row of boxes (left = start, width = duration;
+   instants ~1.5s or a min sliver). A fixed HTML gutter holds the lane labels.
+   =========================================================================== */
+.tl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tl-zoom-btn {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tl-zoom-btn:hover {
+  background: var(--accent-bg);
+}
+
+.tl-zoom-fit {
+  font-size: 11px;
+}
+
+.tl-zoom-readout {
+  margin-left: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-plot {
+  position: relative;
+}
+
+.tl-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 225px; /* == GUTTER_W in timeline-lanes.ts */
+  z-index: 3;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+}
+
+.tl-gutter-axis {
+  border-bottom: 1px solid var(--border);
+}
+
+.tl-gutter-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-bottom: 4px; /* == ROW_GAP in the widget */
+  padding: 0 6px 0 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tl-gutter-row--sub {
+  padding-left: 18px;
+}
+
+/* mirrors .tl-lane-divider in the plot; border-box keeps the row height
+   (and therefore gutter/plot alignment) unchanged */
+.tl-gutter-row--group {
+  border-top: 1.5px solid var(--border-strong);
+}
+
+.tl-gutter-row--sub .tl-gutter-label {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.tl-gutter-track {
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-end;
+  margin-bottom: 4px;
+  padding: 0 6px 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.tl-gutter-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.tl-disclosure {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 20px;
+  text-align: center;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.tl-disclosure--empty {
+  cursor: default;
+}
+
+/* Whole label row is the disclosure target. */
+.tl-gutter-row--toggle {
+  cursor: pointer;
+}
+
+.tl-gutter-row--toggle:hover,
+.tl-gutter-row--toggle:hover .tl-disclosure {
+  color: var(--text);
+}
+
+.tl-gutter-row--toggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
+/* Per-lane "hide abilities" control + its popup. */
+.tl-filter-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.tl-filter-btn:hover,
+.tl-filter-btn.is-active {
+  color: var(--text);
+}
+
+.tl-filter-pop {
+  position: absolute;
+  z-index: 10;
+  min-width: 300px;
+  max-width: 560px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  box-shadow: var(--shadow-popover);
+  font-size: 12px;
+}
+
+.tl-filter-pop[hidden] {
+  display: none;
+}
+
+.tl-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 4px 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.tl-filter-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.tl-filter-reset {
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 11px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+
+.tl-filter-reset:hover {
+  background: var(--accent-bg);
+}
+
+.tl-filter-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px 10px;
+}
+
+.tl-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tl-filter-item:hover {
+  background: var(--accent-bg);
+}
+
+.tl-filter-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-filter-item input {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.tl-scroll {
+  margin-left: 225px; /* == GUTTER_W in timeline-lanes.ts */
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+.tl-scroll svg {
+  display: block;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tl-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.tl-grid--minor {
+  opacity: 0.4;
+}
+
+.tl-axis-label {
+  fill: var(--text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-lane-bg {
+  fill: var(--bg-elevated);
+  opacity: 0.5;
+}
+
+.tl-track-label {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tl-box {
+  stroke: none;
+}
+
+/* Damage / heal amount drawn on a per-ability sub-lane box wide enough
+   to hold it. */
+.tl-box-amt {
+  fill: var(--ctp-base);
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-anchor: start;
+  pointer-events: none;
+}
+
+.tl-box--dmgIn {
+  fill: var(--ctp-red);
+}
+.tl-box--dmgOut {
+  fill: var(--ctp-peach);
+}
+.tl-box--healOut {
+  fill: var(--ctp-green);
+}
+.tl-box--healIn {
+  fill: var(--ctp-teal);
+}
+.tl-box--buff {
+  fill: var(--ctp-sky);
+}
+.tl-box--debuff {
+  fill: var(--ctp-mauve);
+}
+.tl-box--move {
+  fill: var(--ctp-green);
+}
+.tl-box--stop {
+  fill: #6f9e62; /* darker green */
+}
+
+/* Every other tick of a DoT / HoT -- a darker stripe so consecutive
+   ticks stay visually distinct (explicit fills, no SVG filter). */
+.tl-box--dmgIn.tl-box--alt {
+  fill: #c96b7a;
+}
+.tl-box--dmgOut.tl-box--alt {
+  fill: #cf8a63;
+}
+.tl-box--healOut.tl-box--alt {
+  fill: #85b976;
+}
+.tl-box--healIn.tl-box--alt {
+  fill: #6fb3a9;
+}
+.tl-box--buff.tl-box--alt {
+  fill: #74b4bf;
+}
+.tl-box--debuff.tl-box--alt {
+  fill: #a37fd0;
+}
+
+.tl-death {
+  stroke: var(--chart-death);
+  stroke-width: 1.25;
+  opacity: 0.85;
+}
+
+.tl-sublane-rule {
+  stroke: var(--border);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+
+/* Strong divider between the top-level "type" lanes. */
+.tl-lane-divider {
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+/* Floating per-box tooltip -- positioned by the widget in px, anchored at
+   the box's centre and lifted above its row. */
+.tl-tooltip {
+  position: absolute;
+  z-index: 5;
+  transform: translate(-50%, calc(-100% - 6px));
+  pointer-events: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg);
+  box-shadow: var(--shadow-popover);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tl-tooltip[hidden] {
+  display: none;
+}
+
+.tl-tt-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.tl-tt-row {
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.tl-tt-row span {
+  color: var(--text-faint);
+}
+
+.tl-tt-row b {
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-empty {
+  margin: 32px auto;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 /* Replay -- fills the pane; the 3D scene must be able to grow, so the
