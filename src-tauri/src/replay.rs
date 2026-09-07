@@ -228,6 +228,9 @@ pub struct ReplaySeries {
     /// Same-side (player) HoT ticks on players, ascending by `t_ms` --
     /// green particle bursts.
     pub periodic_heals: Vec<PeriodicHit>,
+    /// `ENVIRONMENTAL_DAMAGE` on players (falling, lava, fire, ...),
+    /// ascending by `t_ms`. `source_unit` is `NO_UNIT`. Purple burst.
+    pub env_hits: Vec<PeriodicHit>,
     /// Tight `[min_x, max_x, min_y, max_y]` over **every** unit's fixes --
     /// what the scene frames on. `None` if nothing carried a position.
     pub fit_box: Option<[f32; 4]>,
@@ -291,6 +294,7 @@ pub fn series(
         cast_lines: Vec::new(),
         periodic_hits: Vec::new(),
         periodic_heals: Vec::new(),
+        env_hits: Vec::new(),
         fit_box: None,
         map_box: None,
     };
@@ -617,6 +621,20 @@ pub fn series(
                     out.periodic_heals.push(PeriodicHit { source_unit, target_unit, t_ms: ts });
                 }
             }
+            // Environmental damage on a player (falling, lava, fire, ...) --
+            // a purple burst from the victim. No meaningful source.
+            LineKind::Composed {
+                prefix: Prefix::Environmental,
+                suffix: Suffix::Damage,
+            } => {
+                if let Some(target_unit) = player_of(tables, dst) {
+                    out.env_hits.push(PeriodicHit {
+                        source_unit: NO_UNIT,
+                        target_unit,
+                        t_ms: ts,
+                    });
+                }
+            }
             // Direct heals only (not HoT ticks) -- same-side, straight
             // green beam, or a teardrop loop when self-cast.
             LineKind::Composed { prefix: Prefix::Spell, suffix: Suffix::Heal } => {
@@ -734,6 +752,7 @@ pub fn series(
     out.cast_lines.sort_by_key(|c| c.t0);
     out.periodic_hits.sort_by_key(|h| h.t_ms);
     out.periodic_heals.sort_by_key(|h| h.t_ms);
+    out.env_hits.sort_by_key(|h| h.t_ms);
     out
 }
 
@@ -804,6 +823,13 @@ mod tests {
         )
     }
 
+    fn env_damage(t: &str, victim: &str) -> String {
+        format!(
+            "9/3/2026 19:23:{t}-6  ENVIRONMENTAL_DAMAGE,0000000000000000,nil,0x80000000,0x80000000,\
+             {victim},\"Pl\",0x514,0x0,Falling,7409,7409,1,-1,0,0,0,nil,nil,nil"
+        )
+    }
+
     #[test]
     fn player_dot_ticks_become_periodic_hits() {
         let boss = "Creature-0-0-0-0-9-1";
@@ -819,6 +845,23 @@ mod tests {
         assert_eq!(s.periodic_hits[0].target_unit, store.dest_unit[0]);
         assert!(s.periodic_hits[0].t_ms < s.periodic_hits[1].t_ms);
         assert!(s.cast_lines.is_empty(), "DoT ticks never draw a line");
+    }
+
+    #[test]
+    fn environmental_damage_on_players_becomes_env_hits() {
+        let p1 = "Player-1-1";
+        let boss = "Creature-0-0-0-0-9-1";
+        let (tables, store, mmap) = store_from(&[
+            env_damage("01.000", p1),
+            env_damage("02.000", p1),
+            env_damage("02.500", boss), // env damage on a creature -> ignored
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[2] + 1);
+        assert_eq!(s.env_hits.len(), 2, "only environmental damage on players");
+        assert_eq!(s.env_hits[0].target_unit, store.dest_unit[0]);
+        assert_eq!(s.env_hits[0].source_unit, NO_UNIT);
+        assert!(s.env_hits[0].t_ms < s.env_hits[1].t_ms);
+        assert!(s.periodic_hits.is_empty());
     }
 
     #[test]

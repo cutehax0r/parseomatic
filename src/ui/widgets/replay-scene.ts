@@ -51,6 +51,7 @@ export interface ReplaySceneProps {
   castLines: ReplayCastLine[];
   periodicHits: ReplayPeriodicHit[];
   periodicHeals: ReplayPeriodicHit[];
+  envHits: ReplayPeriodicHit[];
   fitBox: [number, number, number, number] | null;
   startMs: number;
   endMs: number;
@@ -237,6 +238,29 @@ const PART_ARC_UP = 3.155;
 const PART_ARC_GRAV = 2.488;
 const PART_MAX_ALPHA = 0.95; // opacity at spawn; fades to 0 over the life
 const PART_POOL = 24000; // hard cap on concurrently drawn particles
+
+// Environmental damage reuses the ballistic up-burst (the old DoT look),
+// recoloured purple, off the victim's top -- for everyone.
+const ENV_COLOR = "var(--ctp-mauve)";
+
+// Player DoT ticks now FLY from caster to target (like a hard cast), but
+// every particle takes its own lazy asymmetric arc: it drifts up-and-
+// forward off the caster at a steep angle (DOT_ELEV) and ~1/3 speed for
+// ~DOT_OUT (x the caster's size) -- fanned across an azimuth wedge --
+// then ramps up and races straight in. Modelled as a quad bezier with
+// the control point at that elevated fan-out point; animation time is
+// raised to `DOT_EASE` before it drives the curve param, so most of the
+// half-second is spent near the caster.
+const DOT_LIFE_MS = 500;
+const DOT_COUNT = 5; // particles per tick
+const DOT_SIZE = 1; // point-size multiplier (same as damage was)
+const DOT_ELEV_MIN = (50 * Math.PI) / 180;
+const DOT_ELEV_MAX = (62 * Math.PI) / 180;
+const DOT_SPREAD_AZ = (95 * Math.PI) / 180; // total azimuth fan about the caster->target bearing
+const DOT_OUT = 3; // fan-out point distance, x the caster's world size
+const DOT_OUT_JITTER = 0.45; // +/- fraction on that distance, per particle
+const DOT_EASE = 2.3; // time^EASE -> bezier param (higher = longer near the caster)
+const DOT_DESYNC = 0.3; // per-particle timing spread so they don't move in lockstep
 
 // Deterministic [0,1) from three ints -- a per-line arc height / spread
 // that stays put across frames.
@@ -566,6 +590,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private partGroup = new THREE.Group();
   private periodicHits: ReplayPeriodicHit[] = [];
   private periodicHeals: ReplayPeriodicHit[] = [];
+  private envHits: ReplayPeriodicHit[] = [];
   private partPoints!: THREE.Points;
   private partPos!: Float32Array; // PART_POOL * 3
   private partCol!: Float32Array; // PART_POOL * 3
@@ -832,6 +857,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.castLines = props.castLines ?? [];
     this.periodicHits = props.periodicHits ?? [];
     this.periodicHeals = props.periodicHeals ?? [];
+    this.envHits = props.envHits ?? [];
     this.setPlaying(false);
     this.reframe();
     this.rebuildUnits(props); // creates meshes, then applyTime(playhead)
@@ -1153,20 +1179,24 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.partGroup.add(this.partPoints);
   }
 
-  // Rebuild the particle cloud for time `t`: damage (DoT) bursts in the
-  // caster's class colour, then heal (HoT) bursts in green -- both a
-  // handful of points rising straight up (a few degrees of scatter) off
-  // the struck / healed unit's top, fading out over PART_LIFE_MS.
-  // Deterministic over `t` -- scrub-safe, no spawn bookkeeping.
+  // Rebuild the particle cloud for time `t`, deterministic over `t`
+  // (scrub-safe, no spawn bookkeeping):
+  //  - player DoT ticks fly caster -> target on lazy asymmetric arcs,
+  //  - environmental damage is a purple ballistic burst off the victim,
+  //  - player HoT ticks are a small green burst off the healed unit.
   private updateParticles(t: number): void {
     let n = 0;
+    n = this.writeFlights(t, n);
+
+    const purple = cssColor(ENV_COLOR);
     n = this.writeBursts(
-      this.periodicHits,
+      this.envHits,
       t,
       n,
       { count: PART_COUNT, size: 1, rise: 1, tilt: PART_TILT * 2, up: PART_ARC_UP, grav: PART_ARC_GRAV },
-      (h) => cssColor(this.unitById.get(h.sourceUnit)?.color ?? "#8087a2"),
+      () => purple,
     );
+
     const green = cssColor(CAST_HEAL_COLOR);
     n = this.writeBursts(
       this.periodicHeals,
@@ -1182,6 +1212,93 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     (g.getAttribute("pcolor") as THREE.BufferAttribute).needsUpdate = true;
     (g.getAttribute("alpha") as THREE.BufferAttribute).needsUpdate = true;
     (g.getAttribute("psize") as THREE.BufferAttribute).needsUpdate = true;
+  }
+
+  // Player DoT ticks (`this.periodicHits`) alive at `t`: each draws
+  // DOT_COUNT particles flying caster -> target along a quad bezier whose
+  // control point is an elevated, per-particle fan-out point ahead of the
+  // caster. Time is eased (t^DOT_EASE) into the curve param so the cloud
+  // lingers near the caster, then whips in. Returns the new particle
+  // cursor `n`. `this.periodicHits` ascends by tMs.
+  private writeFlights(t: number, n: number): number {
+    const hits = this.periodicHits;
+    const { cx, cy } = this.framing;
+
+    let lo = 0;
+    let hi = hits.length;
+    const from = t - DOT_LIFE_MS;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (hits[m].tMs < from) lo = m + 1;
+      else hi = m;
+    }
+
+    for (let i = lo; i < hits.length && n < PART_POOL; i++) {
+      const h = hits[i];
+      if (h.tMs > t) break;
+      const src = this.unitById.get(h.sourceUnit);
+      const tgt = this.unitById.get(h.targetUnit);
+      if (!src || !tgt) continue;
+      const sp = posAt(src.samples, t);
+      const tp = posAt(tgt.samples, t);
+      if (!sp || !tp) continue;
+
+      const u = (t - h.tMs) / DOT_LIFE_MS; // 0 -> 1 over the flight
+      // Inverted fade: faint at the caster, opaque as it reaches the target.
+      const alpha = PART_MAX_ALPHA * u;
+      const c = cssColor(src.color);
+
+      // Target anchor: top of head. Source anchor: front-centre face,
+      // aimed at the target, mid-body height (same as the cast lines).
+      const bx = tp.x - cx;
+      const by = FLOOR_LIFT + HOVER + tgt.size + 0.2;
+      const bz = tp.y - cy;
+      let dx = bx - (sp.x - cx);
+      let dz = bz - (sp.y - cy);
+      const dl = Math.hypot(dx, dz) || 1;
+      dx /= dl;
+      dz /= dl;
+      const ax = sp.x - cx + dx * src.size * 0.5;
+      const ay = FLOOR_LIFT + HOVER + src.size * 0.5;
+      const az0 = sp.y - cy + dz * src.size * 0.5;
+      const bearing = Math.atan2(dz, dx);
+      const out = src.size * DOT_OUT;
+
+      for (let k = 0; k < DOT_COUNT && n < PART_POOL; k++, n++) {
+        const hAz = hash01(h.tMs, h.targetUnit, k);
+        const hEl = hash01(h.targetUnit, k, h.tMs);
+        const hDist = hash01(k, h.tMs, h.sourceUnit);
+        const hLag = hash01(h.sourceUnit, k, h.targetUnit);
+
+        const az = bearing + (hAz - 0.5) * DOT_SPREAD_AZ;
+        const elev = DOT_ELEV_MIN + hEl * (DOT_ELEV_MAX - DOT_ELEV_MIN);
+        const dist = out * (1 + (hDist - 0.5) * 2 * DOT_OUT_JITTER);
+        const ce = Math.cos(elev);
+        const se = Math.sin(elev);
+        // Control point: elevated + fanned, ahead of the caster.
+        const px = ax + Math.cos(az) * ce * dist;
+        const py = ay + se * dist;
+        const pz = az0 + Math.sin(az) * ce * dist;
+
+        const uu = clamp01(u * (1 + (hLag - 0.5) * 2 * DOT_DESYNC));
+        const s = Math.pow(uu, DOT_EASE); // curve param, eased
+        const ks = 1 - s;
+        const w0 = ks * ks;
+        const w1 = 2 * ks * s;
+        const w2 = s * s;
+
+        const o = n * 3;
+        this.partPos[o] = w0 * ax + w1 * px + w2 * bx;
+        this.partPos[o + 1] = w0 * ay + w1 * py + w2 * by;
+        this.partPos[o + 2] = w0 * az0 + w1 * pz + w2 * bz;
+        this.partCol[o] = c.r;
+        this.partCol[o + 1] = c.g;
+        this.partCol[o + 2] = c.b;
+        this.partAlpha[n] = alpha;
+        this.partSize[n] = DOT_SIZE;
+      }
+    }
+    return n;
   }
 
   // Write every burst in `hits` alive at `t` into the particle buffers
@@ -1276,6 +1393,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       castLines: [],
       periodicHits: [],
       periodicHeals: [],
+      envHits: [],
       fitBox: null,
       startMs: 0,
       endMs: 0,

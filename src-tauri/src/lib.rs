@@ -1752,6 +1752,8 @@ struct ReplaySeriesRow {
     periodic_hits: Vec<ReplayPeriodicHitRow>,
     /// Player HoT ticks on players, ascending by `t_ms`.
     periodic_heals: Vec<ReplayPeriodicHitRow>,
+    /// Environmental damage on players, ascending by `t_ms`.
+    env_hits: Vec<ReplayPeriodicHitRow>,
     /// Tight `[minX, maxX, minY, maxY]` over every unit's fixes -- the
     /// scene's framing box. `null` if nothing carried a position.
     fit_box: Option<[f32; 4]>,
@@ -1805,6 +1807,15 @@ fn replay_series(
             .collect(),
         periodic_heals: s
             .periodic_heals
+            .into_iter()
+            .map(|h| ReplayPeriodicHitRow {
+                source_unit: h.source_unit,
+                target_unit: h.target_unit,
+                t_ms: h.t_ms,
+            })
+            .collect(),
+        env_hits: s
+            .env_hits
             .into_iter()
             .map(|h| ReplayPeriodicHitRow {
                 source_unit: h.source_unit,

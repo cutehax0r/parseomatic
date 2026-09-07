@@ -272,6 +272,7 @@ export interface ReplaySeries {
   castLines: ReplayCastLine[]; // hostile -> player attack lines, ascending by t0
   periodicHits: ReplayPeriodicHit[]; // player DoT ticks on creatures, ascending by tMs
   periodicHeals: ReplayPeriodicHit[]; // player HoT ticks on players, ascending by tMs
+  envHits: ReplayPeriodicHit[]; // environmental damage on players (sourceUnit unused), ascending by tMs
   // Tight [minX, maxX, minY, maxY] over every unit's fixes -- the scene's
   // framing box. null if nothing carried a position.
   fitBox: [number, number, number, number] | null;

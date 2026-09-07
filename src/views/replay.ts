@@ -42,6 +42,7 @@ const spec: NodeSpec = {
         castLines: [],
         periodicHits: [],
         periodicHeals: [],
+        envHits: [],
         fitBox: null,
         startMs: 0,
         endMs: 0,
@@ -220,12 +221,16 @@ async function paint(): Promise<void> {
   const periodicHeals = series.periodicHeals.filter(
     (h) => shown.has(h.sourceUnit) && shown.has(h.targetUnit),
   );
+  // Environmental damage has no source unit -- only the victim needs to
+  // be on screen.
+  const envHits = series.envHits.filter((h) => shown.has(h.targetUnit));
 
   built.get("scene")?.update({
     units: sceneUnits,
     castLines,
     periodicHits,
     periodicHeals,
+    envHits,
     fitBox: series.fitBox,
     startMs: series.startMs,
     endMs: series.endMs,
