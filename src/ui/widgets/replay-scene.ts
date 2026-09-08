@@ -789,8 +789,97 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       this.speed = Number(speed.value) || 1;
     });
 
-    bar.append(toStart, this.playBtn, toEnd, this.slider, this.timeEl, speed);
+    bar.append(toStart, this.playBtn, toEnd, this.slider, this.timeEl, speed, this.buildOptions());
     return bar;
+  }
+
+  // "Playback options" popup -- a gear button right of the speed select.
+  // The controls are placeholders (not wired to the scene yet); this is
+  // the shell so the options have a home.
+  private buildOptions(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "rt-options";
+
+    const gear = document.createElement("button");
+    gear.className = "rt-btn";
+    gear.type = "button";
+    gear.textContent = "⚙";
+    gear.title = "Playback options";
+
+    const panel = document.createElement("div");
+    panel.className = "rt-options-panel";
+    panel.hidden = true;
+
+    const heading = document.createElement("h4");
+    heading.textContent = "Playback options";
+    panel.appendChild(heading);
+
+    // [id, label, default-on] -- ids are for the eventual wiring.
+    const checks: ReadonlyArray<readonly [string, string, boolean]> = [
+      ["dotDamage", "Show DoT damage", true],
+      ["hotHealing", "Show HoT healing", true],
+      ["directHeals", "Show direct heals", true],
+      ["directDamage", "Show direct damage", true],
+      ["multiTarget", "Show multi-target attacks", true],
+      ["enemyNames", "Show enemy names", false],
+      ["playerNames", "Show player names", false],
+      ["colorEnemiesByName", "Color enemies by name", true],
+      ["colorPlayersByName", "Color players by name", false],
+    ];
+    for (const [id, label, on] of checks) {
+      const row = document.createElement("label");
+      row.className = "rt-opt";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.dataset.opt = id;
+      cb.checked = on;
+      cb.disabled = true; // not wired yet
+      row.append(cb, document.createTextNode(" " + label));
+      panel.appendChild(row);
+    }
+
+    const camRow = document.createElement("label");
+    camRow.className = "rt-opt rt-opt-select";
+    camRow.append(document.createTextNode("Camera "));
+    const cam = document.createElement("select");
+    cam.dataset.opt = "cameraType";
+    cam.disabled = true;
+    for (const [value, text] of [
+      ["manual", "Manual"],
+      ["followSelected", "Follow selected"],
+      ["followAction", "Follow action"],
+    ] as const) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = text;
+      cam.appendChild(o);
+    }
+    camRow.appendChild(cam);
+    panel.appendChild(camRow);
+
+    const close = (): void => {
+      panel.hidden = true;
+      document.removeEventListener("pointerdown", onOutside, true);
+      document.removeEventListener("keydown", onKey, true);
+    };
+    const onOutside = (e: Event): void => {
+      if (!wrap.contains(e.target as Node)) close();
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") close();
+    };
+    gear.addEventListener("click", () => {
+      if (panel.hidden) {
+        panel.hidden = false;
+        document.addEventListener("pointerdown", onOutside, true);
+        document.addEventListener("keydown", onKey, true);
+      } else {
+        close();
+      }
+    });
+
+    wrap.append(gear, panel);
+    return wrap;
   }
 
   private seek(t: number, pause: boolean): void {

@@ -19,6 +19,7 @@ import type {
   ReplayCastLine,
   ReplayPeriodicHit,
   ReplayUnit,
+  UnitRow,
 } from "../types";
 import {
   classColorVar,
@@ -84,11 +85,61 @@ function enemySize(frac: number | null): number {
 // Enemy colour by health tier -- Catppuccin greys: the biggest is the
 // darkest (`surface2`), mid-size `overlay0`, the smallest adds the
 // lightest (`overlay2`) so trash still reads. Passed straight through --
-// the widget does not dim enemies further.
+// the widget does not dim enemies further. Fallback for the name-colour
+// pass below.
 function enemyColor(frac: number | null): string {
   if (frac !== null && frac >= 0.75) return "var(--ctp-surface2)"; // boss
   if (frac !== null && frac < 0.1) return "var(--ctp-overlay2)"; // trash
   return "var(--ctp-overlay0)"; // mid
+}
+
+// Every unit sharing an enemy name gets one colour, walked down this
+// fixed list (two leading greys, then the class colours in canonical
+// order) so a given window always paints the same. `index % length`
+// wraps once the list is exhausted.
+const ENEMY_NAME_PALETTE: readonly string[] = [
+  "var(--ctp-surface2)", // grey
+  "var(--ctp-overlay1)", // light grey
+  "var(--class-warrior)",
+  "var(--class-paladin)",
+  "var(--class-hunter)",
+  "var(--class-rogue)",
+  "var(--class-priest)",
+  "var(--class-death-knight)",
+  "var(--class-shaman)",
+  "var(--class-mage)",
+  "var(--class-warlock)",
+  "var(--class-monk)",
+  "var(--class-druid)",
+  "var(--class-demon-hunter)",
+  "var(--class-evoker)",
+];
+
+// unitId -> palette colour, keyed by enemy name. Names are ordered by
+// their biggest max-health first (the boss's name lands on the leading
+// grey), then name A-Z for a stable tie-break. Recomputed per window, so
+// changing the range just re-walks the palette from the top.
+function enemyNameColors(enemies: ReplayUnit[], units: UnitRow[]): Map<number, string> {
+  const byName = new Map<string, { hp: number; ids: number[] }>();
+  for (const u of enemies) {
+    const name = units[u.unitId]?.name || u.guid;
+    const e = byName.get(name);
+    if (e) {
+      e.hp = Math.max(e.hp, u.maxHp);
+      e.ids.push(u.unitId);
+    } else {
+      byName.set(name, { hp: u.maxHp, ids: [u.unitId] });
+    }
+  }
+  const ordered = [...byName.entries()].sort(
+    (a, b) => b[1].hp - a[1].hp || a[0].localeCompare(b[0]),
+  );
+  const out = new Map<number, string>();
+  ordered.forEach(([, e], i) => {
+    const c = ENEMY_NAME_PALETTE[i % ENEMY_NAME_PALETTE.length];
+    for (const id of e.ids) out.set(id, c);
+  });
+  return out;
 }
 
 // Enemy unit kinds: a real creature, or a `Vehicle` -- the boss half of
@@ -314,6 +365,9 @@ async function paint(): Promise<void> {
   const merged = mergeBossGuids(enemies, bossHp, win.endMs - win.startMs);
   const finalUnits = [...others, ...merged.units];
 
+  // Enemy spheres are coloured by name, walked down ENEMY_NAME_PALETTE.
+  const nameColors = enemyNameColors(merged.units, units);
+
   // Level as a second boss signal: a skull / `??` boss logs its effective
   // level (`maxPlayerLevel + 3`), a clear tier above trash. Only trust it
   // when the enemy pack actually spans levels (`BOSS_LEVEL_SPREAD`) --
@@ -344,14 +398,14 @@ async function paint(): Promise<void> {
       // A merged council co-boss, or one flagged by its skull-tier level,
       // reads as a boss even when its own health pool is a fraction of
       // the biggest's.
-      const frac =
-        merged.bossIds.has(u.unitId) || isBossLevel(u)
-          ? 1
-          : bossHp > 0 && u.maxHp > 0
-            ? u.maxHp / bossHp
-            : null;
+      const isBoss = merged.bossIds.has(u.unitId) || isBossLevel(u);
+      const frac = isBoss ? 1 : bossHp > 0 && u.maxHp > 0 ? u.maxHp / bossHp : null;
       size = enemySize(frac);
-      color = enemyColor(frac);
+      // Boss-tier enemies stay on the leading grey; the rest take their
+      // name's palette slot (fallback to the health-tier grey).
+      color = isBoss
+        ? ENEMY_NAME_PALETTE[0]
+        : nameColors.get(u.unitId) ?? enemyColor(frac);
     } else {
       team = "other";
       color = "var(--ctp-overlay2)";
