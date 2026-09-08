@@ -1,20 +1,26 @@
 # Encounter maps — arena floor plans for the replay
 
 A per-encounter **floor plan**: a small piece of self-contained low-poly
-geometry — walkable deck, walls, obstacles, void holes, reference marks —
+geometry — walkable deck, walls, obstacles, holes into the void, marks —
 that the 3D replay drops in place of its generic scaled grid box so a
 pull reads against the *actual* arena shape. Maps are **authored** in a
 dedicated editor window and **stored as data** in the app data folder,
-one file per map, keyed on the game's `UiMapID`. This doc is the design +
-the build plan; it will be filled in as the feature lands.
+one file per map, keyed on the game's `UiMapID`.
+
+This doc is the design + the build plan; it fills in as the feature
+lands.
 
 Related: `docs/replay-view.md` (the consumer — world, coordinate frame,
 `fit_box`, Catppuccin materials, the `replay-scene` widget this shares a
-renderer with), `docs/movement-view.md` §2–5 (the position data model —
-yards, `pos_unit`, `MAP_CHANGE`), `docs/ui-items.md` §"Related — encounter
-maps" (the earlier one-paragraph sketch — **this doc supersedes it**),
-`docs/ui-widgets.md` (Panel/Widget/ViewContext), `docs/widget-distribution.md`
-(the trust model for user files in the data dir), `docs/windows-and-files.md`
+renderer with) · `docs/replay-effects.md` (the deterministic-over-`t`
+animation model this reuses for runtime map states, §4) ·
+`docs/movement-view.md` §2–5 (the position data model — yards,
+`pos_unit`, `MAP_CHANGE`) · `docs/plugins.md` (the packaged-extension
+system; a plugin can supply maps + the timings that drive their runtime
+states) · `docs/ui-items.md` §"Related — encounter maps" (the earlier
+one-paragraph sketch — **this doc supersedes it**) · `docs/ui-widgets.md`
+(Panel/Widget/ViewContext) · `docs/widget-distribution.md` (the trust
+model for user files in the data dir) · `docs/windows-and-files.md`
 (multi-window + the app data / config dirs).
 
 ---
@@ -27,33 +33,44 @@ maps" (the earlier one-paragraph sketch — **this doc supersedes it**),
   HTML entry, not a view), reusing the replay's Three.js renderer so the
   editor preview is pixel-identical to what the replay will show.
 - **Vector authoring.** Click out closed polygons on top of the arena map
-  image; each polygon belongs to a **layer** (`safe` / `wall` /
-  `void-hole` / `mark`) with a flat floor/top height. Geometry is
-  **extruded from the polygons at load time**, not stored as a baked mesh.
+  image; each polygon belongs to a **layer** (`safe` / `wall` / `void` /
+  `mark`) with a flat floor/top height. Geometry is **extruded from the
+  polygons at load time**, not stored as a baked mesh. See §8 for why not
+  a painted heightmap; the editor also accepts a hand-drawn SVG import
+  (paths → polygons) for authors who'd rather draw in Inkscape.
 - **Four layer kinds** (§4): walkable deck, tall wall/obstacle, hole cut
-  into the deck (donuts, pit obstacles), and flat ground marks that
-  render just above the deck.
-- **Map image on the floor.** The `wago.tools` world-map PNG for the
-  `UiMapID`, fetched by a Rust command (webview CORS blocks hotlinking),
-  shown on the deck plane as a drawing reference. **Reference only — not
-  redistributed** (§7).
-- **World calibration.** A drag-a-rectangle-against-the-8-yard-grid step
-  that fixes the drawing's world bounds in **yards**, so the finished map
-  lines up with unit positions in the replay.
+  into the deck (pit obstacles, fire, etc), and flat ground marks that
+  render just above the deck. `kind` is an **open string** — a renderer
+  skips a kind it doesn't know rather than failing, so new kinds are not
+  a schema break (§4).
+- **A backdrop image the author supplies.** The editor has an **Open…**
+  button that pops a native file dialog; the chosen image is shown on the
+  deck plane as a tracing reference. parseomatic never downloads it — no
+  network, no CORS shim, no licensing tightrope (§7). The image is a
+  *visual aid only*; tracing accuracy comes from calibrating against a
+  real pull (§10), so a rough top-down screenshot is plenty and the
+  feature works with no image at all.
+- **Calibration against a real pull.** Load a `replay_series` for an
+  encounter on the map; the unit tracks give exact `pixel → world yard`
+  anchor points and a "definitely walkable" heatmap to trace against
+  (§10). Replaces eyeballing a rectangle over the 8-yard grid.
 - **Save / load** `<mapId>.map.json` in `<data>/maps/<raid-slug>/`.
 - **Replay consumption** (§6): resolve the encounter's `UiMapID`, load its
   map if one exists, else fall back to today's generic grid box.
 
-### Out, v1 (deferred, tracked in §9)
+### Out, v1 (deferred, tracked in §13)
 
 Per-vertex / sloped heights (v1 is piecewise-flat plateaus) · a painted
-**heightmap** pipeline (considered and rejected — §8) · automatic
-**trace-from-image** (classical-CV contour trace + a labelling pass —
-§9) · CSG/boolean *cleanup* beyond `void-hole` subtraction · textured or
-lit-beyond-flat-grey surfaces · animated / stateful geometry (rotating
-platforms, rising bridges) · shipping a curated map pack with the app ·
-mid-encounter `MAP_CHANGE` (a boss that relocates mid-pull) — same
-deferral as `movement-view.md` §5.
+**heightmap** pipeline (considered and rejected — §8) · a **baked-mesh
+cache** (`.glb` next to the JSON — cut; re-extruding tens of polygons at
+load is sub-millisecond, and a stale-cache check plus a second format
+buys nothing measurable — §5) · automatic **trace-from-image**
+(classical-CV contour trace + a labelling pass — §9) · CSG/boolean
+*cleanup* beyond `void` subtraction · textured or lit-beyond-flat-grey
+surfaces · the `states` / `ops` **editor UI** (the format reserves it in
+v1; hand-authored JSON only — §4) · mid-encounter `MAP_CHANGE` (a boss
+that relocates mid-pull) — same deferral as `movement-view.md` §5 · the
+**previs editor** (fake-log strategy visualisations — §12).
 
 ---
 
@@ -69,7 +86,7 @@ The instinct to make this a standalone application is reasonable
   today.
 - Tauri already runs multiple windows with separate HTML entries
   (`settings.html`; `duplicate_window`). Vite code-splits per entry, so
-  the editor's heavier deps (polygon triangulation, a boolean lib) load
+  the editor's heavier deps (polygon triangulation, an SVG parser) load
   **only** in the editor window — the shipped analyzer binary doesn't
   grow.
 - One app to build / sign / notarize; the map files live in
@@ -80,8 +97,8 @@ The instinct to make this a standalone application is reasonable
 - **`src/ui/widgets/scene-rig.ts`** — world + camera + materials + grid +
   void/fog/mist + `OrbitControls` + the on-demand render loop. No game
   data. Consumed by both the replay and the editor.
-- **`replay-scene.ts`** — unit meshes, tracks, animation, transport;
-  builds on `scene-rig`.
+- **`replay-scene.ts`** — unit meshes, tracks, animation, transport,
+  selection, effects; builds on `scene-rig`.
 
 If community map authoring ever wants a renderer without the analyzer,
 `scene-rig` + the editor extract into their own Tauri app cheaply. Not
@@ -95,10 +112,9 @@ now.
 <app data dir>/maps/                     (windows-and-files.md — app_data_dir)
   <raid-slug>/
     raid.json          # instance name/id + encounterId -> UiMapID list
-    2606.map.json      # one map, keyed on UiMapID (what wago serves)
-    2606.glb           # optional baked extrusion cache (§5)
+    2606.map.json      # one map, keyed on UiMapID
     _src/              # editor working files — NOT shipped, NOT committed
-      2606.worldmap.png    # Blizzard art, local drawing reference only
+      2606.backdrop.png    # the author-picked tracing image, copied here
       2606.trace.svg       # a trace-from-image result, pre-cleanup (§9)
 ```
 
@@ -107,29 +123,34 @@ now.
   (`open_data_dir`, `index.html`) lands here. On macOS the two dirs are
   the same path; elsewhere data is the right one.
 - **The raid folder is organisational only.** Resolution scans every
-  `*/*.map.json` into a `UiMapID -> path` index at startup (and on a
-  file-watch or a manual "reload maps"). A wrong `raid-slug` never breaks
-  a lookup.
-- **Key on `UiMapID`**, not `encounterID`. `UiMapID` is what
-  `wago.tools/maps/worldmap/<id>` serves and what `_src/<id>.worldmap.png`
-  is named after. `zones[].mapId` already surfaces it (`log_lists`). The
-  replay needs an `encounterID -> UiMapID` step (§6).
-- **`_src/` is out of band.** The PNG the editor draws over and any
-  intermediate trace live here; nothing in `_src/` is read at replay time
-  or redistributed. Add `maps/**/_src/` to `.gitignore` for any repo that
-  vendors maps.
+  `*/*.map.json` under `maps/` **and** every `plugins/*/maps/**/*.map.json`
+  (`docs/plugins.md`) into a `UiMapID -> path` index at startup (and on a
+  file-watch or a manual "reload maps"). The replay never cares whether a
+  map was hand-dropped or plugin-supplied; a wrong `raid-slug` never
+  breaks a lookup.
+- **Key on `UiMapID`**, not `encounterID`. `UiMapID` is the id the game
+  exposes for a map (`zones[].mapId` in `log_lists`) and the natural key
+  for a curated geometry pack later. The replay needs an
+  `encounterID -> UiMapID` step (§6).
+- **`_src/` is out of band.** The backdrop the author traces over (copied
+  in when they pick it) and any intermediate trace live here; nothing in
+  `_src/` is read at replay time or redistributed. Add `maps/**/_src/` to
+  `.gitignore` for any repo that vendors maps.
 - **User files are untrusted data** (`widget-distribution.md`). A
   `.map.json` is parsed defensively — unknown `layer.kind` skipped,
   vertex counts capped, `schema` gated — never `eval`'d, and a malformed
   file degrades to the generic box with a console warning, never a crash.
+  `states` / `ops` (§4) are declarative data, not code, for the same
+  reason.
 
 ---
 
 ## 4. The `.map.json` format
 
-The **authoring representation** — closed 2D polygons in world yards, per
-layer, with flat heights — not a mesh. Small, hand-diffable, re-extrudable
-with better tessellation later without redrawing.
+The **authoring representation** — closed 2D polygons (or bare points) in
+world yards, per layer, with flat heights — not a mesh. Small,
+hand-diffable, re-extrudable with better tessellation later without
+redrawing.
 
 ```jsonc
 {
@@ -137,8 +158,8 @@ with better tessellation later without redrawing.
   "mapId": 2606,                       // UiMapID
   "name": "Queen Ansurek",             // free text, editor-set
   "raidSlug": "nerubar-palace",
-  "sourceImage": "wago.tools/maps/worldmap/2606",   // provenance note, not loaded
-  "editor": { "app": "parseomatic", "version": "0.1.0", "savedAt": "2026-09-07T…" },
+  "sourceImage": "wago.tools/maps/worldmap/2606",   // free-text: where the author got the backdrop
+  "editor": { "app": "parseomatic", "version": "0.1.0", "savedAt": "2026-09-08T…" },
 
   // Maps drawing-local coordinates to WoW world yards. This IS the
   // X / Z / length / width placement — the replay lines the deck up with
@@ -150,7 +171,8 @@ with better tessellation later without redrawing.
       "kind": "safe",                  // walkable deck — grey grid, like the generic box top
       "floorY": 0.0,                   // deck surface, yards above the void datum
       "polys": [
-        [ [x, y], [x, y], … ]          // world yards; closed implicitly; CCW = solid
+        { "id": "main-deck",           // optional; only ids can be a `states` target
+          "points": [ [x, y], [x, y], … ] }   // world yards; closed implicitly; CCW = solid
       ]
     },
     {
@@ -160,7 +182,7 @@ with better tessellation later without redrawing.
       "polys": [ … ]
     },
     {
-      "kind": "void-hole",             // subtracts from `safe` in draw order — donuts, pits
+      "kind": "void",                  // subtracts from `safe` in draw order — donuts, pits
       "polys": [ … ]
     },
     {
@@ -169,6 +191,23 @@ with better tessellation later without redrawing.
       "color": "var(--ctp-yellow)",    // theme token or literal; editor palette
       "closed": true,                  // false => a stroked line, not a fill
       "polys": [ … ]
+    },
+    {
+      "kind": "widget",                // RESERVED (not rendered in v1): an interactable
+      "points": [ { "id": "orb-north", "at": [x, y] } ]   // a point, not a poly
+    }
+  ],
+
+  // RESERVED (hand-authored only in v1). Named alternative arrangements of
+  // the geometry; see "Runtime map states" below.
+  "states": [
+    {
+      "id": "phase2",
+      "transitionMs": 800,
+      "ops": [
+        { "target": "bridge-north", "op": "hide" },
+        { "target": "platform-2",   "op": "translate", "by": [0.0, -10.0, 0.0] }
+      ]
     }
   ]
 }
@@ -176,6 +215,16 @@ with better tessellation later without redrawing.
 
 Notes:
 
+- **Geometry carriers.** A layer holds `polys` (closed rings) **and/or**
+  `points` (bare positions). `safe` / `wall` / `void` are poly-only;
+  `mark` is usually polys but a single point renders as a glyph;
+  reserved kinds like `widget` / `spawn` / `path` are point-first. Every
+  poly and point may carry an optional `id`.
+- **`id` is the stable handle.** Only a poly / point with an `id` can be a
+  `states` `ops` target, or be referenced by a plugin's spell-display /
+  mechanic rules (`docs/plugins.md`). Ids must be authored **now** even
+  though the `states` editor is deferred — retrofitting stable ids after
+  a map is drawn means re-tessellating and breaking every reference.
 - **Vertices are world yards**, stored absolute — no normalisation, no
   scale ambiguity, 1 unit = 1 yard end to end (`movement-view.md` §5). The
   editor may *draw* in image pixels and convert on save via
@@ -186,14 +235,41 @@ Notes:
   sunken section is `floorY: -2`; a raised ledge `floorY: +3`.
 - **`safe` without an explicit `topY`** gets a thin slab (`DECK_THICKNESS`,
   ~0.4 yd) so its edge reads against the void. `wall` needs `topY`.
-- **`void-hole` order matters** — it cuts every `safe`/`wall` polygon
-  drawn before it. A donut = one `safe` decagon, then one `void-hole`
+- **`void` order matters** — it cuts every `safe`/`wall` polygon drawn
+  before it in the file. A donut = one `safe` decagon, then one `void`
   circle inside it.
 - **Winding**: outer ring CCW, holes-within-a-single-poly CW (standard
   even-odd); the editor enforces it so hand edits don't have to.
 - **`mark`** has no back face and `depthWrite: false` (§5) — it's a
   drawn-on annotation (boss-marker spots, intermission lines, "stack
   here"), not collision.
+- **`kind` is an open enum.** Core kinds are `safe` / `wall` / `void` /
+  `mark`. A renderer **must** skip an unrecognised kind (and log once),
+  never fail the whole map. Reserved-but-unspecified: `widget`
+  (interactable, render as a pyramid), `spawn`, `path`. Plugin-private
+  kinds should use an `x-` prefix.
+
+### Runtime map states
+
+`states` names alternative arrangements of the *same* geometry: hide /
+show / translate / rotate / set-opacity a set of `id`-tagged polys. It is
+**declarative data, never code** — the renderer applies the ops and lerps
+over `transitionMs`, deterministic over the playhead `t` exactly like the
+replay's cast lines and particles (`docs/replay-effects.md`), so it
+scrubs cleanly.
+
+- **What** the states are lives in the map file. **When** a state is
+  entered ("90 s in", "on cast X") lives in a plugin's *encounter
+  declarations* (`docs/plugins.md`) — so one map serves multiple
+  difficulties with different timings, and the map file stays timing-free.
+- Covered: rising bridges, rotating platforms, a floor section dropping
+  out. Not covered: arbitrary deformation.
+- **Escape hatch for a true transform:** a `state` may instead carry
+  `"mapId": <other UiMapID>` — load that whole map and cross-fade the
+  meshes. Rare; `ops` is the default.
+- A plugin that wants *procedural* map animation runs that code in the
+  plugin (its own trust model), and drives the renderer through the same
+  `ops` vocabulary. The `.map.json` never executes.
 
 ### `raid.json`
 
@@ -217,13 +293,13 @@ resolve reads it (§6), falling back to a small bundled table and then to
 
 ## 5. Extrusion + materials
 
-Load path (`scene-rig` helper, `src/map/extrude.ts`):
+Load path (`scene-rig` helper, `src/map/extrude.ts`) — runs every load,
+from the polygons; there is no baked-mesh cache:
 
-1. Parse `.map.json`; if a sibling `<mapId>.glb` exists **and** is newer
-   than the JSON, load that instead (skip 2–4).
+1. Parse `.map.json`; skip unknown `layer.kind`, cap vertex counts.
 2. Per `safe`/`wall` layer: triangulate each polygon (ear-clipping —
    `THREE.ShapeUtils.triangulateShape`, or `earcut`), applying every
-   later `void-hole` in the layer as a hole contour. Extrude
+   later `void` polygon in file order as a hole contour. Extrude
    `floorY -> topY` (or the thin slab). One `BufferGeometry` per layer,
    merged.
 3. Material = the **same** `MeshStandardMaterial` + procedural grid
@@ -235,20 +311,22 @@ Load path (`scene-rig` helper, `src/map/extrude.ts`):
    `depthWrite: false`, `renderOrder` above the deck — always wins the
    z-fight, never occludes a unit. `closed: false` → a `Line2` stroke
    instead.
-5. Optionally bake the merged result to `<mapId>.glb` (`GLTFExporter`) as
-   a cache — a "Bake" button in the editor, never automatic.
+5. Keep every `id`-tagged poly's mesh (or a sub-range of the merged
+   buffer) addressable so `states` `ops` can hide / move it later.
 
+- **Cost.** A whole arena is tens of polygons → a few hundred to low
+  thousands of triangles per map, triangulated in well under a
+  millisecond. Trivial next to the unit meshes; no instancing, no LOD, no
+  `.glb` cache. (If load profiling ever shows a stall, a cache is a small
+  add-back — it is not in v1.)
 - **Framing.** When a map is present the replay frames on the map's
   `worldBounds` (padded, snapped to `CELL`) instead of `fit_box`, so the
   camera shows the whole arena, not just where the raid stood. `fit_box`
   still available for a "zoom to action" affordance.
-- **Void crossings are fine.** A unit whose fix lands over a `void-hole`
-  or off the deck is drawn at its real spot regardless — sometimes the
-  void isn't lethal, sometimes a knockback earns the death. No clamping,
-  no collision.
-- **Budget.** A whole arena is tens of polygons → a few hundred to low
-  thousands of triangles per map. Trivial next to the unit meshes; no
-  instancing, no LOD.
+- **Void crossings are fine.** A unit whose fix lands over a `void`
+  polygon or off the deck is drawn at its real spot regardless —
+  sometimes the void isn't lethal, sometimes a knockback earns the death.
+  No clamping, no collision.
 
 ---
 
@@ -258,10 +336,10 @@ In `src/views/replay.ts` / the `replay-scene` widget, once per loaded
 encounter (cached like `replay_series`):
 
 1. `encounterID` (from `ENCOUNTER_START`) → `UiMapID`: check `raid.json`
-   files in `maps/`, then a small bundled `encounterId -> mapId` table,
-   then the encounter's own zone `mapId` from `log_lists` as a last
-   resort.
-2. `UiMapID` → `maps/**/<id>.map.json` via the startup index.
+   files under `maps/` and `plugins/*/maps/`, then a small bundled
+   `encounterId -> mapId` table, then the encounter's own zone `mapId`
+   from `log_lists` as a last resort.
+2. `UiMapID` → `<id>.map.json` via the startup index.
 3. Found → `scene-rig` builds the map geometry instead of the generic
    scaled box, frames on `worldBounds`. Not found → **exactly today's
    behaviour**, no regression.
@@ -273,28 +351,34 @@ New Rust commands (`src-tauri/src/maps.rs`):
 | `map_index()` | `[{ mapId, path, name, raidSlug }]` — the resolve index |
 | `read_map(mapId)` | the `.map.json` text (editor + replay) |
 | `write_map(mapId, json)` | save (editor only) |
-| `fetch_map_image(mapId)` | download the wago PNG into `_src/`, return a local path/URL the webview can load |
+| `import_backdrop(mapId, srcPath)` | copy the user-picked image to `_src/<id>.backdrop.<ext>`, return a webview-loadable URL for it (editor only) |
 
-`fetch_map_image` is the CORS workaround — the webview can't `fetch()`
-`wago.tools` directly; Rust downloads once, the editor loads
-`_src/<id>.worldmap.png` from disk.
+The editor's **Open…** button uses `tauri_plugin_dialog` (already a
+dependency) to pick the file; `import_backdrop` copies it into `_src/`
+so reopening the map re-loads the same reference without re-picking.
+parseomatic makes no network request for it.
 
 ---
 
-## 7. The map image — acquisition + licensing
+## 7. The backdrop image — bring your own
 
-- **Source**: `https://wago.tools/maps/worldmap/<UiMapID>` (the same
-  `wago.tools` route family `docs/ui-items.md` already leans on for DB2
-  data). One PNG per map.
-- **Fetched on demand** by `fetch_map_image`, cached in `_src/`. Never
-  bundled with the app.
-- **Licensing**: the world-map art is **Blizzard's**, redistributed by
-  `wago.tools`. It's fine as a **local authoring reference** (same footing
-  as opening the game to eyeball a room) but it is **not** shipped inside
-  `.map.json`, not committed, not baked into `.glb`. The extruded
-  geometry is original work (`ui-items.md` makes the same call). `_src/`
-  is git-ignored; `NOTICE` gets a line noting maps are hand-authored and
-  reference imagery is Blizzard's, used transiently.
+- The editor's **Open…** button pops a native file dialog; the author
+  points it at any roughly top-down image of the arena. parseomatic never
+  downloads one — there's no CORS shim, no HTTP client, nothing to keep
+  current.
+- **Sources the author can grab themselves**, in a browser or the game:
+  `wago.tools/maps/worldmap/<UiMapID>` (clean per-map renders), a WoWhead
+  / Method Dungeon Tools view, or an in-game top-down screenshot. Their
+  choice, their provenance — recorded free-text in `sourceImage`.
+- The picked file is **copied** into the git-ignored `_src/` (never read
+  at replay time, never shipped, never baked into geometry). Whatever the
+  author brought is on their own machine, put there by them — same as any
+  scratch file; parseomatic just displays it under the tracing plane.
+- The extruded geometry is original work (`ui-items.md` makes the same
+  call). `NOTICE` gets a line: maps are hand-authored; any backdrop is
+  user-supplied and stays local.
+- The backdrop is **optional** — §10 calibrates against a real pull, so a
+  map can be traced from the walkable heatmap alone with no image.
 
 ---
 
@@ -308,18 +392,31 @@ tessellated plane) was considered and rejected for this content:
   important line on the map — is exactly what a heightmap renders worst
   (stair-stepping or a fuzzy ramp unless resolution is huge).
 - The authoring interaction is **corner-clicking on the map image** —
-  inherently vector. Painting can't produce a clean decagon.
+  inherently vector. Painting a clean-edged decagon in a raster tool is
+  *harder* than clicking its corners: you fight anti-aliasing and brush
+  softness and can't snap to the grid.
+- **A heightmap carries no semantics.** It can't say "this loop is a
+  wall" vs "a pit" vs "a widget", which is exactly what the format needs
+  *more* of (`kind`, `id`, `states`). Polygons + per-layer heights carry
+  it for free.
 - Donut / pit / column / "wall two player-units taller" are natural
   polygon booleans + per-layer heights; clumsy as paint layers.
 - The proposed encoding ("black = void, else one unit up, 254 steps
   above") is *quantising the heightmap back into a handful of flat
-  plateaus* — i.e. polygons with per-polygon heights.
+  plateaus* — i.e. polygons with per-polygon heights, in a lossy raster
+  container.
 - Mesh cost: a 4k×4k plane naively tessellated ≈ 33 M quads for geometry
   that is ~50 polygons; usable only with adaptive meshing you'd have to
   build.
 - **Resolution was never the blocker** — 4k over a 200-yard arena is
-  ~20 px/yd, plenty; 16-bit greyscale would fix vertical banding. The
-  blocker is the flat-vs-sharp mismatch and the tessellation cost.
+  ~20 px/yd, plenty. The blocker is the flat-vs-sharp mismatch and the
+  tessellation cost.
+
+**For authors who want a real drawing program:** the editor accepts a
+hand-drawn **SVG** import — closed paths → polygons, `data-kind` / layer
+name → `kind`. That's the "use Inkscape" workflow without a heightmap.
+`docs/plugins.md` map contributions can ship the SVG in `_src/` and the
+extracted `.map.json` beside it.
 
 Per-*layer* `floorY`/`topY` already covers walls, obstacles, sunken and
 raised sections. If a specific boss ever needs a true slope, add an
@@ -330,19 +427,19 @@ reaching for a heightmap.
 
 ## 9. Trace-from-image (later)
 
-A fully hands-off "map PNG in → correct arena out" is not reliable — the
+A fully hands-off "map image in → correct arena out" is not reliable —
 world-map art carries labels, icons and gradients and doesn't encode
 "where you can stand." A **semi-automatic** importer is very achievable
 and would make a map a ~5-minute job:
 
-1. `fetch_map_image` gets the PNG.
+1. Start from the author-picked backdrop in `_src/` (§7).
 2. Classical CV — threshold, edge-detect, `findContours`, `approxPolyDP`
    (Douglas–Peucker) — traces candidate polygons deterministically. Runs
    as a build/tooling script, not in the app; output is
-   `_src/<id>.trace.svg`.
+   `_src/<id>.trace.svg` (the same SVG import path as §8).
 3. A **labelling pass** — a human, or Claude given the image + the
-   contours — tags each contour `safe` / `wall` / `void-hole` / `mark`
-   and sets heights. This is the part pure CV can't do.
+   contours — tags each contour `safe` / `wall` / `void` / `mark` and
+   sets heights. This is the part pure CV can't do.
 4. Import the labelled polygons into the editor; clean up by hand.
 
 Build the manual editor first — it's the ground-truth / fixup tool
@@ -351,56 +448,124 @@ polygons.
 
 ---
 
-## 10. Build phases
+## 10. Calibration — against a real pull
+
+The finished map has to line up with unit positions in yards. Rather than
+eyeballing a rectangle over the 8-yard grid, the editor loads a real
+encounter's tracks and calibrates off them:
+
+1. **Load reference replay.** Pick an encounter on this `UiMapID`; the
+   editor pulls `replay_series` for it and drops the unit tracks +
+   transport onto the map layer (the `replay-scene` layer on top of the
+   editor's `scene-rig`).
+2. **Anchor points.** Scrub to a moment, click a player standing on a
+   recognisable feature (a doorway, dead centre). That player's own
+   position fix at that `t` is an exact `pixel → world yard` pair. Two
+   such pairs fix `worldBounds` precisely — this is the "two known world
+   points" precise mode, with the world points supplied for free.
+3. **Walkable heatmap.** The union of *every* player fix across the pull
+   is a dense "definitely stood here" point cloud. Render it under the
+   trace image and trace the outline of where people went — a
+   near-automatic deck boundary for the `safe` layer.
+
+Caveat: the replay's coordinate handling and the map's `worldBounds` must
+use the same axes and signs. `movement-view.md` §5 notes the `MAP_CHANGE`
+box corners aren't sorted and axes can flip — get one real encounter
+end-to-end before trusting the pipeline.
+
+---
+
+## 11. Build phases
 
 - **A — renderer split.** Extract `scene-rig.ts` from `replay-scene.ts`;
   the replay keeps working unchanged. No editor yet.
-- **B — editor shell.** `map-editor.html` + `src/map/*` + a
-  `map_editor` menu item (View › Developer for now — it may graduate to a
-  top-level "Tools" menu). Opens a `scene-rig` scene, the generic box,
-  orbit camera. `maps.rs` with `read_map`/`write_map`/`map_index`.
-- **C — image + calibration.** `fetch_map_image`; show the PNG on the
-  deck; the drag-rect-against-the-grid calibration that writes
-  `worldBounds`.
-- **D — polygon tool + `safe`.** Click vertices, close, Enter to commit;
-  edit/delete vertices; snap to grid + to existing vertices. Live
-  extrude of the `safe` layer through `src/map/extrude.ts`. Save / load
-  `.map.json`.
-- **E — the other layers.** `wall` (with `topY`), `void-hole` (boolean
-  into `safe`), `mark` (palette, `closed` toggle). Per-layer height
-  fields. `raid.json` write.
-- **F — replay consumption.** `encounterID -> UiMapID` resolve, load a
-  map or fall back, frame on `worldBounds`. This is the first phase a
-  non-author sees anything.
-- **G — bake + polish.** "Bake `.glb`" button, file-watch reload, the
-  `_src/` trace import hook.
+- **B — one hand-written map, end to end.** Hand-author a single
+  `.map.json` for one encounter (no editor), wire `maps.rs`
+  (`map_index` / `read_map`), the `encounterID -> UiMapID` resolve, the
+  `src/map/extrude.ts` load path, and `worldBounds` framing. **Prove the
+  consumption path and that extruded polygons read well in the replay
+  before building any authoring UI.** This is the first phase a
+  non-author sees anything, and the cheapest place to discover the
+  geometry looks wrong.
+- **C — editor shell.** `map-editor.html` + `src/map/*` + a `map_editor`
+  menu item (View › Developer for now — may graduate to a "Tools" menu).
+  Opens a `scene-rig` scene, the generic box, orbit camera. `write_map`.
+- **D — backdrop + calibration.** **Open…** file picker →
+  `import_backdrop`; show the image on the deck; load-reference-replay +
+  the anchor-point / heatmap calibration that writes `worldBounds` (§10).
+- **E — polygon tool + `safe`.** Click vertices, close, Enter to commit;
+  edit/delete vertices; snap to grid + to existing vertices; assign an
+  `id`. Live extrude of the `safe` layer. Save / load.
+- **F — the other layers.** `wall` (with `topY`), `void` (boolean into
+  `safe`), `mark` (palette, `closed` toggle). Per-layer height fields.
+  `raid.json` write. SVG import.
+- **G — polish.** File-watch reload, the `_src/` trace import hook, undo.
 
 Phases A + B land first for review.
 
 ---
 
-## 11. Open questions
+## 12. Future — the previs editor
+
+A **standalone-feeling mode** (same window family) for authoring *fake
+logs*: strategy visualisations rather than recordings of real pulls.
+
+The author manually creates players — class, name, HP — and drops them on
+a map, places raid markers, creates a boss. They drag the playhead
+forward and reposition units at each keyframe. They can flag a player
+attacking one or more mobs, healing party members, taking damage from the
+environment / creatures / DoTs; flag buffs, debuffs, potions, defensive
+cooldowns; drag the boss like any unit; mark units alive or dead.
+
+Under the hood this **synthesises the combat-log events** the replay
+already consumes — zero-impact self-heals every keyframe to carry
+position, 1 s repeating zero-damage casts to show target priority,
+`UNIT_DIED` / `SPELL_RESURRECT` for the alive/dead flags — so the previs
+plays back through the exact same pipeline as a real log.
+
+Extras it wants:
+
+- **Manual world marks** — "poison cloud" no-stand zones, "safe zone"
+  stack points — and basic reference geometry (transparent walls, ground
+  lines). These overlap the map format's `mark` / reserved layer kinds;
+  the previs editor should emit them into the same `.map.json`
+  vocabulary, not a parallel one.
+- **A side-car caption file** — timed text descriptions of the strategy,
+  shown alongside playback (closed-captioning style).
+- **Camera keyframes** — recorded camera position so playback flies to
+  highlight a mechanic; exportable to a shareable video.
+
+Goal: a compact pre-vis guide a raid leader watches or exports. Out of
+scope for the map feature itself; captured here because it shares the
+editor window, `scene-rig`, and the map format.
+
+---
+
+## 13. Open questions
 
 - **`encounterID -> UiMapID` source of truth.** A bundled table
   (maintainable, offline) vs deriving from `raid.json` files the user
   authored vs the log's own zone `mapId` (present but coarse — one zone
   can hold several boss sub-maps). v1 leans: `raid.json` → bundled table
   → zone `mapId`.
-- **Calibration accuracy.** Dragging a rect against the 8-yard grid is
-  eyeballed. Is a two-known-world-points entry (type in coords for two
-  clicked pixels) worth offering as the precise mode? Probably yes by
-  phase C.
 - **Multiple maps per encounter** (intermission relocations, Mythic-only
-  platforms). Deferred with `MAP_CHANGE` (§1) — but the format could grow
-  a `variants: [{ when, layers }]` without a schema break.
-- **Sub-map vs full-zone image.** Some `UiMapID`s are the whole raid
-  wing; the encounter journal often has a tighter per-boss map. Pick per
-  map at author time; `sourceImage` records which.
-- **Editor undo model** — a flat command stack over polygon ops, or
-  snapshot the whole `layers` array per edit (small enough)? Leaning
+  platforms). A `state` with `mapId` (§4) covers a full swap; the harder
+  case — the replay knowing *when* to swap without a plugin — is deferred
+  with `MAP_CHANGE` (§1).
+- **Which backdrop to trace.** A whole-wing render vs a tight per-boss
+  view vs an in-game screenshot — the author's call at author time;
+  `sourceImage` records which. Calibration (§10) makes the choice
+  low-stakes: the pull's tracks define the yard frame regardless of the
+  image.
+- **Editor undo model.** Snapshot the whole `layers` array per edit
+  (small enough — tens of polygons) rather than a command stack. Leaning
   snapshot.
 - **Sharing maps between users.** Out of scope now, but the on-disk
-  format is deliberately a plain file so a future "import a map" is just a
-  copy into `maps/`.
+  format is a plain file so a future "import a map" is just a copy into
+  `maps/` (or bundling it in a plugin — `docs/plugins.md`).
 - **Wall height default.** `WALL_HEIGHT` = 4 yd (~2 player-units) is a
   guess; tune once real arenas are drawn.
+- **`states` triggers when there's no plugin.** The map file can't say
+  *when* a state fires (that's plugin encounter-data). Should the replay
+  ship a tiny built-in trigger table for a few marquee bosses so map
+  states work without a plugin installed? Probably yes, small.
