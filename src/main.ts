@@ -1762,6 +1762,13 @@ window.addEventListener("DOMContentLoaded", () => {
     invoke("zoom", { direction: 1 });
   });
 
+  // Reveals the app data directory in the OS file browser (Finder). It's
+  // the root for user-installed plugins / encounter extensions, so the
+  // command creates it on first use rather than failing on a fresh install.
+  document.querySelector("#open-data-dir-btn")?.addEventListener("click", () => {
+    invoke("open_data_dir");
+  });
+
   // ⌘←/⌘→ mirror the History menu's Back/Forward (⌘[/⌘]); ignore while a
   // text field has focus so arrow-key editing still works there.
   window.addEventListener("keydown", (e) => {

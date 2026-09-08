@@ -14,8 +14,9 @@ position data model, `pos_unit`, `fit_box`, `MOVE_GAP_MS`),
 heuristics the spin animation reuses), `docs/planning.md` §"3D spatial
 replay" and §"Entity state" (the original sketch), `docs/ui-widgets.md`
 §"Shared state: the playhead" (the fetch-once / rescan-per-frame model),
-`docs/ui-items.md` §"Related — encounter maps" (hand-drawn arena floor
-plans, deferred).
+`docs/encounter-maps.md` (hand-drawn arena floor plans + the editor that
+makes them — the replay drops one in place of the generic grid box when
+the encounter's `UiMapID` has a map).
 
 ---
 
@@ -48,7 +49,7 @@ Pets as entities · spell-cast lines between source and target ·
 defensive-buff bubbles · floating buff / cooldown panels over a unit ·
 cast-bar / ability-name labels · void-zone / hazard geometry
 (`docs/boss-parsers.md` "Implied entities") · per-arena hand-drawn floor
-plans (`docs/ui-items.md`) · the boss-parser "key moments" jump list
+plans (`docs/encounter-maps.md`) · the boss-parser "key moments" jump list
 (`docs/boss-parsers.md`) · verticality — **logs carry x/y only**, so the
 whole scene is one plane and knockbacks / platforms / flight read as
 ground movement · persisting loop markers to disk.

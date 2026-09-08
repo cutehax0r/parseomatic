@@ -172,4 +172,6 @@ Blizzard's map/terrain data.** Instead: hand-redraw each encounter arena
 as a minimal line drawing, then extrude those into simple untextured
 low-poly geometry lit with flat grey lighting. Cheap to make, tiny to
 ship, and it reads better than a downscaled game map for a schematic
-replay. Its own doc when that view is real.
+replay. **Designed in `docs/encounter-maps.md`** — a vector polygon
+editor in its own window, maps stored per `UiMapID` in the app data
+folder.

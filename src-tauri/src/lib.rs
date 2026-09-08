@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, Weak};
 use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem, Submenu, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_opener::OpenerExt;
 
 use parser::intern::{NO_SPELL, NO_UNIT};
 use parser::ParsedLog;
@@ -744,6 +745,22 @@ fn zoom(app: AppHandle, direction: i32) {
         std::cmp::Ordering::Equal => 0.0,
     };
     adjust_zoom(&app, delta);
+}
+
+/// Reveals the app data directory (`~/Library/Application Support/<bundle id>`
+/// on macOS) in the OS file browser -- the toolbar's folder button. This
+/// is the intended home for user-installed plugins / encounter
+/// extensions, so it's created if missing rather than failing on a fresh
+/// install. Distinct from `app_config_dir` (where `recent_logs.json` etc.
+/// live); on macOS the two resolve to the same place, elsewhere the data
+/// dir is the user-facing one.
+#[tauri::command]
+fn open_data_dir(app: AppHandle) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -2409,7 +2426,8 @@ pub fn run() {
             timeline_series,
             interrupts,
             replay_series,
-            zoom
+            zoom,
+            open_data_dir
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
