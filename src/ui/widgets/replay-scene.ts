@@ -288,11 +288,17 @@ const DOT_DESYNC = 0.3; // per-particle timing spread so they don't move in lock
 const MARKER_UNIT = 1.6;
 const MARKER_COL_H = MARKER_UNIT * 5; // column height
 const MARKER_COL_R = MARKER_UNIT; // column radius -> ~2x a player wide
-const MARKER_COL_OPACITY = 0.25;
+const MARKER_COL_OPACITY = 0.28; // peak alpha of the additive glow shell
 const MARKER_ICON = MARKER_UNIT; // icon width / height
 const MARKER_ICON_DEPTH = MARKER_UNIT * 0.25; // extrusion depth
-const MARKER_ICON_OPACITY = 0.75;
+const MARKER_ICON_OPACITY = 0.6;
 const MARKER_FADE_MS = 500;
+// A downward coloured spotlight per visible marker, pooled (only so many
+// live at once) so the light count -- and shader program -- stays fixed.
+const MARKER_LIGHT_MAX = 8;
+const MARKER_LIGHT_INTENSITY = 70;
+const MARKER_LIGHT_ANGLE = Math.PI / 7; // ~26deg cone
+const MARKER_LIGHT_PENUMBRA = 0.85; // very soft pool edge
 // Log slot 0-7 -> [css colour, shape id].
 const MARKER_DEFS: ReadonlyArray<readonly [string, string]> = [
   ["var(--ctp-yellow)", "star"], // 0
@@ -646,13 +652,15 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   // ---- raid world markers ----
   private markerGroup = new THREE.Group();
   private worldMarkers: ReplayWorldMarker[] = [];
-  private markerColGeo!: THREE.CylinderGeometry; // shared column tube
+  private markerColGeo!: THREE.CylinderGeometry; // shared column shell
   private markerGeos = new Map<string, THREE.ExtrudeGeometry>(); // shape id -> icon geom
+  private markerLights: THREE.SpotLight[] = []; // fixed pool of downward coloured lights
   private markerRigs: {
     group: THREE.Group;
     icon: THREE.Mesh;
-    colMat: THREE.MeshBasicMaterial;
+    colMat: THREE.ShaderMaterial;
     iconMat: THREE.MeshBasicMaterial;
+    color: THREE.Color;
     wm: ReplayWorldMarker;
   }[] = [];
 
@@ -694,14 +702,22 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.scene.add(this.partGroup);
     this.buildParticlePool();
     this.scene.add(this.markerGroup);
-    this.markerColGeo = new THREE.CylinderGeometry(
-      MARKER_COL_R,
-      MARKER_COL_R,
-      MARKER_COL_H,
-      20,
-      1,
-      true, // open-ended tube -> reads as a light column
-    );
+    this.markerColGeo = new THREE.CylinderGeometry(MARKER_COL_R, MARKER_COL_R, MARKER_COL_H, 24, 1, true);
+    // Fixed pool of downward marker spotlights (assigned to whichever
+    // markers are visible each frame) so the shader light count is stable.
+    for (let i = 0; i < MARKER_LIGHT_MAX; i++) {
+      const l = new THREE.SpotLight(
+        0xffffff,
+        0,
+        MARKER_COL_H * 1.3,
+        MARKER_LIGHT_ANGLE,
+        MARKER_LIGHT_PENUMBRA,
+        1.2,
+      );
+      l.castShadow = false;
+      this.scene.add(l, l.target);
+      this.markerLights.push(l);
+    }
 
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 20000);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -1105,13 +1121,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       if (!def) continue;
       const col = cssColor(def[0]);
 
-      const colMat = new THREE.MeshBasicMaterial({
-        color: col,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
+      const colMat = markerColumnMaterial(col);
       const colMesh = new THREE.Mesh(this.markerColGeo, colMat);
       colMesh.position.y = FLOOR_LIFT + MARKER_COL_H / 2;
 
@@ -1130,7 +1140,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       g.visible = false;
       g.add(colMesh, iconMesh);
       this.markerGroup.add(g);
-      this.markerRigs.push({ group: g, icon: iconMesh, colMat, iconMat, wm });
+      this.markerRigs.push({ group: g, icon: iconMesh, colMat, iconMat, color: col, wm });
     }
   }
 
@@ -1152,9 +1162,11 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   }
 
   // Fade each marker in over MARKER_FADE_MS from its place time and out
-  // over the same after its remove time; billboard the icon to the camera.
+  // over the same after its remove time; billboard the icon to the
+  // camera; and point the pooled spotlights at the brightest markers.
   private updateMarkers(t: number): void {
     const cam = this.camera.position;
+    let lit = 0;
     for (const r of this.markerRigs) {
       const { placedMs, removedMs } = r.wm;
       let a: number;
@@ -1170,10 +1182,23 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
         continue;
       }
       r.group.visible = true;
-      r.colMat.opacity = a * MARKER_COL_OPACITY;
+      r.colMat.uniforms.uOpacity.value = a * MARKER_COL_OPACITY;
       r.iconMat.opacity = a * MARKER_ICON_OPACITY;
       r.icon.rotation.y = Math.atan2(cam.x - r.group.position.x, cam.z - r.group.position.z);
+
+      const light = this.markerLights[lit];
+      if (light) {
+        lit++;
+        const gx = r.group.position.x;
+        const gz = r.group.position.z;
+        light.color.copy(r.color);
+        light.intensity = a * MARKER_LIGHT_INTENSITY;
+        light.position.set(gx, FLOOR_LIFT + MARKER_COL_H, gz);
+        light.target.position.set(gx, FLOOR_LIFT, gz);
+        light.target.updateMatrixWorld();
+      }
     }
+    for (let i = lit; i < this.markerLights.length; i++) this.markerLights[i].intensity = 0;
   }
 
   private buildCastPool(): void {
@@ -1662,6 +1687,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     });
     this.markerColGeo?.dispose();
     this.markerGeos.forEach((g) => g.dispose());
+    this.markerLights.forEach((l) => l.dispose());
     const bg = this.scene.background;
     if (bg && (bg as THREE.Texture).isTexture) (bg as THREE.Texture).dispose();
     this.mistTex?.dispose();
@@ -1775,6 +1801,44 @@ function sphereMesh(col: THREE.Color, size: number): THREE.Mesh {
     emissive: col.clone().multiplyScalar(0.15),
   });
   return new THREE.Mesh(new THREE.SphereGeometry(size / 2, 24, 16), mat);
+}
+
+// The marker column: an additive, view-angle-softened glow shell. Alpha
+// is high where the surface faces the camera and fades toward the
+// silhouette (soft edges) and toward the top (a fading shaft). `uColor`
+// and `uOpacity` (the marker's fade) are set per frame.
+function markerColumnMaterial(col: THREE.Color): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: col.clone() }, uOpacity: { value: 0 } },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    vertexShader: `
+      varying vec3 vN;
+      varying vec3 vView;
+      varying float vY;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vN = normalMatrix * normal;
+        vView = -mv.xyz;
+        vY = uv.y;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      varying vec3 vN;
+      varying vec3 vView;
+      varying float vY;
+      void main() {
+        float facing = abs(dot(normalize(vN), normalize(vView))); // 1 face-on, 0 at rim
+        float soft = pow(facing, 1.6);
+        float shaft = smoothstep(1.0, 0.3, vY) * smoothstep(0.0, 0.06, vY);
+        float a = uOpacity * soft * shaft;
+        gl_FragColor = vec4(uColor * (0.7 + 0.5 * soft), a);
+      }`,
+  });
 }
 
 // One rectangular bar of half-length `len`, thickness `w`, rotated

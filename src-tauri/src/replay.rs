@@ -343,14 +343,11 @@ pub fn series(
 
     // The MAP_CHANGE in effect at the window: nearest one at/before `hi`
     // (normally in the trash span just before the pull). Same as
-    // `movement::series`. Its row also bounds the world-marker scan --
-    // markers don't survive a zone change.
-    let mut zone_start_row = 0usize;
+    // `movement::series`.
     for row in (0..hi).rev() {
         if !matches!(events.kind[row], LineKind::Standalone(StandaloneKind::MapChange)) {
             continue;
         }
-        zone_start_row = row;
         let raw = events.raw_fields(row);
         let f = |i: usize| raw.get(i).and_then(|s| s.resolve_str(mmap).parse::<f32>().ok());
         if let (Some(x0), Some(x1), Some(y0), Some(y1)) = (f(3), f(4), f(5), f(6)) {
@@ -359,11 +356,21 @@ pub fn series(
         break;
     }
 
+    // World markers survive MAP_CHANGE (a sub-zone boundary or a boss
+    // arena's own map) -- only a ZONE_CHANGE (loading screen) clears them
+    // in game. So the marker scan starts at the last ZONE_CHANGE at/before
+    // `hi` (row 0 if the log has none), NOT the MAP_CHANGE above.
+    let mut zone_start_row = 0usize;
+    for row in (0..hi).rev() {
+        if matches!(events.kind[row], LineKind::Standalone(StandaloneKind::ZoneChange)) {
+            zone_start_row = row;
+            break;
+        }
+    }
+
     // Raid world markers. `WORLD_MARKER_PLACED,<instanceID>,<slot>,<x>,<y>`
-    // / `WORLD_MARKER_REMOVED,<slot>` -- scoped to the current zone, so
-    // scan from `zone_start_row` (any marker before it belonged to the
-    // last zone). A re-place of a live slot is a move: close + reopen.
-    // `open[slot]` = `(placed_ms, x, y)`.
+    // / `WORLD_MARKER_REMOVED,<slot>`. A re-place of a live slot is a move:
+    // close + reopen. `open[slot]` = `(placed_ms, x, y)`.
     {
         let mut open: [Option<(i64, f32, f32)>; 8] = [None; 8];
         let close = |markers: &mut Vec<WorldMarker>, slot: usize, at: Option<i64>, o: (i64, f32, f32)| {
@@ -407,9 +414,9 @@ pub fn series(
                         }
                     }
                 }
-                LineKind::Standalone(StandaloneKind::MapChange | StandaloneKind::ZoneChange)
-                    if row != zone_start_row =>
-                {
+                // A ZONE_CHANGE after the scan start (rare -- someone left
+                // and came back) wipes every marker.
+                LineKind::Standalone(StandaloneKind::ZoneChange) if row != zone_start_row => {
                     for slot in 0..8 {
                         if let Some(o) = open[slot].take() {
                             close(&mut out.world_markers, slot, Some(ts), o);
@@ -981,7 +988,7 @@ mod tests {
     #[test]
     fn world_markers_track_place_move_and_remove() {
         let (tables, store, mmap) = store_from(&[
-            r#"9/3/2026 19:23:00.000-6  MAP_CHANGE,2607,"Zone",100.0,-100.0,100.0,-100.0"#.to_string(),
+            r#"9/3/2026 19:23:00.000-6  ZONE_CHANGE,3004,"Zone",15"#.to_string(),
             "9/3/2026 19:23:01.000-6  WORLD_MARKER_PLACED,3004,7,10.0,20.0".to_string(), // skull, stays up
             "9/3/2026 19:23:02.000-6  WORLD_MARKER_PLACED,3004,6,5.0,5.0".to_string(),   // cross
             "9/3/2026 19:23:05.000-6  WORLD_MARKER_PLACED,3004,6,8.0,9.0".to_string(),   // cross moved
@@ -999,6 +1006,24 @@ mod tests {
         assert_eq!(cross[0].removed_ms, Some(store.timestamp_ms[3]), "closed at the move");
         assert_eq!((cross[1].x, cross[1].y), (8.0, 9.0));
         assert_eq!(cross[1].removed_ms, Some(store.timestamp_ms[4]));
+    }
+
+    #[test]
+    fn world_markers_survive_a_map_change_before_the_window() {
+        // Markers set in the prep phase, then a MAP_CHANGE (boss arena /
+        // sub-zone) fires before the pull -- the markers must still show.
+        let (tables, store, mmap) = store_from(&[
+            r#"9/3/2026 19:20:00.000-6  ZONE_CHANGE,3004,"Zone",15"#.to_string(),
+            "9/3/2026 19:20:30.000-6  WORLD_MARKER_PLACED,3004,0,1.0,2.0".to_string(),
+            r#"9/3/2026 19:21:00.000-6  MAP_CHANGE,2609,"Zone",940.0,175.0,1033.0,-113.0"#.to_string(),
+            "9/3/2026 19:21:30.000-6  ENCOUNTER_START,3420,\"Boss\",15,22,3004".to_string(),
+            "9/3/2026 19:24:00.000-6  ENCOUNTER_END,3420,\"Boss\",15,22,1".to_string(),
+        ]);
+        // Window == the pull, well after the marker was placed.
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[3], store.timestamp_ms[4]);
+        assert_eq!(s.world_markers.len(), 1, "the pre-pull marker survives the MAP_CHANGE");
+        assert_eq!(s.world_markers[0].marker, 0);
+        assert_eq!(s.world_markers[0].removed_ms, None);
     }
 
     #[test]
