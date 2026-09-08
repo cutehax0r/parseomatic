@@ -230,6 +230,20 @@ pub struct PeriodicHit {
     pub t_ms: i64,
 }
 
+/// One placement interval of a raid world marker (the ground flare). A
+/// re-place of the same slot without a remove is treated as a move: the
+/// old interval closes and a new one opens.
+pub struct WorldMarker {
+    /// Log slot 0-7: 0 star, 1 circle, 2 diamond, 3 triangle, 4 moon,
+    /// 5 square, 6 cross, 7 skull.
+    pub marker: u8,
+    pub x: f32,
+    pub y: f32,
+    pub placed_ms: i64,
+    /// `None` = still up at the window's end.
+    pub removed_ms: Option<i64>,
+}
+
 pub struct ReplaySeries {
     pub start_ms: i64,
     pub end_ms: i64,
@@ -247,6 +261,9 @@ pub struct ReplaySeries {
     /// `ENVIRONMENTAL_DAMAGE` on players (falling, lava, fire, ...),
     /// ascending by `t_ms`. `source_unit` is `NO_UNIT`. Purple burst.
     pub env_hits: Vec<PeriodicHit>,
+    /// Raid world markers (the ground flares) live in the encounter's
+    /// zone -- one entry per placement interval, ascending by `placed_ms`.
+    pub world_markers: Vec<WorldMarker>,
     /// Tight `[min_x, max_x, min_y, max_y]` over **every** unit's fixes --
     /// what the scene frames on. `None` if nothing carried a position.
     pub fit_box: Option<[f32; 4]>,
@@ -314,6 +331,7 @@ pub fn series(
         hostile_periodic_hits: Vec::new(),
         periodic_heals: Vec::new(),
         env_hits: Vec::new(),
+        world_markers: Vec::new(),
         fit_box: None,
         map_box: None,
     };
@@ -325,17 +343,91 @@ pub fn series(
 
     // The MAP_CHANGE in effect at the window: nearest one at/before `hi`
     // (normally in the trash span just before the pull). Same as
-    // `movement::series`.
+    // `movement::series`. Its row also bounds the world-marker scan --
+    // markers don't survive a zone change.
+    let mut zone_start_row = 0usize;
     for row in (0..hi).rev() {
         if !matches!(events.kind[row], LineKind::Standalone(StandaloneKind::MapChange)) {
             continue;
         }
+        zone_start_row = row;
         let raw = events.raw_fields(row);
         let f = |i: usize| raw.get(i).and_then(|s| s.resolve_str(mmap).parse::<f32>().ok());
         if let (Some(x0), Some(x1), Some(y0), Some(y1)) = (f(3), f(4), f(5), f(6)) {
             out.map_box = Some([x0, x1, y0, y1]);
         }
         break;
+    }
+
+    // Raid world markers. `WORLD_MARKER_PLACED,<instanceID>,<slot>,<x>,<y>`
+    // / `WORLD_MARKER_REMOVED,<slot>` -- scoped to the current zone, so
+    // scan from `zone_start_row` (any marker before it belonged to the
+    // last zone). A re-place of a live slot is a move: close + reopen.
+    // `open[slot]` = `(placed_ms, x, y)`.
+    {
+        let mut open: [Option<(i64, f32, f32)>; 8] = [None; 8];
+        let close = |markers: &mut Vec<WorldMarker>, slot: usize, at: Option<i64>, o: (i64, f32, f32)| {
+            markers.push(WorldMarker {
+                marker: slot as u8,
+                x: o.1,
+                y: o.2,
+                placed_ms: o.0,
+                removed_ms: at,
+            });
+        };
+        for row in zone_start_row..hi {
+            let ts = events.timestamp_ms[row];
+            match events.kind[row] {
+                LineKind::Standalone(StandaloneKind::WorldMarkerPlaced) => {
+                    let raw = events.raw_fields(row);
+                    let g = |i: usize| raw.get(i).map(|s| s.resolve_str(mmap));
+                    let (Some(ms), Some(xs), Some(ys)) = (g(2), g(3), g(4)) else { continue };
+                    let (Ok(slot), Ok(x), Ok(y)) =
+                        (ms.parse::<usize>(), xs.parse::<f32>(), ys.parse::<f32>())
+                    else {
+                        continue;
+                    };
+                    if slot >= 8 {
+                        continue;
+                    }
+                    if let Some(o) = open[slot].take() {
+                        close(&mut out.world_markers, slot, Some(ts), o);
+                    }
+                    open[slot] = Some((ts, x, y));
+                }
+                LineKind::Standalone(StandaloneKind::WorldMarkerRemoved) => {
+                    let raw = events.raw_fields(row);
+                    let Some(Ok(slot)) = raw.get(1).map(|s| s.resolve_str(mmap).parse::<usize>())
+                    else {
+                        continue;
+                    };
+                    if slot < 8 {
+                        if let Some(o) = open[slot].take() {
+                            close(&mut out.world_markers, slot, Some(ts), o);
+                        }
+                    }
+                }
+                LineKind::Standalone(StandaloneKind::MapChange | StandaloneKind::ZoneChange)
+                    if row != zone_start_row =>
+                {
+                    for slot in 0..8 {
+                        if let Some(o) = open[slot].take() {
+                            close(&mut out.world_markers, slot, Some(ts), o);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for slot in 0..8 {
+            if let Some(o) = open[slot].take() {
+                close(&mut out.world_markers, slot, None, o);
+            }
+        }
+        // Keep only intervals that overlap the window.
+        out.world_markers
+            .retain(|m| m.placed_ms <= end_ms && m.removed_ms.map_or(true, |r| r >= start_ms));
+        out.world_markers.sort_by_key(|m| m.placed_ms);
     }
 
     let mut accs: FxHashMap<u32, Acc> = FxHashMap::default();
@@ -884,6 +976,29 @@ mod tests {
         assert_eq!(s.hostile_periodic_hits[0].target_unit, store.dest_unit[2]);
 
         assert!(s.cast_lines.is_empty(), "DoT ticks never draw a line");
+    }
+
+    #[test]
+    fn world_markers_track_place_move_and_remove() {
+        let (tables, store, mmap) = store_from(&[
+            r#"9/3/2026 19:23:00.000-6  MAP_CHANGE,2607,"Zone",100.0,-100.0,100.0,-100.0"#.to_string(),
+            "9/3/2026 19:23:01.000-6  WORLD_MARKER_PLACED,3004,7,10.0,20.0".to_string(), // skull, stays up
+            "9/3/2026 19:23:02.000-6  WORLD_MARKER_PLACED,3004,6,5.0,5.0".to_string(),   // cross
+            "9/3/2026 19:23:05.000-6  WORLD_MARKER_PLACED,3004,6,8.0,9.0".to_string(),   // cross moved
+            "9/3/2026 19:23:07.000-6  WORLD_MARKER_REMOVED,6".to_string(),               // cross gone
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[1] - 1, store.timestamp_ms[4] + 1);
+
+        let skull: Vec<_> = s.world_markers.iter().filter(|m| m.marker == 7).collect();
+        assert_eq!(skull.len(), 1, "one open interval");
+        assert_eq!((skull[0].x, skull[0].y), (10.0, 20.0));
+        assert_eq!(skull[0].removed_ms, None, "still up at window end");
+
+        let cross: Vec<_> = s.world_markers.iter().filter(|m| m.marker == 6).collect();
+        assert_eq!(cross.len(), 2, "placed, moved (closes), re-placed then removed");
+        assert_eq!(cross[0].removed_ms, Some(store.timestamp_ms[3]), "closed at the move");
+        assert_eq!((cross[1].x, cross[1].y), (8.0, 9.0));
+        assert_eq!(cross[1].removed_ms, Some(store.timestamp_ms[4]));
     }
 
     #[test]

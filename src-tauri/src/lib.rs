@@ -1745,6 +1745,18 @@ struct ReplayPeriodicHitRow {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ReplayWorldMarkerRow {
+    /// Log slot 0-7 (0 star .. 7 skull).
+    marker: u8,
+    x: f32,
+    y: f32,
+    placed_ms: i64,
+    /// `null` = still up at the window's end.
+    removed_ms: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ReplaySeriesRow {
     start_ms: i64,
     end_ms: i64,
@@ -1759,6 +1771,8 @@ struct ReplaySeriesRow {
     periodic_heals: Vec<ReplayPeriodicHitRow>,
     /// Environmental damage on players, ascending by `t_ms`.
     env_hits: Vec<ReplayPeriodicHitRow>,
+    /// Raid world markers active in the window, ascending by `placed_ms`.
+    world_markers: Vec<ReplayWorldMarkerRow>,
     /// Tight `[minX, maxX, minY, maxY]` over every unit's fixes -- the
     /// scene's framing box. `null` if nothing carried a position.
     fit_box: Option<[f32; 4]>,
@@ -1835,6 +1849,17 @@ fn replay_series(
                 source_unit: h.source_unit,
                 target_unit: h.target_unit,
                 t_ms: h.t_ms,
+            })
+            .collect(),
+        world_markers: s
+            .world_markers
+            .into_iter()
+            .map(|m| ReplayWorldMarkerRow {
+                marker: m.marker,
+                x: m.x,
+                y: m.y,
+                placed_ms: m.placed_ms,
+                removed_ms: m.removed_ms,
             })
             .collect(),
         units: s

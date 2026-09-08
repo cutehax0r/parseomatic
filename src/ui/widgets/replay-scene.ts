@@ -22,6 +22,7 @@ import type {
   ReplayFaceHint,
   ReplayPeriodicHit,
   ReplaySample,
+  ReplayWorldMarker,
 } from "../../types";
 
 export type ReplayTeam = "player" | "enemy" | "other";
@@ -53,6 +54,7 @@ export interface ReplaySceneProps {
   hostilePeriodicHits: ReplayPeriodicHit[];
   periodicHeals: ReplayPeriodicHit[];
   envHits: ReplayPeriodicHit[];
+  worldMarkers: ReplayWorldMarker[];
   fitBox: [number, number, number, number] | null;
   startMs: number;
   endMs: number;
@@ -278,6 +280,30 @@ const DOT_OUT = 3; // fan-out point distance, x the caster's world size
 const DOT_OUT_JITTER = 0.45; // +/- fraction on that distance, per particle
 const DOT_EASE = 2.3; // time^EASE -> bezier param (higher = longer near the caster)
 const DOT_DESYNC = 0.3; // per-particle timing spread so they don't move in lockstep
+
+// ---- Raid world markers (the ground flares) --------------------------
+// A faint tall column at the marker's spot with a minimal extruded icon
+// on top. Both fade in/out over MARKER_FADE_MS on place / remove. Sized
+// off a nominal player unit (views/replay.ts PLAYER_SIZE).
+const MARKER_UNIT = 1.6;
+const MARKER_COL_H = MARKER_UNIT * 5; // column height
+const MARKER_COL_R = MARKER_UNIT; // column radius -> ~2x a player wide
+const MARKER_COL_OPACITY = 0.25;
+const MARKER_ICON = MARKER_UNIT; // icon width / height
+const MARKER_ICON_DEPTH = MARKER_UNIT * 0.25; // extrusion depth
+const MARKER_ICON_OPACITY = 0.75;
+const MARKER_FADE_MS = 500;
+// Log slot 0-7 -> [css colour, shape id].
+const MARKER_DEFS: ReadonlyArray<readonly [string, string]> = [
+  ["var(--ctp-yellow)", "star"], // 0
+  ["var(--ctp-peach)", "circle"], // 1  orange
+  ["var(--ctp-mauve)", "diamond"], // 2  purple
+  ["var(--ctp-green)", "triangle"], // 3
+  ["var(--ctp-subtext0)", "moon"], // 4  grey
+  ["var(--ctp-blue)", "square"], // 5
+  ["var(--ctp-red)", "cross"], // 6
+  ["var(--ctp-text)", "skull"], // 7  white
+];
 
 // Deterministic [0,1) from three ints -- a per-line arc height / spread
 // that stays put across frames.
@@ -617,6 +643,19 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private partAlpha!: Float32Array; // PART_POOL
   private partSize!: Float32Array; // PART_POOL -- per-particle size multiplier
 
+  // ---- raid world markers ----
+  private markerGroup = new THREE.Group();
+  private worldMarkers: ReplayWorldMarker[] = [];
+  private markerColGeo!: THREE.CylinderGeometry; // shared column tube
+  private markerGeos = new Map<string, THREE.ExtrudeGeometry>(); // shape id -> icon geom
+  private markerRigs: {
+    group: THREE.Group;
+    icon: THREE.Mesh;
+    colMat: THREE.MeshBasicMaterial;
+    iconMat: THREE.MeshBasicMaterial;
+    wm: ReplayWorldMarker;
+  }[] = [];
+
   constructor(props: ReplaySceneProps) {
     this.element = document.createElement("div");
     this.element.className = "replay-scene";
@@ -654,6 +693,15 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.buildCastPool();
     this.scene.add(this.partGroup);
     this.buildParticlePool();
+    this.scene.add(this.markerGroup);
+    this.markerColGeo = new THREE.CylinderGeometry(
+      MARKER_COL_R,
+      MARKER_COL_R,
+      MARKER_COL_H,
+      20,
+      1,
+      true, // open-ended tube -> reads as a light column
+    );
 
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 20000);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -930,9 +978,11 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.hostilePeriodicHits = props.hostilePeriodicHits ?? [];
     this.periodicHeals = props.periodicHeals ?? [];
     this.envHits = props.envHits ?? [];
+    this.worldMarkers = props.worldMarkers ?? [];
     this.setPlaying(false);
     this.reframe();
     this.rebuildUnits(props); // creates meshes, then applyTime(playhead)
+    this.rebuildMarkers();
     this.syncTransport();
     this.resize();
   }
@@ -1031,7 +1081,99 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     dimOverlapping(placed);
     this.updateCastLines(t);
     this.updateParticles(t);
+    this.updateMarkers(t);
     this.renderOnce();
+  }
+
+  // Dispose the old marker rigs and build one per placement interval: a
+  // faint tall column at its spot with a minimal extruded icon on top.
+  // `updateMarkers` then fades / billboards them per frame.
+  private rebuildMarkers(): void {
+    for (const child of [...this.markerGroup.children]) {
+      this.markerGroup.remove(child);
+      child.traverse((o) => {
+        const mat = (o as THREE.Mesh).material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) (mat as THREE.Material).dispose();
+      });
+    }
+    this.markerRigs = [];
+    const { cx, cy } = this.framing;
+
+    for (const wm of this.worldMarkers) {
+      const def = MARKER_DEFS[wm.marker];
+      if (!def) continue;
+      const col = cssColor(def[0]);
+
+      const colMat = new THREE.MeshBasicMaterial({
+        color: col,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const colMesh = new THREE.Mesh(this.markerColGeo, colMat);
+      colMesh.position.y = FLOOR_LIFT + MARKER_COL_H / 2;
+
+      const iconMat = new THREE.MeshBasicMaterial({
+        color: col,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const iconMesh = new THREE.Mesh(this.markerGeoFor(def[1]), iconMat);
+      iconMesh.position.y = FLOOR_LIFT + MARKER_COL_H;
+
+      const g = new THREE.Group();
+      g.position.set(wm.x - cx, 0, wm.y - cy);
+      g.visible = false;
+      g.add(colMesh, iconMesh);
+      this.markerGroup.add(g);
+      this.markerRigs.push({ group: g, icon: iconMesh, colMat, iconMat, wm });
+    }
+  }
+
+  // Cached extruded icon geometry for a shape id, in a MARKER_ICON box,
+  // MARKER_ICON_DEPTH deep, centred on Z.
+  private markerGeoFor(id: string): THREE.ExtrudeGeometry {
+    let g = this.markerGeos.get(id);
+    if (!g) {
+      g = new THREE.ExtrudeGeometry(markerShape(id), {
+        depth: 1,
+        bevelEnabled: false,
+        curveSegments: 24,
+      });
+      g.translate(0, 0, -0.5);
+      g.scale(MARKER_ICON, MARKER_ICON, MARKER_ICON_DEPTH);
+      this.markerGeos.set(id, g);
+    }
+    return g;
+  }
+
+  // Fade each marker in over MARKER_FADE_MS from its place time and out
+  // over the same after its remove time; billboard the icon to the camera.
+  private updateMarkers(t: number): void {
+    const cam = this.camera.position;
+    for (const r of this.markerRigs) {
+      const { placedMs, removedMs } = r.wm;
+      let a: number;
+      if (t < placedMs) a = 0;
+      else if (removedMs != null && t > removedMs + MARKER_FADE_MS) a = 0;
+      else {
+        const fin = clamp01((t - placedMs) / MARKER_FADE_MS);
+        const fout = removedMs == null ? 1 : 1 - clamp01((t - removedMs) / MARKER_FADE_MS);
+        a = Math.min(fin, fout);
+      }
+      if (a <= 0.001) {
+        r.group.visible = false;
+        continue;
+      }
+      r.group.visible = true;
+      r.colMat.opacity = a * MARKER_COL_OPACITY;
+      r.iconMat.opacity = a * MARKER_ICON_OPACITY;
+      r.icon.rotation.y = Math.atan2(cam.x - r.group.position.x, cam.z - r.group.position.z);
+    }
   }
 
   private buildCastPool(): void {
@@ -1504,10 +1646,13 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       hostilePeriodicHits: [],
       periodicHeals: [],
       envHits: [],
+      worldMarkers: [],
       fitBox: null,
       startMs: 0,
       endMs: 0,
     });
+    this.worldMarkers = [];
+    this.rebuildMarkers();
     this.scene.traverse((o: THREE.Object3D) => {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
@@ -1515,6 +1660,8 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
       else if (mat) (mat as THREE.Material).dispose();
     });
+    this.markerColGeo?.dispose();
+    this.markerGeos.forEach((g) => g.dispose());
     const bg = this.scene.background;
     if (bg && (bg as THREE.Texture).isTexture) (bg as THREE.Texture).dispose();
     this.mistTex?.dispose();
@@ -1628,6 +1775,107 @@ function sphereMesh(col: THREE.Color, size: number): THREE.Mesh {
     emissive: col.clone().multiplyScalar(0.15),
   });
   return new THREE.Mesh(new THREE.SphereGeometry(size / 2, 24, 16), mat);
+}
+
+// One rectangular bar of half-length `len`, thickness `w`, rotated
+// `angle` -- the pieces of the "cross" (X) marker.
+function markerBar(len: number, w: number, angle: number): THREE.Shape {
+  const ca = Math.cos(angle);
+  const sa = Math.sin(angle);
+  const s = new THREE.Shape();
+  const pts: [number, number][] = [
+    [-len / 2, -w / 2],
+    [len / 2, -w / 2],
+    [len / 2, w / 2],
+    [-len / 2, w / 2],
+  ];
+  pts.forEach(([x, y], i) => {
+    const rx = x * ca - y * sa;
+    const ry = x * sa + y * ca;
+    if (i === 0) s.moveTo(rx, ry);
+    else s.lineTo(rx, ry);
+  });
+  s.closePath();
+  return s;
+}
+
+// A minimal marker icon outline in a unit box ([-0.5, 0.5]). Extruded and
+// scaled to size by `markerGeoFor`.
+function markerShape(id: string): THREE.Shape | THREE.Shape[] {
+  const s = new THREE.Shape();
+  switch (id) {
+    case "square":
+      s.moveTo(-0.5, -0.5);
+      s.lineTo(0.5, -0.5);
+      s.lineTo(0.5, 0.5);
+      s.lineTo(-0.5, 0.5);
+      s.closePath();
+      return s;
+    case "diamond":
+      s.moveTo(0, 0.5);
+      s.lineTo(0.5, 0);
+      s.lineTo(0, -0.5);
+      s.lineTo(-0.5, 0);
+      s.closePath();
+      return s;
+    case "triangle": // equilateral-ish, apex DOWN
+      s.moveTo(-0.5, 0.4);
+      s.lineTo(0.5, 0.4);
+      s.lineTo(0, -0.5);
+      s.closePath();
+      return s;
+    case "circle":
+      s.absarc(0, 0, 0.5, 0, Math.PI * 2, false);
+      return s;
+    case "moon": {
+      s.absarc(0, 0, 0.5, 0, Math.PI * 2, false);
+      const bite = new THREE.Path();
+      bite.absarc(0.28, 0.06, 0.44, 0, Math.PI * 2, true);
+      s.holes.push(bite);
+      return s;
+    }
+    case "star": {
+      const R = 0.5;
+      const r = 0.21;
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + (i * Math.PI) / 5;
+        const rad = i % 2 === 0 ? R : r;
+        const x = Math.cos(a) * rad;
+        const y = Math.sin(a) * rad;
+        if (i === 0) s.moveTo(x, y);
+        else s.lineTo(x, y);
+      }
+      s.closePath();
+      return s;
+    }
+    case "cross": // a saltire: two crossed bars
+      return [markerBar(0.95, 0.26, Math.PI / 4), markerBar(0.95, 0.26, -Math.PI / 4)];
+    case "skull": {
+      s.moveTo(-0.4, 0.05);
+      s.absarc(0, 0.05, 0.4, Math.PI, 0, true); // dome over the top
+      s.lineTo(0.32, -0.16);
+      s.lineTo(0.2, -0.42);
+      s.lineTo(0.1, -0.5);
+      s.lineTo(-0.1, -0.5);
+      s.lineTo(-0.2, -0.42);
+      s.lineTo(-0.32, -0.16);
+      s.closePath();
+      const eyeL = new THREE.Path();
+      eyeL.absarc(-0.17, 0.03, 0.12, 0, Math.PI * 2, true);
+      const eyeR = new THREE.Path();
+      eyeR.absarc(0.17, 0.03, 0.12, 0, Math.PI * 2, true);
+      const nose = new THREE.Path();
+      nose.moveTo(0, -0.08);
+      nose.lineTo(0.07, -0.24);
+      nose.lineTo(-0.07, -0.24);
+      nose.closePath();
+      s.holes.push(eyeL, eyeR, nose);
+      return s;
+    }
+    default:
+      s.absarc(0, 0, 0.5, 0, Math.PI * 2, false);
+      return s;
+  }
 }
 
 registerWidget<ReplaySceneProps>("replay-scene", (props) => new ReplaySceneWidget(props));

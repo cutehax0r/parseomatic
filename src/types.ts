@@ -266,6 +266,17 @@ export interface ReplayPeriodicHit {
   tMs: number;
 }
 
+// One placement interval of a raid world marker (the ground flare). A
+// re-place of the same slot is a move: the old interval closes and a new
+// one opens. `marker` is the log slot 0-7 (0 star .. 7 skull).
+export interface ReplayWorldMarker {
+  marker: number;
+  x: number;
+  y: number;
+  placedMs: number;
+  removedMs: number | null; // null = still up at the window's end
+}
+
 export interface ReplaySeries {
   startMs: number;
   endMs: number;
@@ -275,6 +286,7 @@ export interface ReplaySeries {
   hostilePeriodicHits: ReplayPeriodicHit[]; // creature DoT ticks on players, ascending by tMs
   periodicHeals: ReplayPeriodicHit[]; // player HoT ticks on players, ascending by tMs
   envHits: ReplayPeriodicHit[]; // environmental damage on players (sourceUnit unused), ascending by tMs
+  worldMarkers: ReplayWorldMarker[]; // raid ground markers active in the window, ascending by placedMs
   // Tight [minX, maxX, minY, maxY] over every unit's fixes -- the scene's
   // framing box. null if nothing carried a position.
   fitBox: [number, number, number, number] | null;
