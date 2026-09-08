@@ -82,6 +82,22 @@ const STACK_DIST = 0.85;
 const PLAYER_STEP = 0.1;
 const ADD_STEP = 0.25;
 
+// Background scenery: a scatter of tall, skinny triangular pyramids
+// standing in a wide ring beyond the play area, rooted well below the
+// deck so they rise out of the void / mist. Pure dressing -- no shadows,
+// no animation, one shared geometry + material. Each pyramid's angle,
+// ring distance (as a fraction of the framed span), height, base radius
+// and spin are a fixed `hash01` draw so they never jitter between
+// reframes; `layoutDeco` turns those into world transforms per span.
+const DECO_COUNT = 100;
+const DECO_RING_MIN = 1.15; // inner edge of the scatter band, x span (past the default camera)
+const DECO_RING_SPAN = 1.75; // band width, x span
+const DECO_H_MIN = 17.5; // shortest pyramid, yards
+const DECO_H_SPAN = 89.75; // random height added on top
+const DECO_R_MIN = 12; // smallest base radius, yards
+const DECO_R_SPAN = 48; // random width added on top
+const DECO_ROOT_Y = FLOOR_LIFT - 30; // base sits this far down -- hidden in the mist
+
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 const smoothstep = (k: number): number => k * k * (3 - 2 * k);
 const lerp = (a: number, b: number, k: number): number => a + (b - a) * k;
@@ -551,6 +567,8 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private gridTexSide?: THREE.Texture;
   private mist = new THREE.Group();
   private mistTex?: THREE.Texture;
+  private deco = new THREE.Group(); // background pyramid spires out in the void
+  private decoSpec: { ang: number; distF: number; h: number; r: number; rot: number }[] = [];
   private unitsGroup = new THREE.Group();
 
   private framing: Framing = { cx: 0, cy: 0, span: MIN_SPAN };
@@ -797,6 +815,54 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       m.renderOrder = 2;
       this.mist.add(m);
     }
+
+    this.buildDeco();
+    this.scene.add(this.deco);
+  }
+
+  // 50 tall triangular-pyramid spires standing in the void well outside
+  // the play column. One shared unit `ConeGeometry(_, _, 3)` + one matte
+  // dark material; each mesh is sized by its per-pyramid scale and drops
+  // its base below the deck so it climbs out of the mist. Positions are
+  // span-relative and get baked in `layoutDeco` (called from `reframe`).
+  private buildDeco(): void {
+    const geom = new THREE.ConeGeometry(1, 1, 3);
+    const base = cssColor("var(--ctp-surface0)");
+    const mat = new THREE.MeshStandardMaterial({
+      color: base,
+      roughness: 1,
+      metalness: 0,
+      emissive: base.clone().multiplyScalar(0.1),
+      flatShading: true,
+    });
+    const TAU = Math.PI * 2;
+    for (let i = 0; i < DECO_COUNT; i++) {
+      this.decoSpec.push({
+        ang: hash01(i, 1, 7) * TAU,
+        distF: DECO_RING_MIN + hash01(i, 2, 7) * DECO_RING_SPAN,
+        h: DECO_H_MIN + hash01(i, 3, 7) * DECO_H_SPAN,
+        r: DECO_R_MIN + hash01(i, 4, 7) * DECO_R_SPAN,
+        rot: hash01(i, 5, 7) * TAU,
+      });
+      const m = new THREE.Mesh(geom, mat);
+      m.castShadow = false;
+      m.receiveShadow = false;
+      this.deco.add(m);
+    }
+  }
+
+  // Place / size the background spires for the current framed span --
+  // scattered around a wide ring beyond the square, rooted in the void.
+  private layoutDeco(): void {
+    const { span } = this.framing;
+    this.deco.children.forEach((child, i) => {
+      const s = this.decoSpec[i];
+      if (!s) return;
+      const dist = span * s.distF;
+      child.scale.set(s.r, s.h, s.r);
+      child.position.set(Math.cos(s.ang) * dist, DECO_ROOT_Y + s.h / 2, Math.sin(s.ang) * dist);
+      child.rotation.y = s.rot;
+    });
   }
 
   private reframe(): void {
@@ -813,6 +879,8 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       const r = (MIST_LAYERS[i]?.[1] ?? 3) * span;
       m.scale.set(r, r, 1);
     });
+
+    this.layoutDeco();
 
     // Sun + its shadow frustum scale with the play area.
     this.sun.position.set(span * 0.55, span * 0.9, span * 0.35);
