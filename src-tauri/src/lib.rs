@@ -1717,6 +1717,14 @@ struct ReplayFaceRow {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ReplayHpSampleRow {
+    t_ms: i64,
+    cur: i64,
+    max: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ReplayUnitRow {
     unit_id: u32,
     guid: String,
@@ -1728,6 +1736,8 @@ struct ReplayUnitRow {
     /// unknown. A skull / `??` boss logs `maxPlayerLevel + 3`.
     level: i32,
     samples: Vec<ReplaySampleRow>,
+    /// `(t, current, max)` HP readings, time-ordered.
+    hp_samples: Vec<ReplayHpSampleRow>,
     death_spans: Vec<ReplayDeathSpanRow>,
     cast_spans: Vec<ReplayCastSpanRow>,
     face_events: Vec<ReplayFaceRow>,
@@ -1892,6 +1902,11 @@ fn replay_series(
                     .samples
                     .into_iter()
                     .map(|p| ReplaySampleRow { t_ms: p.t_ms, x: p.x, y: p.y })
+                    .collect(),
+                hp_samples: u
+                    .hp_samples
+                    .into_iter()
+                    .map(|h| ReplayHpSampleRow { t_ms: h.t_ms, cur: h.cur, max: h.max })
                     .collect(),
                 death_spans: u
                     .death_spans

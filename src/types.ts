@@ -229,6 +229,13 @@ export interface ReplayFaceHint {
   y: number;
 }
 
+// One (current, max) HP reading off an advanced block describing the unit.
+export interface ReplayHpSample {
+  tMs: number;
+  cur: number;
+  max: number;
+}
+
 export interface ReplayUnit {
   unitId: number; // dense intern id -- resolve against `units` / `combatants`
   guid: string; // raw GUID -- disambiguates same-named adds
@@ -236,6 +243,7 @@ export interface ReplayUnit {
   maxHp: number; // largest advanced-block maxHP seen; 0 if unknown
   level: number; // self-reported level (advanced-block last field); 0 if unknown. Skull/?? boss = maxPlayerLevel + 3
   samples: ReplaySample[];
+  hpSamples: ReplayHpSample[]; // time-ordered (t, current, max) HP readings
   deathSpans: ReplayDeathSpan[];
   castSpans: ReplayCastSpan[];
   faceEvents: ReplayFaceHint[];

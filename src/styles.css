@@ -2897,6 +2897,46 @@ body {
   padding: 2px 2px 10px;
 }
 
+/* Selection status bar -- overlays the bottom of the render view. */
+.replay-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 8px 16px;
+  background: rgb(24 24 37 / 50%);
+  border-top: 1px solid rgb(255 255 255 / 8%);
+  color: var(--text);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.replay-status[hidden] {
+  display: none;
+}
+
+/* player-card block: role glyph + ilvl, then name over spec */
+.rs-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+
+/* HP readout, styled like the players-table damage bar */
+.rs-hp {
+  flex: 1;
+  max-width: 360px;
+}
+
+.rs-hp-fill {
+  background-color: var(--ctp-green);
+}
+
 .rt-btn {
   display: inline-flex;
   align-items: center;

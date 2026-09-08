@@ -26,6 +26,7 @@ import {
   formatDifficulty,
   formatDuration,
   formatEncounterResult,
+  formatSpec,
   roleRank,
 } from "../format";
 
@@ -249,6 +250,7 @@ function mergeBossGuids(
     // Key the merged unit on the spawn with the most position fixes.
     const rep = group.reduce((a, b) => (b.samples.length > a.samples.length ? b : a));
     const samples = group.flatMap((u) => u.samples).sort((a, b) => a.tMs - b.tMs);
+    const hpSamples = group.flatMap((u) => u.hpSamples).sort((a, b) => a.tMs - b.tMs);
     const castSpans = group.flatMap((u) => u.castSpans).sort((a, b) => a.startMs - b.startMs);
     const faceEvents = group.flatMap((u) => u.faceEvents).sort((a, b) => a.tMs - b.tMs);
     // A stage-transition `UNIT_DIED` leaves an open (endMs null) death
@@ -265,6 +267,7 @@ function mergeBossGuids(
       ...rep,
       maxHp: groupMaxHp,
       samples,
+      hpSamples,
       deathSpans,
       castSpans,
       faceEvents,
@@ -338,7 +341,11 @@ async function paint(): Promise<void> {
 
   const units = ctx.units;
   const specByUnit = new Map<number, number>();
-  for (const c of ctx.combatants) specByUnit.set(c.unitId, c.specId);
+  const ilvlByUnit = new Map<number, number>();
+  for (const c of ctx.combatants) {
+    specByUnit.set(c.unitId, c.specId);
+    if (c.avgItemLevel != null) ilvlByUnit.set(c.unitId, Math.round(c.avgItemLevel));
+  }
 
   // Player pets / guardians / totems are `Creature`/`Vehicle` kind but
   // owned by a player -- drop them (v1 shows raiders + real enemies only;
@@ -416,16 +423,24 @@ async function paint(): Promise<void> {
     // else are cubes.
     const shape: ReplayShape = team === "enemy" ? "sphere" : "cube";
 
+    const specId = u.kind === "Player" ? (specByUnit.get(u.unitId) ?? 0) : 0;
+
     return {
       unitId: u.unitId,
       guid: u.guid,
+      name: units[u.unitId]?.name || u.guid,
       kind: u.kind,
       color,
       team,
       shape,
       size,
       stackRank,
+      roleRank: roleRank(specId),
+      spec: formatSpec(specId),
+      itemLevel: ilvlByUnit.get(u.unitId) ?? null,
+      maxHp: u.maxHp,
       samples: u.samples,
+      hpSamples: u.hpSamples,
       deathSpans: u.deathSpans,
       castSpans: u.castSpans,
       faceEvents: u.faceEvents,

@@ -13,13 +13,17 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
+import { getSelectedPlayer, subscribeSelectedPlayer } from "../context";
 import { registerWidget } from "../registry";
 import type { Widget } from "../spec";
+import { formatCompact } from "../../format";
+import { roleIcon, roleIconClass } from "./role-icon";
 import type {
   ReplayCastLine,
   ReplayCastSpan,
   ReplayDeathSpan,
   ReplayFaceHint,
+  ReplayHpSample,
   ReplayPeriodicHit,
   ReplaySample,
   ReplayWorldMarker,
@@ -33,6 +37,7 @@ export type ReplayShape = "cube" | "sphere";
 export interface ReplaySceneUnitInput {
   unitId: number;
   guid: string; // stack tiebreak when players overlap
+  name: string; // character / creature name -- shown in the selection status bar
   kind: string;
   color: string; // "var(--token)" or a literal CSS colour
   team: ReplayTeam;
@@ -41,7 +46,13 @@ export interface ReplaySceneUnitInput {
   // Vertical stack order for overlapping player cubes (lower = bottom):
   // tank 0, melee 1, ranged 2, healer 3, unknown 4. Unused for enemies.
   stackRank: number;
+  // Selection status bar bits (players; 4 / "" / null for creatures).
+  roleRank: number;
+  spec: string; // "Frost Mage" etc.
+  itemLevel: number | null;
+  maxHp: number; // largest advanced-block maxHP; 0 if unknown
   samples: ReplaySample[];
+  hpSamples: ReplayHpSample[];
   deathSpans: ReplayDeathSpan[];
   castSpans: ReplayCastSpan[];
   faceEvents: ReplayFaceHint[];
@@ -299,16 +310,25 @@ const MARKER_LIGHT_MAX = 8;
 const MARKER_LIGHT_INTENSITY = 70;
 const MARKER_LIGHT_ANGLE = Math.PI / 7; // ~26deg cone
 const MARKER_LIGHT_PENUMBRA = 0.85; // very soft pool edge
-// Log slot 0-7 -> [css colour, shape id].
+
+// ---- click-to-select ring -------------------------------------------
+const SEL_RING_THICKNESS = 0.14; // world yards -- constant, not scaled by unit size
+const SEL_RING_GAP = 0.4; // gap between the unit's footprint and the band's inner edge
+const SEL_RING_SCALE = 1.1; // nudge the whole ring ~10% wider
+const SEL_RING_OPACITY = 0.9;
+const SEL_FILL_OPACITY = 0.3; // tint inside the band
+// Log slot 0-7 -> [colour, shape id]. The log is 0-indexed, so slot N is
+// the in-game raid marker N+1: 1 star, 2 circle, 3 diamond, 4 triangle,
+// 5 moon, 6 square, 7 cross, 8 skull.
 const MARKER_DEFS: ReadonlyArray<readonly [string, string]> = [
-  ["var(--ctp-yellow)", "star"], // 0
-  ["var(--ctp-peach)", "circle"], // 1  orange
-  ["var(--ctp-mauve)", "diamond"], // 2  purple
-  ["var(--ctp-green)", "triangle"], // 3
-  ["var(--ctp-subtext0)", "moon"], // 4  grey
-  ["var(--ctp-blue)", "square"], // 5
-  ["var(--ctp-red)", "cross"], // 6
-  ["var(--ctp-text)", "skull"], // 7  white
+  ["var(--ctp-yellow)", "star"], // 1  star / yellow
+  ["#f0872a", "circle"], // 2  circle / orange
+  ["var(--ctp-mauve)", "diamond"], // 3  diamond / purple
+  ["var(--ctp-green)", "triangle"], // 4  triangle / green
+  ["#c8cdd8", "moon"], // 5  moon / silver
+  ["var(--ctp-blue)", "square"], // 6  square / blue
+  ["var(--ctp-red)", "cross"], // 7  cross (X) / red
+  ["#eef1f7", "skull"], // 8  skull / white
 ];
 
 // Deterministic [0,1) from three ints -- a per-line arc height / spread
@@ -608,6 +628,12 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
   // ---- playback ----
   private stage!: HTMLElement; // holds the <canvas>; the bordered box
+  private statusEl!: HTMLElement; // translucent bar over the bottom of the stage
+  private statusHasHp = false; // whether the current card includes an HP bar
+  private statusHpCur!: HTMLElement; // bold current-HP figure
+  private statusHpMax!: HTMLElement; // small max-HP figure
+  private statusHpPct!: HTMLElement; // right-edge "NN%"
+  private statusHpFill!: HTMLElement; // the bar segment
   private playBtn!: HTMLButtonElement;
   private slider!: HTMLInputElement;
   private timeEl!: HTMLElement;
@@ -664,6 +690,16 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     wm: ReplayWorldMarker;
   }[] = [];
 
+  // ---- click-to-select ----
+  private raycaster = new THREE.Raycaster();
+  private selRing!: THREE.Mesh; // blue band on the deck under the selected unit
+  private selFill!: THREE.Mesh; // faint tint inside the band
+  private selRingOuter = 0; // cached outer radius -> only rebuild the band when it changes
+  private selectedUnitId: number | null = null;
+  // pointerdown spot, so an orbit / pan drag doesn't register as a click.
+  private pointerDown: { x: number; y: number; t: number } | null = null;
+  private offPlayer: (() => void) | null = null; // toolbar player-picker subscription
+
   constructor(props: ReplaySceneProps) {
     this.element = document.createElement("div");
     this.element.className = "replay-scene";
@@ -672,6 +708,14 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.stage = document.createElement("div");
     this.stage.className = "replay-scene__stage";
     this.element.appendChild(this.stage);
+
+    // Selection status bar -- overlays the bottom of the stage, shown only
+    // while a unit is selected. Just the name for now; health / target /
+    // cast bar and a minimal-vs-advanced toggle come later.
+    this.statusEl = document.createElement("div");
+    this.statusEl.className = "replay-status";
+    this.statusEl.hidden = true;
+    this.stage.appendChild(this.statusEl);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -718,6 +762,49 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       this.scene.add(l, l.target);
       this.markerLights.push(l);
     }
+
+    // Blue selection ring + a faint fill, flat on the deck under the
+    // picked unit. The band keeps a constant world thickness; only its
+    // radius tracks the unit's size (rebuilt in `updateSelection`).
+    const selBlue = cssColor("var(--ctp-blue)");
+    this.selRing = new THREE.Mesh(
+      new THREE.RingGeometry(1, 1 + SEL_RING_THICKNESS, 64),
+      new THREE.MeshBasicMaterial({
+        color: selBlue,
+        transparent: true,
+        opacity: SEL_RING_OPACITY,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    this.selRing.rotation.x = -Math.PI / 2;
+    this.selRing.visible = false;
+    this.selRingOuter = 1 + SEL_RING_THICKNESS;
+    this.scene.add(this.selRing);
+
+    this.selFill = new THREE.Mesh(
+      new THREE.CircleGeometry(1, 64), // unit disc -> scaled to the band's inner radius
+      new THREE.MeshBasicMaterial({
+        color: selBlue,
+        transparent: true,
+        opacity: SEL_FILL_OPACITY,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    this.selFill.rotation.x = -Math.PI / 2;
+    this.selFill.visible = false;
+    this.scene.add(this.selFill);
+
+    const canvas = this.renderer.domElement;
+    canvas.addEventListener("pointerdown", this.onPointerDown);
+    canvas.addEventListener("pointerup", this.onPointerUp);
+    canvas.addEventListener("pointercancel", this.onPointerCancel);
+
+    // The toolbar's player picker also drives the scene selection. Clicking
+    // in the scene still overrides it -- the two may then diverge, which
+    // is fine.
+    this.offPlayer = subscribeSelectedPlayer((id) => this.onPickedPlayer(id));
 
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 20000);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -1084,10 +1171,16 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.periodicHeals = props.periodicHeals ?? [];
     this.envHits = props.envHits ?? [];
     this.worldMarkers = props.worldMarkers ?? [];
+    this.selectedUnitId = null; // a new window -> clear the selection
+    this.selRing.visible = false;
+    this.selFill.visible = false;
+    this.statusEl.hidden = true;
     this.setPlaying(false);
     this.reframe();
     this.rebuildUnits(props); // creates meshes, then applyTime(playhead)
     this.rebuildMarkers();
+    // Reflect whatever the toolbar player picker currently holds.
+    this.onPickedPlayer(getSelectedPlayer());
     this.syncTransport();
     this.resize();
   }
@@ -1184,10 +1277,188 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
     deconflictOverlaps(placed);
     dimOverlapping(placed);
+    this.updateSelection();
+    this.updateStatusHp(t);
     this.updateCastLines(t);
     this.updateParticles(t);
     this.updateMarkers(t);
     this.renderOnce();
+  }
+
+  // ---- click-to-select ---------------------------------------------------
+
+  private onPointerDown = (e: PointerEvent): void => {
+    this.pointerDown = { x: e.clientX, y: e.clientY, t: performance.now() };
+  };
+
+  private onPointerCancel = (): void => {
+    this.pointerDown = null;
+  };
+
+  private onPointerUp = (e: PointerEvent): void => {
+    const d = this.pointerDown;
+    this.pointerDown = null;
+    if (!d) return;
+    // A drag (orbit / pan / zoom) or a long press isn't a selection click.
+    if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) return;
+    if (performance.now() - d.t > 600) return;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hit = this.raycaster
+      .intersectObjects(this.unitsGroup.children, false)
+      .find((h) => h.object.visible);
+    const id = hit ? ((hit.object.userData as { unitId?: number }).unitId ?? null) : null;
+
+    if (id === this.selectedUnitId) return;
+    this.selectedUnitId = id;
+    this.syncStatus();
+    this.applyTime(this.playhead);
+  };
+
+  // Toolbar player picker changed -> follow it (when that player is on
+  // screen), or clear. A later scene click can still override this.
+  private onPickedPlayer(id: number | null): void {
+    this.selectedUnitId = id != null && this.unitById.has(id) ? id : null;
+    this.syncStatus();
+    this.applyTime(this.playhead);
+  }
+
+  // Rebuild the bottom status bar for the current selection: an Overview-
+  // style player card (role glyph over item level, class-coloured name,
+  // spec) plus a damage-bar-style HP readout. Called on selection change;
+  // `updateStatusHp` refreshes the numbers every frame.
+  private syncStatus(): void {
+    const u = this.selectedUnitId != null ? this.unitById.get(this.selectedUnitId) : undefined;
+    if (!u) {
+      this.statusEl.hidden = true;
+      this.statusEl.replaceChildren();
+      this.statusHasHp = false;
+      return;
+    }
+
+    const card = document.createElement("span");
+    card.className = "rs-card";
+
+    if (u.roleRank < 4 || u.itemLevel != null) {
+      const role = document.createElement("span");
+      role.className = `rs-role pt-role ${roleIconClass(u.roleRank)}`.trim();
+      role.innerHTML = roleIcon(u.roleRank); // static, trusted SVG
+      if (u.itemLevel != null) {
+        const ilvl = document.createElement("span");
+        ilvl.className = "rs-ilvl pt-role-ilvl";
+        ilvl.textContent = String(u.itemLevel);
+        role.appendChild(ilvl);
+      }
+      card.appendChild(role);
+    }
+
+    const who = document.createElement("span");
+    who.className = "rs-who pt-who";
+    const name = document.createElement("span");
+    name.className = "rs-name pt-name";
+    name.textContent = u.name;
+    const col = cssValue(u.color);
+    if (col) name.style.color = col;
+    who.appendChild(name);
+    if (u.spec) {
+      const spec = document.createElement("span");
+      spec.className = "rs-spec pt-spec pt-dim";
+      spec.textContent = u.spec;
+      who.appendChild(spec);
+    }
+    card.appendChild(who);
+
+    const kids: HTMLElement[] = [card];
+
+    this.statusHasHp = u.maxHp > 0 || u.hpSamples.length > 0;
+    if (this.statusHasHp) {
+      const hp = document.createElement("span");
+      hp.className = "rs-hp pt-metric";
+      const bar = document.createElement("span");
+      bar.className = "pt-bar";
+      this.statusHpFill = document.createElement("span");
+      this.statusHpFill.className = "pt-bar-seg rs-hp-fill";
+      bar.appendChild(this.statusHpFill);
+      const nums = document.createElement("span");
+      nums.className = "pt-metric-nums";
+      const main = document.createElement("span");
+      main.className = "pt-metric-main";
+      this.statusHpCur = document.createElement("b");
+      this.statusHpMax = document.createElement("span");
+      this.statusHpMax.className = "pt-metric-sub";
+      main.append(this.statusHpCur, this.statusHpMax);
+      this.statusHpPct = document.createElement("span");
+      this.statusHpPct.className = "pt-metric-sub pt-metric-aside";
+      nums.append(main, this.statusHpPct);
+      hp.append(bar, nums);
+      kids.push(hp);
+    }
+
+    this.statusEl.replaceChildren(...kids);
+    this.statusEl.hidden = false;
+    this.updateStatusHp(this.playhead);
+  }
+
+  // Refresh the HP figures for time `t` -- last reading at/before the
+  // playhead, or full HP before the first one.
+  private updateStatusHp(t: number): void {
+    if (!this.statusHasHp || this.selectedUnitId == null) return;
+    const u = this.unitById.get(this.selectedUnitId);
+    if (!u) return;
+
+    const hs = u.hpSamples;
+    let lo = 0;
+    let hi = hs.length;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (hs[m].tMs <= t) lo = m + 1;
+      else hi = m;
+    }
+    const fix = lo > 0 ? hs[lo - 1] : null;
+    const max = (fix && fix.max > 0 ? fix.max : u.maxHp) || 1;
+    const cur = fix ? fix.cur : max; // no reading yet -> assume full
+    const frac = Math.max(0, Math.min(1, cur / max));
+
+    this.statusHpFill.style.width = `${frac * 100}%`;
+    this.statusHpCur.textContent = formatCompact(cur);
+    this.statusHpMax.textContent = formatCompact(max);
+    this.statusHpPct.textContent = `${Math.round(frac * 100)}%`;
+  }
+
+  // Park the blue ring + fill under the selected unit's (post-de-conflict)
+  // mesh; hidden when nothing is selected or it isn't on screen. The band
+  // radius tracks the unit's footprint but its thickness stays constant,
+  // so a boss ring is wider, not chunkier.
+  private updateSelection(): void {
+    const mesh =
+      this.selectedUnitId != null
+        ? this.entries.find((e) => e.u.unitId === this.selectedUnitId)?.mesh
+        : undefined;
+    if (!mesh || !mesh.visible) {
+      this.selRing.visible = false;
+      this.selFill.visible = false;
+      return;
+    }
+    const size = (mesh.userData as { size?: number }).size ?? 1.6;
+    const inner = (size / 2 + SEL_RING_GAP) * SEL_RING_SCALE;
+    const outer = inner + SEL_RING_THICKNESS;
+    if (Math.abs(outer - this.selRingOuter) > 1e-3) {
+      this.selRing.geometry.dispose();
+      this.selRing.geometry = new THREE.RingGeometry(inner, outer, 64);
+      this.selRingOuter = outer;
+    }
+    const x = mesh.position.x;
+    const z = mesh.position.z;
+    this.selRing.position.set(x, FLOOR_LIFT + 0.05, z);
+    this.selRing.visible = true;
+    this.selFill.position.set(x, FLOOR_LIFT + 0.04, z);
+    this.selFill.scale.setScalar(inner);
+    this.selFill.visible = true;
   }
 
   // Dispose the old marker rigs and build one per placement interval: a
@@ -1751,8 +2022,13 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
     this.ro.disconnect();
+    const canvas = this.renderer.domElement;
+    canvas.removeEventListener("pointerdown", this.onPointerDown);
+    canvas.removeEventListener("pointerup", this.onPointerUp);
+    canvas.removeEventListener("pointercancel", this.onPointerCancel);
     this.controls.removeEventListener("change", this.renderOnce);
     this.controls.dispose();
+    this.offPlayer?.();
     this.rebuildUnits({
       units: [],
       castLines: [],

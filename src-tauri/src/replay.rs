@@ -198,6 +198,14 @@ pub struct CastLine {
     pub spell_id: u16,
 }
 
+/// One `(current, max)` HP reading off an advanced block that describes
+/// this unit (`infoGUID` == the unit). Time-ordered.
+pub struct HpSample {
+    pub t_ms: i64,
+    pub cur: i64,
+    pub max: i64,
+}
+
 pub struct ReplayUnit {
     pub unit_id: u32,
     pub guid: String,
@@ -216,6 +224,9 @@ pub struct ReplayUnit {
     /// only for real enemies.
     pub level: i32,
     pub samples: Vec<Sample>,
+    /// `(t, current, max)` HP readings, time-ordered -- the selection
+    /// status bar reads the last one at/before the playhead.
+    pub hp_samples: Vec<HpSample>,
     pub death_spans: Vec<DeathSpan>,
     pub cast_spans: Vec<CastSpan>,
     pub face_events: Vec<FaceHint>,
@@ -276,6 +287,7 @@ pub struct ReplaySeries {
 #[derive(Default)]
 struct Acc {
     samples: Vec<Sample>,
+    hp_samples: Vec<HpSample>,
     death_spans: Vec<DeathSpan>,
     cast_spans: Vec<CastSpan>,
     /// `(start_ms, spell)` of a `CAST_START` awaiting its `CAST_SUCCESS`.
@@ -815,9 +827,16 @@ pub fn series(
             b[3] = b[3].max(y);
             let a = accs.entry(pu).or_default();
             a.samples.push(Sample { t_ms: ts, x, y });
-            if let Some(lvl) = events.raw_fields(row).get(18).and_then(|f| {
-                f.resolve_str(mmap).parse::<i32>().ok()
-            }) {
+            let raw = events.raw_fields(row);
+            if let (Some(cur), Some(mx)) = (
+                raw.get(2).and_then(|f| f.resolve_str(mmap).parse::<i64>().ok()),
+                raw.get(3).and_then(|f| f.resolve_str(mmap).parse::<i64>().ok()),
+            ) {
+                if mx > 0 && cur >= 0 {
+                    a.hp_samples.push(HpSample { t_ms: ts, cur, max: mx });
+                }
+            }
+            if let Some(lvl) = raw.get(18).and_then(|f| f.resolve_str(mmap).parse::<i32>().ok()) {
                 a.level = a.level.max(lvl);
             }
         }
@@ -867,6 +886,21 @@ pub fn series(
             a.samples.iter().map(|s| Sample { t_ms: s.t_ms, x: s.x, y: s.y }).collect();
         samples.sort_by_key(|s| s.t_ms);
 
+        let mut hp_samples: Vec<HpSample> = a
+            .hp_samples
+            .iter()
+            .map(|h| HpSample { t_ms: h.t_ms, cur: h.cur, max: h.max })
+            .collect();
+        // A death reads as 0 HP: drop a synthetic reading at each death's
+        // start so every HP consumer sees the unit fall to zero (a stable
+        // sort keeps it after a real reading at the same instant).
+        if a.max_hp > 0 {
+            for d in &a.death_spans {
+                hp_samples.push(HpSample { t_ms: d.start_ms, cur: 0, max: a.max_hp });
+            }
+        }
+        hp_samples.sort_by_key(|h| h.t_ms);
+
         out.units.push(ReplayUnit {
             unit_id,
             guid: tables.guids.get(unit_id).guid.to_string(),
@@ -874,6 +908,7 @@ pub fn series(
             max_hp: a.max_hp,
             level: a.level,
             samples,
+            hp_samples,
             death_spans,
             cast_spans,
             face_events,
@@ -1217,6 +1252,38 @@ mod tests {
         let small = s.units.iter().find(|u| u.guid.ends_with("9-2")).unwrap();
         assert_eq!(big.max_hp, 500_000, "keeps the largest maxHP seen, not the last");
         assert_eq!(small.max_hp, 90_000);
+    }
+
+    #[test]
+    fn records_an_hp_track_from_advanced_blocks() {
+        // `spell_damage`'s advanced block is `<victim>,0,<cur>,<max>,...`
+        // (cur is a literal 50 in the helper).
+        let (tables, store, mmap) = store_from(&[
+            spell_damage("01.000", "Player-1-1", "Creature-0-0-0-0-9-1", 1_000_000, "30.0,30.0"),
+            spell_damage("02.000", "Player-1-1", "Creature-0-0-0-0-9-1", 1_000_000, "31.0,30.0"),
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0], store.timestamp_ms[1] + 1);
+        let boss = s.units.iter().find(|u| u.guid.ends_with("9-1")).unwrap();
+        assert_eq!(boss.hp_samples.len(), 2);
+        assert_eq!(boss.hp_samples[0].cur, 50);
+        assert_eq!(boss.hp_samples[0].max, 1_000_000);
+        assert!(boss.hp_samples[0].t_ms < boss.hp_samples[1].t_ms);
+    }
+
+    #[test]
+    fn a_death_zeroes_the_hp_track() {
+        let (tables, store, mmap) = store_from(&[
+            spell_damage("01.000", "Creature-0-0-0-0-9-9", "Player-1-1", 500_000, "5.0,5.0"),
+            "9/3/2026 19:23:02.000-6  UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,\
+             Player-1-1,\"A-R-US\",0x512,0x0,0"
+                .to_string(),
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[1] + 1);
+        let p = s.units.iter().find(|u| u.kind == "Player").unwrap();
+        let death = p.hp_samples.last().unwrap();
+        assert_eq!(death.cur, 0, "a synthetic 0 reading at the death");
+        assert_eq!(death.t_ms, store.timestamp_ms[1]);
+        assert_eq!(death.max, 500_000);
     }
 
     #[test]
