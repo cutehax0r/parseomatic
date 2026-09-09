@@ -69,6 +69,9 @@ export interface ReplaySceneProps {
   fitBox: [number, number, number, number] | null;
   startMs: number;
   endMs: number;
+  // Numeric encounterID (0 = custom range) -- picks the per-encounter
+  // entry in a loaded map's `encounters` block (orientation, …).
+  encounterId?: number;
 }
 
 const CELL = 8; // major grid cell, yards
@@ -605,15 +608,46 @@ function framingOf(fitBox: [number, number, number, number] | null): Framing {
 }
 
 // ---- dev "Pick Map" preview (View > Developer) -----------------------
-// Swap the generic deck box for an authored `.map.json` -- a sanity check
-// in the real renderer, NOT calibrated to unit positions (its coords are
-// centred + scaled to the framed span). `safe`/`wall` polygons are
-// extruded DOWN to the same depth as the default platform and grid-
-// textured to match it; a `wall` also rises above the deck. Each `void`
-// is a hole in whatever solid contains it; `mark` is a flat decal.
+// Swap the generic deck box for an authored `.map.json`. The map is
+// placed in WORLD YARDS via its `calibration` block (true scale, true
+// position -- no fit-to-span), so it lines up with real unit positions;
+// `encounters[<id>].orientationDeg` then spins the whole scene to match
+// how players hold the arena. `safe`/`wall` polygons extrude DOWN to the
+// platform depth and are grid-textured; a `wall` also rises above the
+// deck. Each `void` is a hole in whatever solid contains it; `mark` is a
+// flat decal. See docs/encounter-maps.md.
 type DevMapPoly = { id?: string; points?: [number, number][] };
 type DevMapLayer = { kind?: string; polys?: DevMapPoly[] };
-type DevMapDoc = { layers?: DevMapLayer[] };
+type DevMapCalibration = {
+  yardsPerUnit?: number;
+  rotationDeg?: number;
+  originYards?: [number, number];
+};
+type DevMapEncounterEntry = { orientationDeg?: number };
+type DevMapDoc = {
+  layers?: DevMapLayer[];
+  calibration?: DevMapCalibration;
+  encounters?: Record<string, DevMapEncounterEntry>;
+};
+
+// doc-unit -> world-yard: world = rotate(doc * yardsPerUnit, rotationDeg)
+// + originYards. Missing / non-finite fields fall back to identity (doc
+// units treated as yards) -- authoring garbage is a user problem.
+function mapDocToWorld(cal: DevMapCalibration | undefined): (x: number, y: number) => [number, number] {
+  const num = (v: unknown, d: number): number => (typeof v === "number" && Number.isFinite(v) ? v : d);
+  const s = num(cal?.yardsPerUnit, 1);
+  const rot = (num(cal?.rotationDeg, 0) * Math.PI) / 180;
+  const origin: number[] = Array.isArray(cal?.originYards) ? (cal!.originYards as number[]) : [];
+  const ox = num(origin[0], 0);
+  const oy = num(origin[1], 0);
+  const c = Math.cos(rot);
+  const sn = Math.sin(rot);
+  return (x, y) => {
+    const px = x * s;
+    const py = y * s;
+    return [px * c - py * sn + ox, px * sn + py * c + oy];
+  };
+}
 
 const DEV_MAP_WALL_RAISE = 5; // wall top this far above the deck datum
 const DEV_MAP_MARK_DEPTH = 0.15;
@@ -645,7 +679,7 @@ function polyBBoxCenter(pts: [number, number][]): [number, number] {
   return [(a + c) / 2, (b + d) / 2];
 }
 
-function buildDevMap(doc: DevMapDoc, span: number): THREE.Group | null {
+function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | null {
   const kinds = new Map<string, [number, number][][]>();
   for (const layer of doc.layers ?? []) {
     const k = layer.kind ?? "";
@@ -664,32 +698,23 @@ function buildDevMap(doc: DevMapDoc, span: number): THREE.Group | null {
   const marks = kinds.get("mark") ?? [];
   if (!solids.length && !marks.length) return null;
 
-  let mnx = Infinity;
-  let mny = Infinity;
-  let mxx = -Infinity;
-  let mxy = -Infinity;
-  for (const p of [...solids.map(([, p]) => p), ...voids, ...marks])
-    for (const [x, y] of p) {
-      mnx = Math.min(mnx, x);
-      mny = Math.min(mny, y);
-      mxx = Math.max(mxx, x);
-      mxy = Math.max(mxy, y);
-    }
-  const cx = (mnx + mxx) / 2;
-  const cy = (mny + mxy) / 2;
-  const k = span / (Math.max(mxx - mnx, mxy - mny) || 1);
+  // doc units -> world yards -> scene: the same framing-centre offset
+  // every unit / marker / cast uses, so the map registers with real
+  // positions at true scale (no fit-to-span).
+  const toWorld = mapDocToWorld(doc.calibration);
   const trace = (dst: THREE.Shape | THREE.Path, pts: [number, number][]) =>
     pts.forEach(([x, y], i) => {
-      const px = (x - cx) * k;
-      const py = (y - cy) * k;
+      const [wx, wy] = toWorld(x, y);
+      const px = wx - framing.cx;
+      const py = wy - framing.cy;
       i === 0 ? dst.moveTo(px, py) : dst.lineTo(px, py);
     });
 
   const g = new THREE.Group();
 
   // One shared grid texture for every safe/wall face -- same look as the
-  // default box. ExtrudeGeometry UVs are in shape units, so `1/CELL` puts
-  // one grid tile per CELL scene units, matching the box's `span/CELL`.
+  // default box. ExtrudeGeometry UVs are in shape units = world yards
+  // now, so `1/CELL` puts exactly one grid tile per CELL yards.
   let gridTex: THREE.Texture | null = null;
   if (solids.length) {
     gridTex = gridTexture();
@@ -756,6 +781,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private unitsGroup = new THREE.Group();
 
   private framing: Framing = { cx: 0, cy: 0, span: MIN_SPAN };
+  private currentEncounterId = 0; // for a loaded map's per-encounter entry
   private disposed = false;
 
   // ---- playback ----
@@ -1324,15 +1350,26 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       });
       this.devMap = null;
     }
+    this.scene.rotation.y = 0; // clear any per-encounter orientation
     if (doc && typeof doc === "object") {
-      this.devMap = buildDevMap(doc, this.framing.span);
-      if (this.devMap) this.scene.add(this.devMap);
+      this.devMap = buildDevMap(doc, this.framing);
+      if (this.devMap) {
+        this.scene.add(this.devMap);
+        // Spin the whole world so the arena matches how players hold it.
+        // encounters[<id>] wins over encounters.default; flip the sign in
+        // the .map.json if it turns the wrong way.
+        const enc =
+          doc.encounters?.[String(this.currentEncounterId)] ?? doc.encounters?.default;
+        const deg = typeof enc?.orientationDeg === "number" ? enc.orientationDeg : 0;
+        this.scene.rotation.y = (deg * Math.PI) / 180;
+      }
     }
     if (this.platform) this.platform.visible = !this.devMap;
     this.renderOnce();
   }
 
   update(props: ReplaySceneProps): void {
+    this.currentEncounterId = props.encounterId ?? 0;
     this.setMap(null); // a new encounter -> drop any dev map override
     this.framing = framingOf(props.fitBox);
     this.startMs = props.startMs;

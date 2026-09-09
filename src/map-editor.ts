@@ -100,6 +100,10 @@ let bg: HTMLImageElement | null = null;
 let bgPath: string | null = null;
 let seq = 0;
 let mode: "2d" | "3d" = "2d";
+// Top-level keys from a loaded `.map.json` that the editor doesn't manage
+// (calibration, encounters, states, …) -- kept verbatim so a re-save
+// doesn't drop the author's hand edits.
+let carried: Record<string, unknown> = {};
 
 // document -> screen (CSS px). "p" (unrotated) space is `doc * scale +
 // off`; screen space spins that around the canvas centre by `view.rot`
@@ -402,13 +406,21 @@ canvas.addEventListener("pointerdown", (e) => {
   panned = false;
 });
 
+// Right-drag pans the world (like middle-drag) whatever the tool -- so
+// you can scroll while mid-trace when zoomed in. Suppress the context
+// menu on the canvas so the drag isn't hijacked.
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
 canvas.addEventListener("pointermove", (e) => {
   const [sx, sy] = pointerCss(e);
   shiftHeld = e.shiftKey;
   [rawCursor[0], rawCursor[1]] = toDoc(sx, sy);
   [cursor[0], cursor[1]] = effectiveCursor();
   if (down) {
-    if (!panned && (down.button === 1 || Math.hypot(sx - down.sx, sy - down.sy) > 3)) {
+    if (
+      !panned &&
+      (down.button === 1 || down.button === 2 || Math.hypot(sx - down.sx, sy - down.sy) > 3)
+    ) {
       panned = true;
     }
     if (panned) {
@@ -789,6 +801,7 @@ function loadMapText(text: string, label = "map file"): void {
     void message("That file is not valid JSON.", { kind: "error" });
     return;
   }
+  carried = doc;
   shapes.length = 0;
   selectedId = null;
   selectedVertex = null;
@@ -834,25 +847,44 @@ function buildJson(): string {
     kind,
     polys: ss.map((s) => ({ id: s.id, points: s.points })),
   }));
-  return JSON.stringify(
-    {
-      schema: 1,
-      mapId: Number(idInput.value),
-      name: nameInput.value.trim() || undefined,
-      // NOTE: not world yards yet -- calibration is a later pass.
-      coordSpace: bg ? "image-pixels" : "editor-units",
-      sourceImage: bgPath ?? undefined,
-      // Editor-only viewing hint -- doesn't touch the stored coordinates.
-      editor: {
-        app: "parseomatic-map-editor",
-        savedAt: new Date().toISOString(),
-        ...(rotDeg() ? { rotationDeg: Math.round(rotDeg()) } : {}),
-      },
-      layers,
+  const doc: Record<string, unknown> = {
+    schema: 2,
+    mapId: Number(idInput.value),
+    name: nameInput.value.trim() || undefined,
+    coordSpace: bg ? "image-pixels" : "editor-units",
+    sourceImage: bgPath ?? undefined,
+    // doc-unit -> world-yard transform:
+    //   world = rotate(doc * yardsPerUnit, rotationDeg) + originYards
+    // Identity == "doc units already are combat-log yards". Hand-tune
+    // after a calibration run (docs/encounter-maps.md §10); no editor UI
+    // for it yet.
+    calibration: carried.calibration ?? {
+      yardsPerUnit: 1,
+      rotationDeg: 0,
+      originYards: [0, 0],
     },
-    null,
-    2,
-  );
+    // Per-encounter overrides, keyed by the numeric encounterID from
+    // ENCOUNTER_START ("default" = any encounter without its own entry).
+    // v1 consumes only orientationDeg + frame; other keys are reserved
+    // for hand-editing. `frame`: null = auto-fit + clamp to the map, or
+    // [centreX, centreY, span] in world yards to pin it.
+    encounters: carried.encounters ?? {
+      default: { orientationDeg: 0, frame: null },
+    },
+    // Editor-only viewing hint -- doesn't touch the stored coordinates.
+    editor: {
+      app: "parseomatic-map-editor",
+      savedAt: new Date().toISOString(),
+      ...(rotDeg() ? { rotationDeg: Math.round(rotDeg()) } : {}),
+    },
+    layers,
+  };
+  // Carry through any other top-level keys a loaded file had (states,
+  // raidSlug, future additions) that the editor doesn't manage.
+  for (const [k, v] of Object.entries(carried)) {
+    if (!(k in doc)) doc[k] = v;
+  }
+  return JSON.stringify(doc, null, 2);
 }
 
 saveBtn.addEventListener("click", async () => {

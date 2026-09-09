@@ -249,6 +249,38 @@ Notes:
   (interactable, render as a pyramid), `spawn`, `path`. Plugin-private
   kinds should use an `x-` prefix.
 
+### v1 bootstrap shape (what the editor writes today)
+
+Pending real calibration / encounter UI, the editor emits `schema: 2`
+and scaffolds two **hand-editable** blocks with identity defaults. For
+now this supersedes the older `worldBounds` + separate `raid.json` split
+above — the transform and the `encounterID → map` binding both live in
+the map file.
+
+```jsonc
+{
+  "schema": 2,
+  "calibration": {            // doc-unit → world-yard similarity transform:
+    "yardsPerUnit": 1,        //   world = rotate(doc * yardsPerUnit, rotationDeg) + originYards
+    "rotationDeg": 0,         // identity == "doc units already are combat-log yards"
+    "originYards": [0, 0]
+  },
+  "encounters": {             // keyed by the numeric encounterID from ENCOUNTER_START;
+    "default": {              // "default" applies to any encounter with no entry
+      "orientationDeg": 0,    // spin the whole scene to match how players hold the arena
+      "frame": null           // null = auto-fit the action + clamp to the map bounds,
+    }                         //   or [centreX, centreY, span] in world yards to pin it
+  }
+}
+```
+
+The replay reads only `orientationDeg` and `frame` in v1. Other keys
+under an encounter (enemies to hide/highlight by name, per-ability
+treatment, timeline phase markers) are **reserved** — author them now,
+wired later. The editor round-trips every top-level key it doesn't
+manage, so hand edits to `calibration` / `encounters` / `states` survive
+a geometry re-save.
+
 ### Runtime map states
 
 `states` names alternative arrangements of the *same* geometry: hide /

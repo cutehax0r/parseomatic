@@ -528,5 +528,6 @@ async function paint(): Promise<void> {
     fitBox: series.fitBox,
     startMs: series.startMs,
     endMs: series.endMs,
+    encounterId: win.encounterId,
   });
 }
