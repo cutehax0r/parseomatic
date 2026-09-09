@@ -597,7 +597,9 @@ interface Framing {
   span: number;
 }
 
-function framingOf(fitBox: [number, number, number, number] | null): Framing {
+type Box = [number, number, number, number]; // [minX, maxX, minY, maxY]
+
+function framingOf(fitBox: Box | null): Framing {
   if (!fitBox) return { cx: 0, cy: 0, span: MIN_SPAN };
   const [minX, maxX, minY, maxY] = fitBox;
   const cx = (minX + maxX) / 2;
@@ -605,6 +607,18 @@ function framingOf(fitBox: [number, number, number, number] | null): Framing {
   const raw = Math.max(maxX - minX, maxY - minY, MIN_SPAN);
   const span = Math.ceil(raw / CELL + PAD_CELLS * 2) * CELL;
   return { cx, cy, span };
+}
+
+function unionBox(a: Box | null, b: Box | null): Box | null {
+  if (!a) return b;
+  if (!b) return a;
+  return [Math.min(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[3], b[3])];
+}
+
+// Framing from an explicit centre + span (the encounter `frame` override),
+// span snapped up to whole cells.
+function framingCentred(cx: number, cy: number, span: number): Framing {
+  return { cx, cy, span: Math.ceil(Math.max(span, MIN_SPAN) / CELL) * CELL };
 }
 
 // ---- dev "Pick Map" preview (View > Developer) -----------------------
@@ -622,8 +636,14 @@ type DevMapCalibration = {
   yardsPerUnit?: number;
   rotationDeg?: number;
   originYards?: [number, number];
+  // Flip the Y axis after the rotation -- WoW's map image is a mirrored
+  // frame vs world axes (image-east = world -Y), so a "fit to log map"
+  // calibration is rotate 90 + mirrorY.
+  mirrorY?: boolean;
 };
-type DevMapEncounterEntry = { orientationDeg?: number };
+// `frame`: [centreX, centreY, span] in *doc units* (map-local) -- run
+// through `calibration` like the geometry. null/absent -> auto-fit.
+type DevMapEncounterEntry = { orientationDeg?: number; frame?: [number, number, number] | null };
 type DevMapDoc = {
   layers?: DevMapLayer[];
   calibration?: DevMapCalibration;
@@ -642,10 +662,11 @@ function mapDocToWorld(cal: DevMapCalibration | undefined): (x: number, y: numbe
   const oy = num(origin[1], 0);
   const c = Math.cos(rot);
   const sn = Math.sin(rot);
+  const my = cal?.mirrorY ? -1 : 1;
   return (x, y) => {
     const px = x * s;
     const py = y * s;
-    return [px * c - py * sn + ox, px * sn + py * c + oy];
+    return [px * c - py * sn + ox, (px * sn + py * c) * my + oy];
   };
 }
 
@@ -677,6 +698,29 @@ function polyBBoxCenter(pts: [number, number][]): [number, number] {
     d = Math.max(d, y);
   }
   return [(a + c) / 2, (b + d) / 2];
+}
+
+// World-yard bounding box over every polygon vertex in the map, or null
+// if it has none. Lets the picker frame the camera on what you loaded.
+function devMapWorldBox(doc: DevMapDoc): Box | null {
+  const toWorld = mapDocToWorld(doc.calibration);
+  let mnx = Infinity;
+  let mxx = -Infinity;
+  let mny = Infinity;
+  let mxy = -Infinity;
+  for (const layer of doc.layers ?? []) {
+    for (const p of layer.polys ?? []) {
+      for (const q of p.points ?? []) {
+        if (!Array.isArray(q) || q.length < 2) continue;
+        const [wx, wy] = toWorld(q[0], q[1]);
+        mnx = Math.min(mnx, wx);
+        mxx = Math.max(mxx, wx);
+        mny = Math.min(mny, wy);
+        mxy = Math.max(mxy, wy);
+      }
+    }
+  }
+  return Number.isFinite(mnx) ? [mnx, mxx, mny, mxy] : null;
 }
 
 function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | null {
@@ -782,6 +826,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
   private framing: Framing = { cx: 0, cy: 0, span: MIN_SPAN };
   private currentEncounterId = 0; // for a loaded map's per-encounter entry
+  private lastFitBox: Box | null = null; // action bounds of the current window, for reframing on Pick Map
   private disposed = false;
 
   // ---- playback ----
@@ -1334,9 +1379,10 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.controls.update();
   }
 
-  // View > Developer > Pick Map: swap the deck box for an authored map,
-  // or `null` to restore it. Untrusted file -> parsed defensively.
-  setMap(doc: DevMapDoc | null): void {
+  // Dispose the picked map + undo its per-encounter spin, no reframe.
+  // `update()` owns the reframe on a new encounter; `setMap` does it for
+  // the interactive Pick / Clear.
+  private clearDevMap(): void {
     if (this.devMap) {
       this.scene.remove(this.devMap);
       this.devMap.traverse((o) => {
@@ -1350,27 +1396,55 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
       });
       this.devMap = null;
     }
-    this.scene.rotation.y = 0; // clear any per-encounter orientation
+    this.scene.rotation.y = 0;
+    if (this.platform) this.platform.visible = true;
+  }
+
+  // View > Developer > Pick Map: swap the deck box for an authored map,
+  // or `null` to restore the generic deck. The camera reframes to show
+  // the map (its `frame` override, else its world bounds unioned with the
+  // action) so you can always see what you picked and eyeball the
+  // calibration. Untrusted file -> parsed defensively.
+  setMap(doc: DevMapDoc | null): void {
+    this.clearDevMap();
     if (doc && typeof doc === "object") {
-      this.devMap = buildDevMap(doc, this.framing);
-      if (this.devMap) {
-        this.scene.add(this.devMap);
-        // Spin the whole world so the arena matches how players hold it.
-        // encounters[<id>] wins over encounters.default; flip the sign in
-        // the .map.json if it turns the wrong way.
-        const enc =
-          doc.encounters?.[String(this.currentEncounterId)] ?? doc.encounters?.default;
-        const deg = typeof enc?.orientationDeg === "number" ? enc.orientationDeg : 0;
-        this.scene.rotation.y = (deg * Math.PI) / 180;
+      const enc =
+        doc.encounters?.[String(this.currentEncounterId)] ?? doc.encounters?.default;
+      const cal = doc.calibration;
+      const yu = cal?.yardsPerUnit;
+      const s = typeof yu === "number" && Number.isFinite(yu) ? yu : 1;
+      const fr = enc?.frame;
+      if (
+        Array.isArray(fr) &&
+        fr.length >= 3 &&
+        fr.every((n) => typeof n === "number" && Number.isFinite(n))
+      ) {
+        const [wcx, wcy] = mapDocToWorld(cal)(fr[0], fr[1]);
+        this.framing = framingCentred(wcx, wcy, Math.abs(fr[2]) * s);
+      } else {
+        this.framing = framingOf(unionBox(this.lastFitBox, devMapWorldBox(doc)));
       }
+
+      this.devMap = buildDevMap(doc, this.framing);
+      if (this.devMap) this.scene.add(this.devMap);
+      // Spin the whole world so the arena matches how players hold it.
+      // Flip the sign in the .map.json if it turns the wrong way.
+      const deg = typeof enc?.orientationDeg === "number" ? enc.orientationDeg : 0;
+      this.scene.rotation.y = (deg * Math.PI) / 180;
+      if (this.platform) this.platform.visible = !this.devMap;
+    } else {
+      this.framing = framingOf(this.lastFitBox);
     }
-    if (this.platform) this.platform.visible = !this.devMap;
+    this.reframe();
+    this.rebuildMarkers();
+    this.applyTime(this.playhead);
     this.renderOnce();
   }
 
   update(props: ReplaySceneProps): void {
     this.currentEncounterId = props.encounterId ?? 0;
-    this.setMap(null); // a new encounter -> drop any dev map override
+    this.lastFitBox = props.fitBox;
+    this.clearDevMap(); // a new encounter -> drop any dev map override
     this.framing = framingOf(props.fitBox);
     this.startMs = props.startMs;
     this.endMs = props.endMs;

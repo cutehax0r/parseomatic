@@ -11,7 +11,7 @@ import "../ui/widgets"; // registers replay-scene / encounter-title / ...
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, message } from "@tauri-apps/plugin-dialog";
 
 import { buildView, type BuiltView } from "../ui/panel";
 import { createViewContext, type ViewContext } from "../ui/context";
@@ -308,12 +308,24 @@ async function onDevMap(pick: boolean): Promise<void> {
     filters: [{ name: "Map", extensions: ["json"] }],
   });
   if (typeof picked !== "string") return;
+  let text: string;
   try {
-    const text = await invoke<string>("read_map_text", { path: picked });
-    scene.setMap(JSON.parse(text));
+    text = await invoke<string>("read_map_text", { path: picked });
   } catch (err) {
-    console.error("pick map:", err);
+    await message(String(err), { title: "Pick Map", kind: "error" });
+    return;
   }
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch (err) {
+    await message(`That .map.json isn't valid JSON.\n\n${String(err)}`, {
+      title: "Pick Map",
+      kind: "error",
+    });
+    return;
+  }
+  scene.setMap(doc);
 }
 
 export function renderReplay(): void {

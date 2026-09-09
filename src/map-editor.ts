@@ -10,6 +10,7 @@
 // (docs/encounter-maps.md §10), hence `coordSpace` in the saved file.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, message } from "@tauri-apps/plugin-dialog";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -86,6 +87,15 @@ const rotInput = $<HTMLInputElement>("me-rot");
 const vertXInput = $<HTMLInputElement>("me-vert-x");
 const vertYInput = $<HTMLInputElement>("me-vert-y");
 const vertDelBtn = $<HTMLButtonElement>("me-vert-del");
+const encSelect = $<HTMLSelectElement>("me-enc");
+const playSlider = $<HTMLInputElement>("me-play");
+const timeEl = $<HTMLElement>("me-time");
+const calYpu = $<HTMLInputElement>("me-cal-ypu");
+const calRot = $<HTMLInputElement>("me-cal-rot");
+const calOx = $<HTMLInputElement>("me-cal-ox");
+const calOy = $<HTMLInputElement>("me-cal-oy");
+const calMirror = $<HTMLInputElement>("me-cal-mirror");
+const calFitBtn = $<HTMLButtonElement>("me-cal-fit");
 const drawButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-draw]")];
 
 // ---- state -------------------------------------------------------------
@@ -101,9 +111,95 @@ let bgPath: string | null = null;
 let seq = 0;
 let mode: "2d" | "3d" = "2d";
 // Top-level keys from a loaded `.map.json` that the editor doesn't manage
-// (calibration, encounters, states, …) -- kept verbatim so a re-save
-// doesn't drop the author's hand edits.
+// (encounters, states, …) -- kept verbatim so a re-save doesn't drop the
+// author's hand edits. `calibration` is now editor-owned (right toolbar).
 let carried: Record<string, unknown> = {};
+
+// doc-unit <-> world-yard transform (docs/encounter-maps.md). Editable in
+// the right toolbar; drives the encounter overlay's placement.
+//   world = R(rot) * (doc * yardsPerUnit), then Y flipped if mirrorY, + origin
+const cal = {
+  yardsPerUnit: 1,
+  rotationDeg: 0,
+  originYards: [0, 0] as [number, number],
+  mirrorY: false,
+};
+
+// world yard -> doc unit: exact inverse of the forward transform above.
+function worldToDoc(wx: number, wy: number): [number, number] {
+  const s = cal.yardsPerUnit || 1;
+  const rot = (cal.rotationDeg * Math.PI) / 180;
+  const c = Math.cos(rot);
+  const sn = Math.sin(rot);
+  const dx = wx - cal.originYards[0];
+  let dy = wy - cal.originYards[1];
+  if (cal.mirrorY) dy = -dy;
+  return [(dx * c + dy * sn) / s, (-dx * sn + dy * c) / s];
+}
+
+// ---- encounter overlay (top toolbar) --------------------------------
+interface EncRow {
+  name: string;
+  encounterId: number;
+  startMs: number;
+  endMs: number;
+  isTrash: boolean;
+}
+interface RSample {
+  tMs: number;
+  x: number;
+  y: number;
+}
+interface RUnit {
+  kind: string; // "Player" | "Pet" | "Creature" | ...
+  samples: RSample[];
+}
+interface RMarker {
+  marker: number; // 0 star .. 7 skull
+  x: number;
+  y: number;
+  placedMs: number;
+  removedMs: number | null;
+}
+interface RSeries {
+  startMs: number;
+  endMs: number;
+  units: RUnit[];
+  worldMarkers: RMarker[];
+  mapBox: [number, number, number, number] | null; // MAP_CHANGE [x0, x1, y0, y1], world yards
+}
+const MARKER_COLORS = [
+  "#eed49f", // star
+  "#f0872a", // circle
+  "#c6a0f6", // diamond
+  "#a6da95", // triangle
+  "#c8cdd8", // moon
+  "#8aadf4", // square
+  "#ed8796", // cross
+  "#eef1f7", // skull
+];
+let encRows: EncRow[] = [];
+let series: RSeries | null = null;
+let playMs = 0; // absolute ms inside [series.startMs, series.endMs]
+
+// Interpolated position at time `t` -- lerp between bracketing fixes.
+function posAt(samples: RSample[], t: number): { x: number; y: number } | null {
+  if (samples.length === 0) return null;
+  if (t <= samples[0].tMs) return { x: samples[0].x, y: samples[0].y };
+  const last = samples[samples.length - 1];
+  if (t >= last.tMs) return { x: last.x, y: last.y };
+  let lo = 0;
+  let hi = samples.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (samples[mid].tMs <= t) lo = mid;
+    else hi = mid;
+  }
+  const a = samples[lo];
+  const b = samples[hi];
+  const f = b.tMs === a.tMs ? 0 : (t - a.tMs) / (b.tMs - a.tMs);
+  return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+}
 
 // document -> screen (CSS px). "p" (unrotated) space is `doc * scale +
 // off`; screen space spins that around the canvas centre by `view.rot`
@@ -389,6 +485,45 @@ function render(): void {
       ctx.beginPath();
       ctx.arc(hx, hy, 7.5, 0, Math.PI * 2);
       ctx.stroke();
+    }
+  }
+
+  drawOverlay();
+}
+
+// The picked encounter's units + raid markers at the current playhead,
+// placed through the live `calibration` (world yard -> doc unit ->
+// screen). Watch the dots snap onto your traced geometry as you tune the
+// calibration fields.
+function drawOverlay(): void {
+  if (!series) return;
+  const t = playMs;
+
+  for (const m of series.worldMarkers) {
+    if (m.placedMs > t || (m.removedMs != null && m.removedMs <= t)) continue;
+    const [dx, dy] = worldToDoc(m.x, m.y);
+    const [sx, sy] = toScreen(dx, dy);
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = MARKER_COLORS[m.marker] ?? "#cdd6f4";
+    ctx.beginPath();
+    ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  for (const u of series.units) {
+    const p = posAt(u.samples, t);
+    if (!p) continue;
+    const [dx, dy] = worldToDoc(p.x, p.y);
+    const [sx, sy] = toScreen(dx, dy);
+    if (u.kind === "Player") {
+      ctx.fillStyle = "#8aadf4";
+      ctx.fillRect(sx - 4, sy - 4, 8, 8);
+    } else if (u.kind === "Creature") {
+      ctx.fillStyle = "#ed8796";
+      ctx.beginPath();
+      ctx.arc(sx, sy, 5, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 }
@@ -802,6 +937,7 @@ function loadMapText(text: string, label = "map file"): void {
     return;
   }
   carried = doc;
+  readCalibrationFrom(doc.calibration);
   shapes.length = 0;
   selectedId = null;
   selectedVertex = null;
@@ -853,15 +989,14 @@ function buildJson(): string {
     name: nameInput.value.trim() || undefined,
     coordSpace: bg ? "image-pixels" : "editor-units",
     sourceImage: bgPath ?? undefined,
-    // doc-unit -> world-yard transform:
+    // doc-unit -> world-yard transform (right-toolbar Calibration fields):
     //   world = rotate(doc * yardsPerUnit, rotationDeg) + originYards
-    // Identity == "doc units already are combat-log yards". Hand-tune
-    // after a calibration run (docs/encounter-maps.md §10); no editor UI
-    // for it yet.
-    calibration: carried.calibration ?? {
-      yardsPerUnit: 1,
-      rotationDeg: 0,
-      originYards: [0, 0],
+    // Identity == "doc units already are combat-log yards".
+    calibration: {
+      yardsPerUnit: cal.yardsPerUnit,
+      rotationDeg: cal.rotationDeg,
+      originYards: [cal.originYards[0], cal.originYards[1]],
+      mirrorY: cal.mirrorY,
     },
     // Per-encounter overrides, keyed by the numeric encounterID from
     // ENCOUNTER_START ("default" = any encounter without its own entry).
@@ -1081,6 +1216,160 @@ btn3d.addEventListener("click", () => {
     raf3d = 0;
   }
 });
+
+// ---- calibration fields (right toolbar) ---------------------------
+function syncCalInputs(): void {
+  calYpu.value = String(cal.yardsPerUnit);
+  calRot.value = String(cal.rotationDeg);
+  calOx.value = String(cal.originYards[0]);
+  calOy.value = String(cal.originYards[1]);
+  calMirror.checked = cal.mirrorY;
+}
+function readCalibrationFrom(src: unknown): void {
+  const c = (src ?? {}) as Record<string, unknown>;
+  const n = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+  const o = Array.isArray(c.originYards) ? (c.originYards as unknown[]) : [];
+  cal.yardsPerUnit = n(c.yardsPerUnit, 1) || 1;
+  cal.rotationDeg = n(c.rotationDeg, 0);
+  cal.originYards = [n(o[0], 0), n(o[1], 0)];
+  cal.mirrorY = c.mirrorY === true;
+  syncCalInputs();
+}
+const calBind: [HTMLInputElement, (v: number) => void][] = [
+  [calYpu, (v) => (cal.yardsPerUnit = v || 1)],
+  [calRot, (v) => (cal.rotationDeg = v)],
+  [calOx, (v) => (cal.originYards[0] = v)],
+  [calOy, (v) => (cal.originYards[1] = v)],
+];
+for (const [inp, set] of calBind) {
+  inp.addEventListener("input", () => {
+    const v = Number(inp.value);
+    if (Number.isFinite(v)) {
+      set(v);
+      render();
+    }
+  });
+}
+calMirror.addEventListener("change", () => {
+  cal.mirrorY = calMirror.checked;
+  render();
+});
+
+// "Fit to log map": derive the calibration from the picked encounter's
+// MAP_CHANGE box + the loaded backdrop's pixel size. WoW's zone-map image
+// is a mirrored frame vs world axes (north up, west left, so image-east =
+// world -Y, image-south = world -X) -- that's a 90 deg rotate + Y mirror.
+// Image (0,0) -> (x0, y0); image (W,H) -> (x1, y1).
+function fitToLogMap(): void {
+  if (!series?.mapBox) {
+    status("Pick an encounter with a MAP_CHANGE box first.");
+    return;
+  }
+  if (!bg) {
+    status("Load the zone-map image as the backdrop first (Backdrop…).");
+    return;
+  }
+  const [x0, x1, y0, y1] = series.mapBox;
+  const w = bg.naturalWidth || 1;
+  const h = bg.naturalHeight || 1;
+  const sx = (x0 - x1) / h; // yards / px down the image (south = -X)
+  const sy = (y0 - y1) / w; // yards / px across the image (east = -Y)
+  const s = (sx + sy) / 2;
+  if (Math.abs(sx - sy) > Math.abs(s) * 0.03) {
+    status(`Backdrop aspect ≠ map box (${sx.toFixed(3)} vs ${sy.toFixed(3)} yd/px) — using the mean.`);
+  } else {
+    status(`Calibrated from MAP_CHANGE: ${s.toFixed(3)} yd/px.`);
+  }
+  cal.yardsPerUnit = s || 1;
+  cal.rotationDeg = 90;
+  cal.mirrorY = true;
+  cal.originYards = [x0, y0];
+  syncCalInputs();
+  render();
+}
+calFitBtn.addEventListener("click", fitToLogMap);
+
+syncCalInputs();
+
+// ---- encounter overlay (top toolbar) ----------------------------
+function fmtClock(s: number): string {
+  const m = Math.floor(s / 60);
+  return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
+}
+function syncTime(): void {
+  if (!series) {
+    timeEl.textContent = "—";
+    return;
+  }
+  const rel = (playMs - series.startMs) / 1000;
+  const tot = (series.endMs - series.startMs) / 1000;
+  timeEl.textContent = `${fmtClock(rel)} / ${fmtClock(tot)}`;
+}
+
+async function loadEncounters(): Promise<void> {
+  let lists: { encounters?: EncRow[] } | null = null;
+  try {
+    lists = await invoke<{ encounters?: EncRow[] } | null>("log_lists");
+  } catch {
+    lists = null;
+  }
+  encRows = lists?.encounters ?? [];
+  encSelect.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = encRows.length ? "— none —" : "— no log —";
+  encSelect.appendChild(none);
+  encRows.forEach((e, i) => {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    const dur = Math.round((e.endMs - e.startMs) / 1000);
+    opt.textContent = `${e.isTrash ? "· " : ""}${e.name} — ${dur}s`;
+    encSelect.appendChild(opt);
+  });
+  encSelect.disabled = encRows.length === 0;
+}
+
+encSelect.addEventListener("change", async () => {
+  const i = Number(encSelect.value);
+  const e = encRows[i];
+  if (!e) {
+    series = null;
+    playSlider.disabled = true;
+    playSlider.value = "0";
+    syncTime();
+    render();
+    return;
+  }
+  try {
+    series = await invoke<RSeries | null>("replay_series", { startMs: e.startMs, endMs: e.endMs });
+  } catch (err) {
+    series = null;
+    status(`Encounter load failed: ${String(err)}`);
+  }
+  if (series && series.units.length) {
+    playMs = series.startMs;
+    playSlider.disabled = false;
+    playSlider.value = "0";
+    status(`Overlay: ${e.name} — drag the bar; tune Calibration so the dots land on your map.`);
+  } else {
+    series = null;
+    playSlider.disabled = true;
+    status(`No position data for "${e.name}".`);
+  }
+  syncTime();
+  render();
+});
+
+playSlider.addEventListener("input", () => {
+  if (!series) return;
+  const frac = Number(playSlider.value) / (Number(playSlider.max) || 1);
+  playMs = series.startMs + (series.endMs - series.startMs) * frac;
+  syncTime();
+  render();
+});
+
+void loadEncounters();
+void listen("log-changed", () => void loadEncounters());
 
 // ---- boot ----------------------------------------------------
 new ResizeObserver(resize).observe(canvas);

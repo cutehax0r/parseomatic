@@ -683,13 +683,19 @@ fn open_settings_window(app: &AppHandle) {
 
 /// Opens the (singleton) map editor window -- `map-editor.html` /
 /// `src/map-editor.ts`, backed by `src/maps.rs`. Same main-thread caveat
-/// as `open_settings_window`; not attached to any log.
-fn open_map_editor_window(app: &AppHandle) {
+/// as `open_settings_window`. `source` is the launching window's log (if
+/// any): the editor inherits it so "Pick Encounter" can draw real unit
+/// tracks to calibrate against -- `log_lists` / `replay_series` then work
+/// from the editor window like any other.
+fn open_map_editor_window(app: &AppHandle, source: Option<Arc<ParsedLog>>) {
     if let Some(window) = app.get_webview_window("map-editor") {
+        if let Some(log) = source {
+            attach_window_to_log(&window, log);
+        }
         let _ = window.set_focus();
         return;
     }
-    let _ = tauri::WebviewWindowBuilder::new(
+    let built = tauri::WebviewWindowBuilder::new(
         app,
         "map-editor",
         tauri::WebviewUrl::App("map-editor.html".into()),
@@ -697,6 +703,12 @@ fn open_map_editor_window(app: &AppHandle) {
     .title("Map Editor")
     .inner_size(1100.0, 760.0)
     .build();
+    if let (Ok(window), Some(log)) = (built, source) {
+        // Insert now (synchronous map write); the editor's boot-time
+        // `log_lists` call picks it up, and `log-changed` covers a later
+        // re-inherit while it's already open.
+        attach_window_to_log(&window, log);
+    }
 }
 
 /// Finds a window (if any) already showing the file at `canonical_path`.
@@ -2426,7 +2438,10 @@ pub fn run() {
                 });
             } else if event.id() == "new_map" {
                 let app = app.clone();
-                std::thread::spawn(move || open_map_editor_window(&app));
+                std::thread::spawn(move || {
+                    let source = focused_webview_window(&app).and_then(|w| current_log(&w));
+                    open_map_editor_window(&app, source);
+                });
             } else if event.id() == "duplicate_window" {
                 // The frontend owns the selection to copy, so bounce it
                 // there -- it calls back into `duplicate_window` with the

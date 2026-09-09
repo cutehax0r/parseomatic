@@ -23,6 +23,35 @@
         flex-direction: column;
         overflow: hidden;
       }
+      .me-topbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--border, #494d64);
+        flex: none;
+      }
+      .me-topbar label {
+        color: var(--text-muted, #a5adcb);
+      }
+      .me-topbar select {
+        height: 26px;
+        max-width: 320px;
+        border: 1px solid var(--border, #494d64);
+        border-radius: 5px;
+        background: var(--bg-elevated, #1e2030);
+        color: var(--text, #cad3f5);
+        font: inherit;
+      }
+      .me-scrub {
+        flex: 1;
+        min-width: 80px;
+      }
+      .me-time {
+        color: var(--text-muted, #a5adcb);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
       .me-bar {
         flex: none;
         width: 190px;
@@ -57,9 +86,21 @@
       .me-bar input#me-name,
       .me-bar input#me-rot,
       .me-bar input#me-vert-x,
-      .me-bar input#me-vert-y {
+      .me-bar input#me-vert-y,
+      .me-bar input.me-cal {
         width: 100%;
         box-sizing: border-box;
+      }
+      .me-bar .me-head {
+        color: var(--text, #cad3f5);
+        font-weight: 600;
+        margin-top: 2px;
+      }
+      .me-bar .me-checkrow {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--text, #cad3f5);
       }
       .me-btn {
         height: 26px;
@@ -134,6 +175,14 @@
 
   <body>
     <div class="me-stage">
+      <div class="me-topbar">
+        <label for="me-enc">Encounter</label>
+        <select id="me-enc">
+          <option value="">— none —</option>
+        </select>
+        <input id="me-play" class="me-scrub" type="range" min="0" max="1000" step="1" value="0" disabled />
+        <span class="me-time" id="me-time">—</span>
+      </div>
       <canvas id="me-canvas" class="tool-select"></canvas>
       <div id="me-3d-view" hidden></div>
 
@@ -184,6 +233,20 @@
       <label for="me-vert-y">Vertex Y</label>
       <input id="me-vert-y" type="number" step="0.01" disabled />
       <button class="me-btn" id="me-vert-del" disabled>Delete Vertex</button>
+
+      <span class="me-sep"></span>
+
+      <div class="me-head">Calibration</div>
+      <button class="me-btn" id="me-cal-fit">Fit to log map</button>
+      <label for="me-cal-ypu">yards / unit</label>
+      <input id="me-cal-ypu" class="me-cal" type="number" step="0.0001" />
+      <label for="me-cal-rot">rotation °</label>
+      <input id="me-cal-rot" class="me-cal" type="number" step="0.5" />
+      <label for="me-cal-ox">origin X (yd)</label>
+      <input id="me-cal-ox" class="me-cal" type="number" step="0.1" />
+      <label for="me-cal-oy">origin Y (yd)</label>
+      <input id="me-cal-oy" class="me-cal" type="number" step="0.1" />
+      <label class="me-checkrow"><input id="me-cal-mirror" type="checkbox" /> mirror Y</label>
     </div>
   </body>
 </html>

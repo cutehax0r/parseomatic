@@ -251,20 +251,21 @@ Notes:
 
 ### v1 bootstrap shape (what the editor writes today)
 
-Pending real calibration / encounter UI, the editor emits `schema: 2`
-and scaffolds two **hand-editable** blocks with identity defaults. For
-now this supersedes the older `worldBounds` + separate `raid.json` split
+The editor emits `schema: 2`. `calibration` is now editor-owned (the
+right-toolbar Calibration fields); `encounters` is still hand-edited.
+This supersedes the older `worldBounds` + separate `raid.json` split
 above — the transform and the `encounterID → map` binding both live in
 the map file.
 
 ```jsonc
 {
   "schema": 2,
-  "calibration": {            // doc-unit → world-yard similarity transform:
-    "yardsPerUnit": 1,        //   world = rotate(doc * yardsPerUnit, rotationDeg) + originYards
+  "calibration": {            // doc-unit → world-yard transform:
+    "yardsPerUnit": 1,        //   world = R(rotationDeg)·(doc · yardsPerUnit), Y flipped if mirrorY, + originYards
     "rotationDeg": 0,         // identity == "doc units already are combat-log yards"
-    "originYards": [0, 0]
-  },
+    "originYards": [0, 0],
+    "mirrorY": false          // WoW's zone-map image is a mirrored frame vs world axes;
+  },                          //   "Fit to log map" sets rotationDeg 90 + mirrorY true from the MAP_CHANGE box
   "encounters": {             // keyed by the numeric encounterID from ENCOUNTER_START;
     "default": {              // "default" applies to any encounter with no entry
       "orientationDeg": 0,    // spin the whole scene to match how players hold the arena
