@@ -9,6 +9,10 @@
 
 import "../ui/widgets"; // registers replay-scene / encounter-title / ...
 
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
+
 import { buildView, type BuiltView } from "../ui/panel";
 import { createViewContext, type ViewContext } from "../ui/context";
 import { replaySeries } from "../ui/replay-series";
@@ -280,6 +284,37 @@ function mergeBossGuids(
 let ctx: ViewContext | null = null;
 let built: BuiltView | null = null;
 let paintSeq = 0;
+let devMapWired = false;
+
+// View > Developer > Pick Map / Clear Map -- swap the replay's generic
+// deck for an authored `.map.json` (a dev sanity check; not calibrated).
+async function onDevMap(pick: boolean): Promise<void> {
+  const scene = built?.get("scene") as { setMap?(doc: unknown): void } | undefined;
+  if (!scene?.setMap) return;
+  if (!pick) {
+    scene.setMap(null);
+    return;
+  }
+  let defaultPath: string | undefined;
+  try {
+    defaultPath = await invoke<string>("maps_dir_path");
+  } catch {
+    /* no maps dir yet */
+  }
+  const picked = await open({
+    multiple: false,
+    directory: false,
+    defaultPath,
+    filters: [{ name: "Map", extensions: ["json"] }],
+  });
+  if (typeof picked !== "string") return;
+  try {
+    const text = await invoke<string>("read_map_text", { path: picked });
+    scene.setMap(JSON.parse(text));
+  } catch (err) {
+    console.error("pick map:", err);
+  }
+}
 
 export function renderReplay(): void {
   const mount = document.querySelector<HTMLElement>("#replay-mount");
@@ -291,6 +326,10 @@ export function renderReplay(): void {
   }
   if (!built) {
     built = buildView(spec, mount, ctx);
+  }
+  if (!devMapWired) {
+    devMapWired = true;
+    void listen<boolean>("dev-map", (e) => void onDevMap(e.payload));
   }
   void paint();
 }

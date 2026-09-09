@@ -55,7 +55,7 @@ launch-screen recent-file click). It calls `get_or_parse`, and on success:
 2. `attach_window_to_log` — records the `Arc` in `WindowLogs` under this
    window's label, and emits a `log-changed` event so the window's own
    frontend re-fetches its state (via the `window_info` command).
-3. `apply_window_chrome` — sets the window title to `parseomatic:
+3. `apply_window_chrome` — sets the window title to `Parseomatic:
    <filename>` and, on macOS, the title-bar proxy icon
    (`NSWindow.setRepresentedFilename`).
 

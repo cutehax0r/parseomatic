@@ -1486,7 +1486,7 @@ async function refreshStatus() {
     currentViewMode = "encounters";
   }
   // Encounters + Overview + Character + Damage have toolbar buttons
-  // (Debug/Raw are menu-only, under View > Developer).
+  // (Debug/Raw are menu-only, under the Develop menu).
   encountersBtn.setAttribute("aria-pressed", String(currentViewMode === "encounters"));
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
   replayBtn.setAttribute("aria-pressed", String(currentViewMode === "replay"));

@@ -14,6 +14,13 @@
 
 5. puddle. Some abilities are ground targeted. we should draw these as little circles on the ground with a small border wall. we probably need a list of sizes for these items.  if we have the x/7 coord where it's cast then great, otherwise we may have to compute one by drawing a ring around all targets it hits.
 
+6. smash. A circle appears around the player about 5 player units big, like the target circle but not filled.  Another circle starts at the player starts at the player's center and grows outword over a period of 1 second, when it touches the outer ring it the column formed by the outer circle quickly ramps up to 2x player hightthen back down and everything disappears.
+
+7. smash but ground - same as the smash but on the ground rather than focused on a player.
+
+
 when a player has multiple buffs or debuffs we'll show those as a second cube/sphere slightly larger (maybe 0.25 character radius further out). We'll probably want to color code these.
 
 To drive this we'll need a categorization system for buffs/debuffs - probably a list of spell ids or something.  we'll also need a list of how important each one is: we'll only show "important" ones.  this list should be easily configurable.
+
+We'll want to consider making these effects colorable so we can differentiate "this is a soak puddle" vs "this is a death puddle" etc.

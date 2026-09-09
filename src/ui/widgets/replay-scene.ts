@@ -604,6 +604,136 @@ function framingOf(fitBox: [number, number, number, number] | null): Framing {
   return { cx, cy, span };
 }
 
+// ---- dev "Pick Map" preview (View > Developer) -----------------------
+// Swap the generic deck box for an authored `.map.json` -- a sanity check
+// in the real renderer, NOT calibrated to unit positions (its coords are
+// centred + scaled to the framed span). `safe`/`wall` polygons are
+// extruded DOWN to the same depth as the default platform and grid-
+// textured to match it; a `wall` also rises above the deck. Each `void`
+// is a hole in whatever solid contains it; `mark` is a flat decal.
+type DevMapPoly = { id?: string; points?: [number, number][] };
+type DevMapLayer = { kind?: string; polys?: DevMapPoly[] };
+type DevMapDoc = { layers?: DevMapLayer[] };
+
+const DEV_MAP_WALL_RAISE = 5; // wall top this far above the deck datum
+const DEV_MAP_MARK_DEPTH = 0.15;
+// A `mark` decal renders as a darker grey than the deck ("base") --
+// Catppuccin "crust", the darkest step down.
+const DEV_MAP_MARK_COLOR = "var(--ctp-crust)";
+
+function pointInPoly(px: number, py: number, pts: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i];
+    const [xj, yj] = pts[j];
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function polyBBoxCenter(pts: [number, number][]): [number, number] {
+  let a = Infinity;
+  let b = Infinity;
+  let c = -Infinity;
+  let d = -Infinity;
+  for (const [x, y] of pts) {
+    a = Math.min(a, x);
+    b = Math.min(b, y);
+    c = Math.max(c, x);
+    d = Math.max(d, y);
+  }
+  return [(a + c) / 2, (b + d) / 2];
+}
+
+function buildDevMap(doc: DevMapDoc, span: number): THREE.Group | null {
+  const kinds = new Map<string, [number, number][][]>();
+  for (const layer of doc.layers ?? []) {
+    const k = layer.kind ?? "";
+    for (const p of layer.polys ?? []) {
+      const pts = (p.points ?? []).filter(
+        (q): q is [number, number] => Array.isArray(q) && q.length >= 2,
+      );
+      if (pts.length >= 3) (kinds.get(k) ?? kinds.set(k, []).get(k)!).push(pts);
+    }
+  }
+  const solids = [
+    ...(kinds.get("safe") ?? []).map((p) => ["safe", p] as const),
+    ...(kinds.get("wall") ?? []).map((p) => ["wall", p] as const),
+  ];
+  const voids = kinds.get("void") ?? [];
+  const marks = kinds.get("mark") ?? [];
+  if (!solids.length && !marks.length) return null;
+
+  let mnx = Infinity;
+  let mny = Infinity;
+  let mxx = -Infinity;
+  let mxy = -Infinity;
+  for (const p of [...solids.map(([, p]) => p), ...voids, ...marks])
+    for (const [x, y] of p) {
+      mnx = Math.min(mnx, x);
+      mny = Math.min(mny, y);
+      mxx = Math.max(mxx, x);
+      mxy = Math.max(mxy, y);
+    }
+  const cx = (mnx + mxx) / 2;
+  const cy = (mny + mxy) / 2;
+  const k = span / (Math.max(mxx - mnx, mxy - mny) || 1);
+  const trace = (dst: THREE.Shape | THREE.Path, pts: [number, number][]) =>
+    pts.forEach(([x, y], i) => {
+      const px = (x - cx) * k;
+      const py = (y - cy) * k;
+      i === 0 ? dst.moveTo(px, py) : dst.lineTo(px, py);
+    });
+
+  const g = new THREE.Group();
+
+  // One shared grid texture for every safe/wall face -- same look as the
+  // default box. ExtrudeGeometry UVs are in shape units, so `1/CELL` puts
+  // one grid tile per CELL scene units, matching the box's `span/CELL`.
+  let gridTex: THREE.Texture | null = null;
+  if (solids.length) {
+    gridTex = gridTexture();
+    gridTex.repeat.set(1 / CELL, 1 / CELL);
+  }
+
+  for (const [kind, pts] of solids) {
+    const shp = new THREE.Shape();
+    trace(shp, pts);
+    for (const v of voids) {
+      const [vx, vy] = polyBBoxCenter(v);
+      if (!pointInPoly(vx, vy, pts)) continue;
+      const hole = new THREE.Path();
+      trace(hole, v);
+      shp.holes.push(hole);
+    }
+    // Extrude down to the platform's depth; a wall also rises above deck.
+    const depth = PILLAR_DEPTH + (kind === "wall" ? DEV_MAP_WALL_RAISE : 0);
+    const geo = new THREE.ExtrudeGeometry(shp, { depth, bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2); // shape plane -> bottom, extrude -> +y
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshStandardMaterial({ map: gridTex ?? undefined, roughness: 0.95, metalness: 0 }),
+    );
+    mesh.receiveShadow = true;
+    mesh.position.y = FLOOR_LIFT - PILLAR_DEPTH; // top ends at FLOOR_LIFT (+RAISE for a wall)
+    g.add(mesh);
+  }
+
+  for (const pts of marks) {
+    const shp = new THREE.Shape();
+    trace(shp, pts);
+    const geo = new THREE.ExtrudeGeometry(shp, { depth: DEV_MAP_MARK_DEPTH, bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2);
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({ color: cssColor(DEV_MAP_MARK_COLOR), transparent: true, opacity: 0.8 }),
+    );
+    mesh.position.y = FLOOR_LIFT + 0.05;
+    g.add(mesh);
+  }
+  return g;
+}
+
 class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   readonly element: HTMLElement;
 
@@ -615,6 +745,8 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
   private sun = new THREE.DirectionalLight(0xffffff, 2.4);
   private platform?: THREE.Mesh; // one box: grid-textured top + sides, dropping into the mist
+  private voidFloor?: THREE.Mesh; // opaque backstop below the mist -- fixes transparency sorting past the deck
+  private devMap: THREE.Group | null = null; // View > Developer > Pick Map override
   private gridTexTop?: THREE.Texture;
   private gridTexSide?: THREE.Texture;
   private mist = new THREE.Group();
@@ -1035,6 +1167,21 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.platform.receiveShadow = true;
     this.scene.add(this.platform);
 
+    // An opaque backstop well below the mist. Without it, transparent /
+    // non-depth-writing objects (cast arcs, marker columns, the mist
+    // discs) have nothing to sort against wherever the view sees past the
+    // deck -- a `void` hole in an authored map, or the platform edge --
+    // and composite wrong / pop as the camera orbits. Big + low; widened
+    // with the span in `reframe`.
+    const lowestMist = Math.min(...MIST_LAYERS.map((l) => l[0]));
+    this.voidFloor = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({ color: cssColor("var(--ctp-crust)") }),
+    );
+    this.voidFloor.rotation.x = -Math.PI / 2;
+    this.voidFloor.position.y = FLOOR_LIFT + lowestMist - 10;
+    this.scene.add(this.voidFloor);
+
     // The "cloudy mist" the pillar rises out of -- stacked translucent
     // discs just below the floor, tinted dark. Unlit + fog-aware so the
     // outer reaches blend into the void. Scaled to the span in reframe.
@@ -1109,6 +1256,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     const { span } = this.framing;
 
     if (this.platform) this.platform.scale.set(span, 1, span);
+    if (this.voidFloor) this.voidFloor.scale.set(span * 14, span * 14, 1);
     // Top face: `span/CELL` cells each way. Side faces: `span/CELL`
     // across, `PILLAR_DEPTH/CELL` down -- so cells are CELL-yards on every
     // face and the grid lines line up where the top meets the sides.
@@ -1160,7 +1308,32 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.controls.update();
   }
 
+  // View > Developer > Pick Map: swap the deck box for an authored map,
+  // or `null` to restore it. Untrusted file -> parsed defensively.
+  setMap(doc: DevMapDoc | null): void {
+    if (this.devMap) {
+      this.scene.remove(this.devMap);
+      this.devMap.traverse((o) => {
+        const m = o as THREE.Mesh;
+        m.geometry?.dispose();
+        for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+          if (!mat) continue;
+          (mat as THREE.MeshStandardMaterial).map?.dispose();
+          mat.dispose();
+        }
+      });
+      this.devMap = null;
+    }
+    if (doc && typeof doc === "object") {
+      this.devMap = buildDevMap(doc, this.framing.span);
+      if (this.devMap) this.scene.add(this.devMap);
+    }
+    if (this.platform) this.platform.visible = !this.devMap;
+    this.renderOnce();
+  }
+
   update(props: ReplaySceneProps): void {
+    this.setMap(null); // a new encounter -> drop any dev map override
     this.framing = framingOf(props.fitBox);
     this.startMs = props.startMs;
     this.endMs = props.endMs;

@@ -2,6 +2,7 @@ mod damage;
 mod deaths;
 mod hits;
 mod interrupts;
+mod maps;
 mod movement;
 mod parser;
 mod query;
@@ -155,10 +156,10 @@ impl ViewKind {
 #[derive(Default)]
 struct WindowViewState(Mutex<HashMap<String, ViewKind>>);
 
-// Direct handles to the three view CheckMenuItems (Overview lives in the
-// View menu, Debug/Raw in its "Developer" submenu). Held individually
-// rather than via `Submenu::get`, which only searches a menu's *direct*
-// children and never recurses into a nested submenu.
+// Direct handles to the view CheckMenuItems (Encounters..Timeline live in
+// the View menu, Debug/Raw in the top-level "Develop" menu). Held
+// individually rather than via `Submenu::get`, which only searches a
+// menu's *direct* children and never recurses into a nested submenu.
 struct ViewMenu {
     encounters: CheckMenuItem<tauri::Wry>,
     overview: CheckMenuItem<tauri::Wry>,
@@ -203,14 +204,13 @@ struct HistoryMenu {
     forward: MenuItem<tauri::Wry>,
 }
 
-// The File > "Open Recent" submenu -- its items are rebuilt by
+// Handle to the File menu plus its "Duplicate Window" item. The recent-log
+// entries sit inline in this menu (no submenu) and are rebuilt in place by
 // `refresh_recent_menu` from `recent_logs.json` at startup and after every
-// open; each item's id is `recent::<full path>`.
-struct RecentMenu(Submenu<tauri::Wry>);
-
-// Handle to File > "Duplicate Window", so it can be greyed out when the
-// focused window has no log to copy from.
+// open; each entry's id is `recent::<full path>`. `duplicate` is greyed
+// out when the focused window has no log to copy from.
 struct FileMenu {
+    menu: Submenu<tauri::Wry>,
     duplicate: MenuItem<tauri::Wry>,
 }
 
@@ -373,7 +373,7 @@ fn apply_window_chrome(window: WebviewWindow, log: Arc<ParsedLog>) {
     let _ = window.clone().run_on_main_thread(move || {
         let filename = filename_of(&log);
 
-        let _ = window.set_title(&format!("parseomatic: {filename}"));
+        let _ = window.set_title(&format!("Parseomatic: {filename}"));
 
         #[cfg(target_os = "macos")]
         set_represented_filename(&window, &log.path.to_string_lossy());
@@ -459,19 +459,38 @@ fn push_recent(app: &AppHandle, path: &Path) {
     }
 }
 
-/// The number of recent files to list in the File > Open Recent menu (the
+/// The number of recent files to list inline in the File menu (the
 /// on-disk MRU keeps more -- see `push_recent`).
 const RECENT_MENU_LIMIT: usize = 10;
 
-/// Rebuilds the File > Open Recent submenu from `recent_logs.json`,
-/// dropping entries whose file no longer exists. Must run on the main
-/// thread (menu mutation); callers off it go via `run_on_main_thread`.
+/// The count of fixed items at the head of the File menu (New Window,
+/// Duplicate Window, separator, Open...) and at its tail (separator, Close
+/// Window). The recent-log entries live between them and are the only part
+/// `refresh_recent_menu` touches.
+const FILE_MENU_PREFIX: usize = 4;
+const FILE_MENU_SUFFIX: usize = 2;
+
+/// Rebuilds the inline recent-log entries in the File menu from
+/// `recent_logs.json`, dropping entries whose file no longer exists. Must
+/// run on the main thread (menu mutation); callers off it go via
+/// `run_on_main_thread`.
 fn refresh_recent_menu(app: &AppHandle) {
-    let Some(recent) = app.try_state::<RecentMenu>() else {
+    let Some(file) = app.try_state::<FileMenu>() else {
         return;
     };
-    let submenu = &recent.0;
-    while matches!(submenu.remove_at(0), Ok(Some(_))) {}
+    let menu = &file.menu;
+
+    // Drop whatever recent entries are there now, leaving the fixed head
+    // and tail untouched.
+    loop {
+        let count = menu.items().map(|v| v.len()).unwrap_or(0);
+        if count <= FILE_MENU_PREFIX + FILE_MENU_SUFFIX {
+            break;
+        }
+        if menu.remove_at(FILE_MENU_PREFIX).is_err() {
+            break;
+        }
+    }
 
     let files: Vec<String> = read_recent(app)
         .into_iter()
@@ -483,18 +502,19 @@ fn refresh_recent_menu(app: &AppHandle) {
         if let Ok(item) =
             MenuItem::with_id(app, "recent_none", "No Recent Files", false, None::<&str>)
         {
-            let _ = submenu.append(&item);
+            let _ = menu.insert(&item, FILE_MENU_PREFIX);
         }
         return;
     }
 
-    for path in &files {
+    for (i, path) in files.iter().enumerate() {
         let label = Path::new(path)
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.clone());
-        if let Ok(item) = MenuItem::with_id(app, format!("recent::{path}"), label, true, None::<&str>) {
-            let _ = submenu.append(&item);
+        if let Ok(item) = MenuItem::with_id(app, format!("recent::{path}"), label, true, None::<&str>)
+        {
+            let _ = menu.insert(&item, FILE_MENU_PREFIX + i);
         }
     }
 }
@@ -618,7 +638,7 @@ fn create_empty_window(app: &AppHandle) -> Option<WebviewWindow> {
         &label,
         tauri::WebviewUrl::App("index.html".into()),
     )
-    .title("parseomatic")
+    .title("Parseomatic")
     // Keep in sync with tauri.conf.json's window size. Logical pixels, so
     // this is ~1200x800 CSS px regardless of display scaling.
     .inner_size(1200.0, 800.0)
@@ -658,6 +678,24 @@ fn open_settings_window(app: &AppHandle) {
     )
     .title("Settings")
     .inner_size(420.0, 320.0)
+    .build();
+}
+
+/// Opens the (singleton) map editor window -- `map-editor.html` /
+/// `src/map-editor.ts`, backed by `src/maps.rs`. Same main-thread caveat
+/// as `open_settings_window`; not attached to any log.
+fn open_map_editor_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("map-editor") {
+        let _ = window.set_focus();
+        return;
+    }
+    let _ = tauri::WebviewWindowBuilder::new(
+        app,
+        "map-editor",
+        tauri::WebviewUrl::App("map-editor.html".into()),
+    )
+    .title("Map Editor")
+    .inner_size(1100.0, 760.0)
     .build();
 }
 
@@ -2034,7 +2072,6 @@ struct BuiltMenu {
     window_menu: Submenu<tauri::Wry>,
     view: ViewMenu,
     history: HistoryMenu,
-    recent: RecentMenu,
     file: FileMenu,
 }
 
@@ -2046,6 +2083,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     // on whether the focused window has a log.
     let new_window_item =
         MenuItem::with_id(app, "new_window", "New Window", true, Some("CmdOrCtrl+N"))?;
+    let new_map_item = MenuItem::with_id(app, "new_map", "New Map", true, None::<&str>)?;
     let duplicate_item = MenuItem::with_id(
         app,
         "duplicate_window",
@@ -2054,16 +2092,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         Some("CmdOrCtrl+Shift+N"),
     )?;
 
-    // Populated at startup and after every open by `refresh_recent_menu`
-    // (each item's id is `recent::<full path>`).
-    let recent_menu = SubmenuBuilder::new(app, "Open Recent").build()?;
-
+    // Window creation up top, then the open options. The recent-log entries
+    // are inserted inline right after "Open..." by `refresh_recent_menu`
+    // (each id is `recent::<full path>`) -- keep FILE_MENU_PREFIX /
+    // FILE_MENU_SUFFIX in step with this layout.
     let file_menu = SubmenuBuilder::new(app, "File")
-        .item(&open_item)
-        .item(&recent_menu)
-        .separator()
         .item(&new_window_item)
         .item(&duplicate_item)
+        .separator()
+        .item(&open_item)
         .separator()
         .close_window()
         .build()?;
@@ -2081,8 +2118,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     // A radio group over independent CheckMenuItems (muda has no distinct
     // radio-item type) -- Encounters starts checked to match
     // ViewKind::default(). See sync_view_menu for how exclusivity is
-    // enforced on selection. Encounters + Overview sit in View; Debug/Raw
-    // are tucked into a "Developer" submenu (not part of the everyday flow).
+    // enforced on selection. Encounters..Timeline sit in View; Debug/Raw
+    // live in the top-level "Develop" menu (not part of the everyday flow).
     let encounters_view_item = CheckMenuItem::with_id(
         app,
         ViewKind::Encounters.menu_id(),
@@ -2175,9 +2212,18 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
     let raw_view_item =
         CheckMenuItem::with_id(app, ViewKind::Raw.menu_id(), "Raw", true, false, None::<&str>)?;
-    let developer_menu = SubmenuBuilder::new(app, "Developer")
+    let pick_map_item = MenuItem::with_id(app, "pick_map", "Pick Map\u{2026}", true, None::<&str>)?;
+    let clear_map_item = MenuItem::with_id(app, "clear_map", "Clear Map", true, None::<&str>)?;
+    // Top-level "Develop" menu: the Debug / Raw views plus the map tools
+    // (New Map opens the map editor; Pick / Clear Map swap the replay's
+    // deck). Not part of the everyday flow.
+    let develop_menu = SubmenuBuilder::new(app, "Develop")
         .item(&debug_view_item)
         .item(&raw_view_item)
+        .separator()
+        .item(&new_map_item)
+        .item(&pick_map_item)
+        .item(&clear_map_item)
         .build()?;
 
     // Zoom: standard Cmd + / Cmd - / Cmd 0. Driven entirely through our
@@ -2189,9 +2235,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let zoom_reset_item =
         MenuItem::with_id(app, "zoom_reset", "Actual Size", true, Some("CmdOrCtrl+0"))?;
 
-    // Three groups, separator between: raid-wide views (Encounters /
-    // Overview / Replay), per-character views (Character ... Movement),
-    // then the Developer submenu (Debug / Raw).
+    // Two groups, separator between: raid-wide views (Encounters /
+    // Overview / Interrupts / Replay) and per-character views
+    // (Character ... Timeline), then the zoom controls.
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&encounters_view_item)
         .item(&overview_view_item)
@@ -2205,8 +2251,6 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         .item(&deaths_view_item)
         .item(&movement_view_item)
         .item(&timeline_view_item)
-        .separator()
-        .item(&developer_menu)
         .separator()
         .item(&zoom_in_item)
         .item(&zoom_out_item)
@@ -2251,7 +2295,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     {
         let settings_item =
             MenuItem::with_id(app, "open_settings", "Settings...", true, Some("CmdOrCtrl+,"))?;
-        let app_menu = SubmenuBuilder::new(app, "parseomatic")
+        let app_menu = SubmenuBuilder::new(app, "Parseomatic")
             .about(None)
             .separator()
             .item(&settings_item)
@@ -2271,6 +2315,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         .item(&file_menu)
         .item(&edit_menu)
         .item(&view_menu)
+        .item(&develop_menu)
         .item(&history_menu)
         .item(&window_menu)
         .build()?;
@@ -2296,8 +2341,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             back: history_back,
             forward: history_forward,
         },
-        recent: RecentMenu(recent_menu),
-        file: FileMenu { duplicate: duplicate_item },
+        file: FileMenu { menu: file_menu, duplicate: duplicate_item },
     })
 }
 
@@ -2318,7 +2362,7 @@ pub fn run() {
         .manage(NextWindowId::default())
         .manage(Zoom::default())
         .setup(|app| {
-            let BuiltMenu { menu, window_menu, view, history, recent, file } = build_menu(app.handle())?;
+            let BuiltMenu { menu, window_menu, view, history, file } = build_menu(app.handle())?;
             app.set_menu(menu)?;
             // Must run after set_menu -- muda resolves the submenu through
             // the *installed* main menu's delegate, so calling this any
@@ -2327,7 +2371,6 @@ pub fn run() {
             window_menu.set_as_windows_menu_for_nsapp()?;
             app.manage(view);
             app.manage(history);
-            app.manage(recent);
             app.manage(file);
             app.manage(PendingInit::default());
             refresh_recent_menu(app.handle());
@@ -2335,7 +2378,7 @@ pub fn run() {
             // A window with nothing open shows the launch screen (recent
             // logs + an Open button) -- the frontend renders it whenever
             // `window_info` is null. A path on the command line
-            // (`parseomatic /path/to/log.txt`) skips straight to it.
+            // (`Parseomatic /path/to/log.txt`) skips straight to it.
             if let Some(main_window) = app.get_webview_window("main") {
                 register_close_cleanup(&main_window);
                 register_drag_drop(&main_window);
@@ -2381,6 +2424,9 @@ pub fn run() {
                 std::thread::spawn(move || {
                     create_empty_window(&app);
                 });
+            } else if event.id() == "new_map" {
+                let app = app.clone();
+                std::thread::spawn(move || open_map_editor_window(&app));
             } else if event.id() == "duplicate_window" {
                 // The frontend owns the selection to copy, so bounce it
                 // there -- it calls back into `duplicate_window` with the
@@ -2404,6 +2450,13 @@ pub fn run() {
                 // directly rather than spawning a thread.
                 if let Some(window) = focused_webview_window(app) {
                     apply_view_change(&window, view);
+                }
+            } else if event.id() == "pick_map" || event.id() == "clear_map" {
+                // Developer aid: swap the replay's generic deck for an
+                // authored map (or restore it). The frontend owns the file
+                // dialog + the replay scene.
+                if let Some(window) = focused_webview_window(app) {
+                    let _ = window.emit("dev-map", event.id() == "pick_map");
                 }
             } else if let Some(cmd) = match event.id().as_ref() {
                 "history_back" => Some("back"),
@@ -2442,7 +2495,11 @@ pub fn run() {
             interrupts,
             replay_series,
             zoom,
-            open_data_dir
+            open_data_dir,
+            maps::save_map,
+            maps::read_image_bytes,
+            maps::maps_dir_path,
+            maps::read_map_text
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

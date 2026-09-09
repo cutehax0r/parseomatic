@@ -5,7 +5,7 @@
 
 # Help target
 help:
-	@echo "Makefile targets for parseomatic:"
+	@echo "Makefile targets for Parseomatic:"
 	@echo ""
 	@echo "  make help                     Display this help message"
 	@echo ""
@@ -57,12 +57,12 @@ build: install
 	@# usually leaves it mounted. Every leftover mount registers another
 	@# com.cutehax0r.parseomatic with Launch Services, and macOS then can't
 	@# tell which copy to launch (you get the dev build *and* a stale one).
-	@# Unregister + unmount any parseomatic DMG we find.
+	@# Unregister + unmount any Parseomatic DMG we find.
 	@if [ "$$(uname)" = "Darwin" ]; then \
-		for v in /Volumes/dmg.* /Volumes/parseomatic; do \
-			if [ -e "$$v/parseomatic.app" ]; then \
+		for v in /Volumes/dmg.* /Volumes/Parseomatic; do \
+			if [ -e "$$v/Parseomatic.app" ]; then \
 				echo "Cleaning up mounted DMG $$v"; \
-				[ -x "$(LSREGISTER)" ] && "$(LSREGISTER)" -u "$$v/parseomatic.app" 2>/dev/null || true; \
+				[ -x "$(LSREGISTER)" ] && "$(LSREGISTER)" -u "$$v/Parseomatic.app" 2>/dev/null || true; \
 				hdiutil detach -quiet "$$v" 2>/dev/null || hdiutil detach -force -quiet "$$v" 2>/dev/null || true; \
 			fi; \
 		done; \
@@ -76,7 +76,7 @@ clean:
 	cd src-tauri && cargo clean
 
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-APP_BUNDLE := src-tauri/target/release/bundle/macos/parseomatic.app
+APP_BUNDLE := src-tauri/target/release/bundle/macos/Parseomatic.app
 
 # The bundled release app registers itself as a .txt file handler with
 # macOS Launch Services (see CFBundleDocumentTypes in tauri.conf.json).
@@ -87,23 +87,23 @@ APP_BUNDLE := src-tauri/target/release/bundle/macos/parseomatic.app
 # every `make build` leaves its .dmg mounted, so registrations pile up and
 # macOS can't tell which copy to launch. This purges *all* of them.
 uninstall:
-	@pkill -f "MacOS/parseomatic" 2>/dev/null || true
+	@pkill -f "MacOS/Parseomatic" 2>/dev/null || true
 	@if [ "$$(uname)" = "Darwin" ] && [ -x "$(LSREGISTER)" ]; then \
-		for v in /Volumes/dmg.* /Volumes/parseomatic; do \
-			if [ -e "$$v/parseomatic.app" ]; then \
+		for v in /Volumes/dmg.* /Volumes/Parseomatic /Volumes/parseomatic; do \
+			if [ -e "$$v/Parseomatic.app" ] || [ -e "$$v/parseomatic.app" ]; then \
 				echo "Detaching mounted DMG $$v"; \
 				hdiutil detach -force -quiet "$$v" 2>/dev/null || true; \
 			fi; \
 		done; \
 		n=0; \
 		for p in $$("$(LSREGISTER)" -dump 2>/dev/null \
-			| sed -n 's/^[[:space:]]*path:[[:space:]]*\(.*parseomatic\.app\) (0x[0-9a-f]*)$$/\1/p' \
+			| sed -n 's/^[[:space:]]*path:[[:space:]]*\(.*[Pp]arseomatic\.app\) (0x[0-9a-f]*)$$/\1/p' \
 			| sort -u); do \
 			"$(LSREGISTER)" -u "$$p" 2>/dev/null && n=$$((n+1)) || true; \
 		done; \
 		[ -d "$(APP_BUNDLE)" ] && "$(LSREGISTER)" -u "$(APP_BUNDLE)" 2>/dev/null || true; \
-		echo "Unregistered $$n parseomatic bundle(s) from Launch Services."; \
-		echo "(A reboot clears any leftover /Volumes/parseomatic volume records.)"; \
+		echo "Unregistered $$n Parseomatic bundle(s) from Launch Services."; \
+		echo "(A reboot clears any leftover /Volumes/Parseomatic volume records.)"; \
 	else \
 		echo "Nothing to do (not on macOS, or lsregister missing)."; \
 	fi

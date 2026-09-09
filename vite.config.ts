@@ -68,6 +68,7 @@ export default defineConfig(async () => ({
       input: {
         main: "index.html",
         settings: "settings.html",
+        mapEditor: "map-editor.html",
       },
     },
   },

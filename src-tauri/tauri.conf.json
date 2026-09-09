@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "parseomatic",
+  "productName": "Parseomatic",
   "version": "0.1.0",
   "identifier": "com.cutehax0r.parseomatic",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "parseomatic",
+        "title": "Parseomatic",
         "width": 1200,
         "height": 800
       }

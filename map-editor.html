@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Map Editor</title>
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: row;
+        overflow: hidden;
+        font: 13px/1.4 system-ui, sans-serif;
+        color: var(--text, #cad3f5);
+        background: var(--ctp-base, #24273a);
+      }
+      .me-stage {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .me-bar {
+        flex: none;
+        width: 190px;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+        padding: 10px;
+        border-left: 1px solid var(--border, #494d64);
+        overflow-y: auto;
+      }
+      .me-bar .me-sep {
+        height: 1px;
+        align-self: stretch;
+        background: var(--border, #494d64);
+        margin: 2px 0;
+      }
+      .me-bar label {
+        color: var(--text-muted, #a5adcb);
+      }
+      .me-bar input[type="text"],
+      .me-bar input[type="number"] {
+        height: 26px;
+        border: 1px solid var(--border, #494d64);
+        border-radius: 5px;
+        background: var(--bg-elevated, #1e2030);
+        color: var(--text, #cad3f5);
+        padding: 0 6px;
+        font: inherit;
+      }
+      .me-bar input#me-id,
+      .me-bar input#me-name {
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .me-btn {
+        height: 26px;
+        padding: 0 10px;
+        border: 1px solid var(--border, #494d64);
+        border-radius: 5px;
+        background: var(--bg-elevated, #1e2030);
+        color: var(--text, #cad3f5);
+        cursor: pointer;
+        font: inherit;
+      }
+      .me-btn:hover {
+        background: var(--bg-hover, #363a4f);
+      }
+      .me-btn:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .me-btn.is-active {
+        outline: 2px solid var(--accent, #8aadf4);
+        outline-offset: -1px;
+      }
+      .me-btn[data-kind="safe"] {
+        border-left: 4px solid #a6da95;
+      }
+      .me-btn[data-kind="wall"] {
+        border-left: 4px solid #f5a97f;
+      }
+      .me-btn[data-kind="void"] {
+        border-left: 4px solid #ed8796;
+      }
+      .me-btn[data-kind="mark"] {
+        border-left: 4px solid #eed49f;
+      }
+      #me-canvas {
+        flex: 1;
+        min-height: 0;
+        display: block;
+        width: 100%;
+        background:
+          repeating-conic-gradient(#1b1e2c 0% 25%, #191b27 0% 50%) 50% / 24px 24px;
+        cursor: crosshair;
+      }
+      #me-canvas.tool-select {
+        cursor: default;
+      }
+      #me-3d-view {
+        flex: 1;
+        min-height: 0;
+        position: relative;
+        background: #1e2030;
+      }
+      #me-3d-view canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .me-status {
+        padding: 4px 12px;
+        border-top: 1px solid var(--border, #494d64);
+        color: var(--text-muted, #a5adcb);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+    </style>
+    <script type="module" src="/src/map-editor.ts" defer></script>
+  </head>
+
+  <body>
+    <div class="me-stage">
+      <canvas id="me-canvas" class="tool-select"></canvas>
+      <div id="me-3d-view" hidden></div>
+
+      <div class="me-status" id="me-status">
+        Open a backdrop, then click a shape button to trace. Wheel = zoom, drag = pan.
+        Double-click or Enter closes a shape; Esc cancels; Shift = 15° angles.
+      </div>
+    </div>
+
+    <div class="me-bar">
+      <label for="me-id">Map ID</label>
+      <input id="me-id" type="number" min="1" step="1" placeholder="e.g. 2606" />
+      <label for="me-name">Name</label>
+      <input id="me-name" type="text" placeholder="optional" />
+      <button class="me-btn" id="me-open-map">Open Map…</button>
+      <button class="me-btn" id="me-open">Backdrop…</button>
+      <button class="me-btn" id="me-save" disabled>Save</button>
+      <button class="me-btn" id="me-3d">3D</button>
+
+      <span class="me-sep"></span>
+
+      <button class="me-btn is-active" id="me-tool-select">Select</button>
+      <button class="me-btn" data-kind="safe" data-draw>+ Safe</button>
+      <button class="me-btn" data-kind="wall" data-draw>+ Wall</button>
+      <button class="me-btn" data-kind="void" data-draw>+ Void</button>
+      <button class="me-btn" data-kind="mark" data-draw>+ Mark</button>
+      <button class="me-btn" id="me-tool-rect">▭ Rect</button>
+      <button class="me-btn" id="me-tool-circle">◯ Circle</button>
+
+      <span class="me-sep"></span>
+
+      <label for="me-selkind">Selected</label>
+      <select class="me-btn" id="me-selkind" disabled>
+        <option value="safe">safe</option>
+        <option value="wall">wall</option>
+        <option value="void">void</option>
+        <option value="mark">mark</option>
+      </select>
+      <button class="me-btn" id="me-del" disabled>Delete</button>
+    </div>
+  </body>
+</html>

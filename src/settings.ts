@@ -8,4 +8,4 @@ declare const __APP_VERSION__: string;
 declare const __BUILD_STAMP__: string;
 
 const el = document.querySelector("#settings-version");
-if (el) el.textContent = `parseomatic ${__APP_VERSION__} · built ${__BUILD_STAMP__}`;
+if (el) el.textContent = `Parseomatic ${__APP_VERSION__} · built ${__BUILD_STAMP__}`;

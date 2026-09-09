@@ -41,7 +41,7 @@ make uninstall              # unregister the built .app from macOS Launch Servic
 `make help` lists everything, including the release workflow.
 
 `make build` places the final artifacts under `src-tauri/target/release/bundle/`:
-- `macos/parseomatic.app` — the app bundle itself
-- `dmg/parseomatic_<version>_<arch>.dmg` — a disk image wrapping it, for distribution
+- `macos/Parseomatic.app` — the app bundle itself
+- `dmg/Parseomatic_<version>_<arch>.dmg` — a disk image wrapping it, for distribution
 
 Both are gitignored (`target/` isn't tracked). If a `.app` there was ever run directly (as opposed to via `make run`, which uses `target/debug/...`), macOS registers it with Launch Services — see `make uninstall` above.
