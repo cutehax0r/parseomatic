@@ -15,7 +15,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 type Kind = "safe" | "wall" | "void" | "mark";
-type Tool = "select" | "draw" | "rect" | "ellipse";
+type Tool = "select" | "draw" | "rect" | "ellipse" | "addvert";
 interface Shape {
   id: string;
   kind: Kind;
@@ -24,31 +24,36 @@ interface Shape {
 
 const newShapeId = () => `s${(seq++).toString(36)}${Date.now().toString(36).slice(-3)}`;
 
-// Axis-aligned rectangle from two opposite corners (TL -> TR -> BR -> BL).
+// Rectangle from two opposite corners (TL -> TR -> BR -> BL). Built in
+// *screen* space, then each corner mapped back to document units, so the
+// box stays square to the viewport while the view is rotated: rotate the
+// map to bring a slanted backdrop feature square-on, trace it with a
+// clean rectangle, and the stored polygon comes out correctly slanted.
+// `a` / `b` are document units; `toScreen` / `toDoc` fold in `view.rot`.
 function rectPoints(a: [number, number], b: [number, number]): [number, number][] | null {
-  const x0 = Math.min(a[0], b[0]);
-  const x1 = Math.max(a[0], b[0]);
-  const y0 = Math.min(a[1], b[1]);
-  const y1 = Math.max(a[1], b[1]);
+  const [ax, ay] = toScreen(a[0], a[1]);
+  const [bx, by] = toScreen(b[0], b[1]);
+  const x0 = Math.min(ax, bx);
+  const x1 = Math.max(ax, bx);
+  const y0 = Math.min(ay, by);
+  const y1 = Math.max(ay, by);
   if (x1 - x0 < 1e-3 || y1 - y0 < 1e-3) return null;
-  return [
-    [x0, y0],
-    [x1, y0],
-    [x1, y1],
-    [x0, y1],
-  ];
+  return [toDoc(x0, y0), toDoc(x1, y0), toDoc(x1, y1), toDoc(x0, y1)];
 }
 
 // A 10-sided regular polygon: `center`, radius = |center - edge|, with a
-// vertex placed at `edge`.
+// vertex placed at `edge`. Laid out in screen space (like `rectPoints`)
+// so the vertex phase follows the on-screen gesture under a rotated view.
 function decagonPoints(center: [number, number], edge: [number, number]): [number, number][] | null {
-  const r = Math.hypot(edge[0] - center[0], edge[1] - center[1]);
+  const [cx, cy] = toScreen(center[0], center[1]);
+  const [ex, ey] = toScreen(edge[0], edge[1]);
+  const r = Math.hypot(ex - cx, ey - cy);
   if (r < 1e-3) return null;
-  const a0 = Math.atan2(edge[1] - center[1], edge[0] - center[0]);
+  const a0 = Math.atan2(ey - cy, ex - cx);
   const n = 10;
   return Array.from({ length: n }, (_, i) => {
     const a = a0 + (i * 2 * Math.PI) / n;
-    return [center[0] + Math.cos(a) * r, center[1] + Math.sin(a) * r] as [number, number];
+    return toDoc(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
   });
 }
 
@@ -73,14 +78,20 @@ const view3dEl = $<HTMLElement>("me-3d-view");
 const selectBtn = $<HTMLButtonElement>("me-tool-select");
 const rectBtn = $<HTMLButtonElement>("me-tool-rect");
 const circleBtn = $<HTMLButtonElement>("me-tool-circle");
+const addvertBtn = $<HTMLButtonElement>("me-tool-addvert");
 const selKind = $<HTMLSelectElement>("me-selkind");
 const delBtn = $<HTMLButtonElement>("me-del");
 const statusEl = $<HTMLElement>("me-status");
+const rotInput = $<HTMLInputElement>("me-rot");
+const vertXInput = $<HTMLInputElement>("me-vert-x");
+const vertYInput = $<HTMLInputElement>("me-vert-y");
+const vertDelBtn = $<HTMLButtonElement>("me-vert-del");
 const drawButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-draw]")];
 
 // ---- state -------------------------------------------------------------
 const shapes: Shape[] = [];
 let selectedId: string | null = null;
+let selectedVertex: number | null = null; // index into the selected shape's points, when a vertex is picked
 let tool: Tool = "select";
 let drawKind: Kind = "safe";
 let draft: [number, number][] | null = null;
@@ -90,21 +101,42 @@ let bgPath: string | null = null;
 let seq = 0;
 let mode: "2d" | "3d" = "2d";
 
-// document -> screen (CSS px): screen = doc * scale + off
-const view = { scale: 1, ox: 0, oy: 0 };
+// document -> screen (CSS px). "p" (unrotated) space is `doc * scale +
+// off`; screen space spins that around the canvas centre by `view.rot`
+// radians (the "Rotation °" field). rot 0 collapses back to the plain
+// `doc * scale + off`.
+const view = { scale: 1, ox: 0, oy: 0, rot: 0 };
 let cursor: [number, number] = [0, 0]; // effective pointer (angle-snapped while drawing + Shift), doc units
 let rawCursor: [number, number] = [0, 0]; // unsnapped pointer, doc units
 let shiftHeld = false;
 
 // ---- helpers ---------------------------------------------------------
-const toDoc = (sx: number, sy: number): [number, number] => [
-  (sx - view.ox) / view.scale,
-  (sy - view.oy) / view.scale,
-];
-const toScreen = (x: number, y: number): [number, number] => [
-  x * view.scale + view.ox,
-  y * view.scale + view.oy,
-];
+const viewCenter = (): [number, number] => [canvas.clientWidth / 2, canvas.clientHeight / 2];
+
+// (dx, dy) rotated by `a` radians.
+const rotVec = (dx: number, dy: number, a: number): [number, number] => {
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return [dx * c - dy * s, dx * s + dy * c];
+};
+
+// screen -> unrotated "p" space (spin back about the centre).
+const toP = (sx: number, sy: number): [number, number] => {
+  const [cx, cy] = viewCenter();
+  const [dx, dy] = rotVec(sx - cx, sy - cy, -view.rot);
+  return [cx + dx, cy + dy];
+};
+
+const toDoc = (sx: number, sy: number): [number, number] => {
+  const [px, py] = toP(sx, sy);
+  return [(px - view.ox) / view.scale, (py - view.oy) / view.scale];
+};
+
+const toScreen = (x: number, y: number): [number, number] => {
+  const [cx, cy] = viewCenter();
+  const [dx, dy] = rotVec(x * view.scale + view.ox - cx, y * view.scale + view.oy - cy, view.rot);
+  return [cx + dx, cy + dy];
+};
 
 function pointerCss(e: PointerEvent | WheelEvent): [number, number] {
   const r = canvas.getBoundingClientRect();
@@ -119,6 +151,70 @@ function pointInPoly(px: number, py: number, pts: [number, number][]): boolean {
     if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
   }
   return inside;
+}
+
+// Index of `s`'s vertex within VERT_HIT_PX screen pixels of (sx, sy) --
+// nearest wins -- or null. Used by the select tool to pick a vertex on
+// an already-selected shape.
+const VERT_HIT_PX = 7;
+function nearestVertex(s: Shape, sx: number, sy: number): number | null {
+  let best = -1;
+  let bestD = VERT_HIT_PX;
+  s.points.forEach((p, i) => {
+    const [px, py] = toScreen(p[0], p[1]);
+    const d = Math.hypot(px - sx, py - sy);
+    if (d <= bestD) {
+      bestD = d;
+      best = i;
+    }
+  });
+  return best >= 0 ? best : null;
+}
+
+// Closest point to (px,py) on segment a->b, and its squared distance.
+function closestOnSeg(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): { x: number; y: number; d2: number } {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const cx = ax + dx * t;
+  const cy = ay + dy * t;
+  return { x: cx, y: cy, d2: (px - cx) ** 2 + (py - cy) ** 2 };
+}
+
+// Nearest polygon edge to a screen point, within EDGE_HIT_PX. Returns
+// the shape, the splice index for a new vertex (between the edge's two
+// endpoints), and the insertion point in document units.
+const EDGE_HIT_PX = 8;
+function nearestEdge(
+  sx: number,
+  sy: number,
+): { shape: Shape; at: number; doc: [number, number] } | null {
+  let best: { shape: Shape; at: number; doc: [number, number] } | null = null;
+  let bestD2 = EDGE_HIT_PX * EDGE_HIT_PX;
+  for (const s of shapes) {
+    if (s.points.length < 2) continue;
+    for (let i = 0; i < s.points.length; i++) {
+      const a = s.points[i];
+      const b = s.points[(i + 1) % s.points.length];
+      const [ax, ay] = toScreen(a[0], a[1]);
+      const [bx, by] = toScreen(b[0], b[1]);
+      const c = closestOnSeg(sx, sy, ax, ay, bx, by);
+      if (c.d2 <= bestD2) {
+        bestD2 = c.d2;
+        best = { shape: s, at: i + 1, doc: toDoc(c.x, c.y) };
+      }
+    }
+  }
+  return best;
 }
 
 // `to`, snapped so the `from -> to` direction is a multiple of 15°.
@@ -149,6 +245,7 @@ function syncToolbar(): void {
   selectBtn.classList.toggle("is-active", tool === "select");
   rectBtn.classList.toggle("is-active", tool === "rect");
   circleBtn.classList.toggle("is-active", tool === "ellipse");
+  addvertBtn.classList.toggle("is-active", tool === "addvert");
   for (const b of drawButtons) {
     b.classList.toggle("is-active", tool === "draw" && b.dataset.kind === drawKind);
   }
@@ -158,6 +255,20 @@ function syncToolbar(): void {
   delBtn.disabled = !sel;
   if (sel) selKind.value = sel.kind;
   saveBtn.disabled = !/^\d+$/.test(idInput.value.trim()) || Number(idInput.value) < 1;
+
+  // Vertex X/Y fields: populated (doc units, 2 dp) while a vertex is
+  // picked, blank + disabled otherwise. Don't clobber a field mid-type.
+  const vert = sel && selectedVertex != null ? sel.points[selectedVertex] : null;
+  vertXInput.disabled = !vert;
+  vertYInput.disabled = !vert;
+  vertDelBtn.disabled = !vert;
+  if (vert) {
+    if (document.activeElement !== vertXInput) vertXInput.value = vert[0].toFixed(2);
+    if (document.activeElement !== vertYInput) vertYInput.value = vert[1].toFixed(2);
+  } else {
+    vertXInput.value = "";
+    vertYInput.value = "";
+  }
 }
 
 // ---- rendering -----------------------------------------------------
@@ -175,9 +286,15 @@ function render(): void {
   ctx.clearRect(0, 0, w, h);
 
   if (bg) {
+    const [cx, cy] = viewCenter();
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(view.rot);
+    ctx.translate(-cx, -cy);
     ctx.imageSmoothingEnabled = true;
     ctx.globalAlpha = 1;
     ctx.drawImage(bg, view.ox, view.oy, bg.naturalWidth * view.scale, bg.naturalHeight * view.scale);
+    ctx.restore();
   }
 
   for (const s of shapes) {
@@ -197,11 +314,16 @@ function render(): void {
     ctx.strokeStyle = on ? "#8aadf4" : KIND_COLOR[s.kind];
     ctx.stroke();
     if (on) {
-      ctx.fillStyle = "#8aadf4";
-      for (const [x, y] of s.points) {
+      s.points.forEach(([x, y], i) => {
         const [sx, sy] = toScreen(x, y);
-        ctx.fillRect(sx - 3, sy - 3, 6, 6);
-      }
+        if (i === selectedVertex) {
+          ctx.fillStyle = "#f5a97f"; // the vertex being edited
+          ctx.fillRect(sx - 4.5, sy - 4.5, 9, 9);
+        } else {
+          ctx.fillStyle = "#8aadf4";
+          ctx.fillRect(sx - 3, sy - 3, 6, 6);
+        }
+      });
     }
   }
 
@@ -245,6 +367,26 @@ function render(): void {
     ctx.fillStyle = KIND_COLOR[drawKind];
     ctx.fillRect(ax - 3, ay - 3, 6, 6);
   }
+
+  // Add-vertex tool: a ghost dot on the edge nearest the pointer, where a
+  // click would splice a new vertex in.
+  if (tool === "addvert") {
+    const [csx, csy] = toScreen(rawCursor[0], rawCursor[1]);
+    const hit = nearestEdge(csx, csy);
+    if (hit) {
+      const [hx, hy] = toScreen(hit.doc[0], hit.doc[1]);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#a6da95";
+      ctx.beginPath();
+      ctx.arc(hx, hy, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "#a6da95";
+      ctx.beginPath();
+      ctx.arc(hx, hy, 7.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
 }
 
 // ---- interactions ------------------------------------------------
@@ -270,8 +412,9 @@ canvas.addEventListener("pointermove", (e) => {
       panned = true;
     }
     if (panned) {
-      view.ox += sx - last[0];
-      view.oy += sy - last[1];
+      const [dox, doy] = rotVec(sx - last[0], sy - last[1], -view.rot);
+      view.ox += dox;
+      view.oy += doy;
     }
   }
   last = [sx, sy];
@@ -304,6 +447,7 @@ canvas.addEventListener("pointerup", (e) => {
         const s: Shape = { id: newShapeId(), kind: drawKind, points: pts };
         shapes.push(s);
         selectedId = s.id;
+        selectedVertex = null;
         tool = "select";
         syncToolbar();
         status(`Added a "${s.kind}" ${pts.length === 4 ? "rectangle" : "decagon"}.`);
@@ -311,8 +455,31 @@ canvas.addEventListener("pointerup", (e) => {
         status("Too small -- try again.");
       }
     }
+  } else if (tool === "addvert") {
+    const hit = nearestEdge(sx, sy);
+    if (hit) {
+      hit.shape.points.splice(hit.at, 0, hit.doc);
+      selectedId = hit.shape.id;
+      selectedVertex = hit.at;
+      tool = "select";
+      syncToolbar();
+      status(`Vertex added — ${hit.shape.points.length} points. Edit X/Y or drag the view.`);
+    } else {
+      status("Click nearer a polygon edge to add a vertex.");
+    }
   } else {
+    // Already have a shape? A click on one of its vertices picks that
+    // vertex (for editing in the toolbar) rather than re-hit-testing.
+    const cur = shapes.find((s) => s.id === selectedId) ?? null;
+    const vHit = cur ? nearestVertex(cur, sx, sy) : null;
+    if (vHit != null) {
+      selectedVertex = vHit;
+      syncToolbar();
+      render();
+      return;
+    }
     selectedId = null;
+    selectedVertex = null;
     for (let i = shapes.length - 1; i >= 0; i--) {
       if (shapes[i].points.length >= 3 && pointInPoly(dx, dy, shapes[i].points)) {
         selectedId = shapes[i].id;
@@ -334,8 +501,9 @@ canvas.addEventListener(
     const [dx, dy] = toDoc(sx, sy);
     const f = Math.exp(-e.deltaY * 0.0015);
     view.scale = Math.min(40, Math.max(0.03, view.scale * f));
-    view.ox = sx - dx * view.scale;
-    view.oy = sy - dy * view.scale;
+    const [px, py] = toP(sx, sy);
+    view.ox = px - dx * view.scale;
+    view.oy = py - dy * view.scale;
     render();
   },
   { passive: false },
@@ -356,7 +524,8 @@ window.addEventListener("keydown", (e) => {
     render();
     status("Cancelled.");
   } else if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-    deleteSelected();
+    if (selectedVertex != null) deleteSelectedVertex();
+    else deleteSelected();
   }
 });
 
@@ -377,6 +546,7 @@ function commitDraft(): void {
   shapes.push(s);
   draft = null;
   selectedId = s.id;
+  selectedVertex = null;
   tool = "select";
   syncToolbar();
   render();
@@ -388,6 +558,7 @@ function deleteSelected(): void {
   if (i < 0) return;
   shapes.splice(i, 1);
   selectedId = null;
+  selectedVertex = null;
   syncToolbar();
   render();
   status("Shape deleted.");
@@ -422,6 +593,15 @@ circleBtn.addEventListener("click", () => {
   status(`Circle ("${drawKind}", a decagon) — click the centre, then a point on the edge.`);
 });
 
+addvertBtn.addEventListener("click", () => {
+  tool = "addvert";
+  draft = null;
+  anchor = null;
+  syncToolbar();
+  render();
+  status("Click a polygon edge to splice in a new vertex there.");
+});
+
 for (const b of drawButtons) {
   b.addEventListener("click", () => {
     tool = "draw";
@@ -429,6 +609,7 @@ for (const b of drawButtons) {
     draft = null;
     anchor = null;
     selectedId = null;
+    selectedVertex = null;
     syncToolbar();
     render();
     status(
@@ -447,6 +628,72 @@ selKind.addEventListener("change", () => {
 
 delBtn.addEventListener("click", deleteSelected);
 idInput.addEventListener("input", syncToolbar);
+
+// ---- view rotation ("Rotation °") --------------------------------
+// A whole-view spin about the canvas centre -- backdrop and shapes
+// together. Purely how the map is displayed; stored polygon points stay
+// in unrotated document units.
+function rotDeg(): number {
+  const raw = Number(rotInput.value);
+  return Number.isFinite(raw) ? ((raw % 360) + 360) % 360 : 0;
+}
+function applyRotation(): void {
+  view.rot = (rotDeg() * Math.PI) / 180;
+  render();
+}
+rotInput.addEventListener("input", applyRotation);
+rotInput.addEventListener("change", () => {
+  rotInput.value = String(Math.round(rotDeg())); // tidy once editing settles
+  applyRotation();
+});
+
+// ---- vertex editing -------------------------------------------
+// Click a vertex of the selected shape (select tool) to load its x/y
+// into the toolbar; type a value + Enter (or blur) to move it. Stored
+// and shown to 2 decimal places, in document units (not view-rotated).
+function commitVertexEdit(): void {
+  const s = shapes.find((x) => x.id === selectedId);
+  if (!s || selectedVertex == null) return;
+  const xs = vertXInput.value.trim();
+  const ys = vertYInput.value.trim();
+  const nx = Number(xs);
+  const ny = Number(ys);
+  if (xs === "" || ys === "" || !Number.isFinite(nx) || !Number.isFinite(ny)) {
+    syncToolbar(); // reject -- snap the fields back to the live value
+    return;
+  }
+  s.points[selectedVertex] = [Math.round(nx * 100) / 100, Math.round(ny * 100) / 100];
+  render();
+  syncToolbar();
+}
+for (const inp of [vertXInput, vertYInput]) {
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitVertexEdit();
+      inp.blur();
+    }
+  });
+  inp.addEventListener("change", commitVertexEdit);
+}
+
+// Drop the picked vertex (button, or Delete/Backspace with a vertex
+// selected). A polygon still needs 3 points -- at the floor, delete the
+// whole shape instead.
+function deleteSelectedVertex(): void {
+  const s = shapes.find((x) => x.id === selectedId);
+  if (!s || selectedVertex == null) return;
+  if (s.points.length <= 3) {
+    status("A polygon needs 3+ vertices — use Delete to remove the whole shape.");
+    return;
+  }
+  s.points.splice(selectedVertex, 1);
+  selectedVertex = null;
+  syncToolbar();
+  render();
+  status(`Vertex removed — ${s.points.length} points.`);
+}
+vertDelBtn.addEventListener("click", deleteSelectedVertex);
 
 // ---- view helpers ---------------------------------------------
 function fitToShapes(): void {
@@ -544,6 +791,7 @@ function loadMapText(text: string, label = "map file"): void {
   }
   shapes.length = 0;
   selectedId = null;
+  selectedVertex = null;
   draft = null;
   for (const layer of (doc.layers as { kind: Kind; polys?: unknown[] }[] | undefined) ?? []) {
     if (!KIND_COLOR[layer.kind]) continue;
@@ -558,6 +806,10 @@ function loadMapText(text: string, label = "map file"): void {
   }
   idInput.value = doc.mapId != null ? String(doc.mapId) : "";
   nameInput.value = typeof doc.name === "string" ? doc.name : "";
+  const savedRot = Number((doc.editor as { rotationDeg?: unknown } | undefined)?.rotationDeg);
+  const startRot = Number.isFinite(savedRot) ? ((savedRot % 360) + 360) % 360 : 0;
+  rotInput.value = String(Math.round(startRot));
+  view.rot = (startRot * Math.PI) / 180;
   if (bg) URL.revokeObjectURL(bg.src);
   bg = null;
   bgPath = typeof doc.sourceImage === "string" ? doc.sourceImage : null;
@@ -590,7 +842,12 @@ function buildJson(): string {
       // NOTE: not world yards yet -- calibration is a later pass.
       coordSpace: bg ? "image-pixels" : "editor-units",
       sourceImage: bgPath ?? undefined,
-      editor: { app: "parseomatic-map-editor", savedAt: new Date().toISOString() },
+      // Editor-only viewing hint -- doesn't touch the stored coordinates.
+      editor: {
+        app: "parseomatic-map-editor",
+        savedAt: new Date().toISOString(),
+        ...(rotDeg() ? { rotationDeg: Math.round(rotDeg()) } : {}),
+      },
       layers,
     },
     null,

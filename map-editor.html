@@ -54,7 +54,10 @@
         font: inherit;
       }
       .me-bar input#me-id,
-      .me-bar input#me-name {
+      .me-bar input#me-name,
+      .me-bar input#me-rot,
+      .me-bar input#me-vert-x,
+      .me-bar input#me-vert-y {
         width: 100%;
         box-sizing: border-box;
       }
@@ -145,6 +148,8 @@
       <input id="me-id" type="number" min="1" step="1" placeholder="e.g. 2606" />
       <label for="me-name">Name</label>
       <input id="me-name" type="text" placeholder="optional" />
+      <label for="me-rot">Rotation °</label>
+      <input id="me-rot" type="number" min="0" max="360" step="1" value="0" />
       <button class="me-btn" id="me-open-map">Open Map…</button>
       <button class="me-btn" id="me-open">Backdrop…</button>
       <button class="me-btn" id="me-save" disabled>Save</button>
@@ -159,6 +164,7 @@
       <button class="me-btn" data-kind="mark" data-draw>+ Mark</button>
       <button class="me-btn" id="me-tool-rect">▭ Rect</button>
       <button class="me-btn" id="me-tool-circle">◯ Circle</button>
+      <button class="me-btn" id="me-tool-addvert">⊹ Add Vertex</button>
 
       <span class="me-sep"></span>
 
@@ -170,6 +176,14 @@
         <option value="mark">mark</option>
       </select>
       <button class="me-btn" id="me-del" disabled>Delete</button>
+
+      <span class="me-sep"></span>
+
+      <label for="me-vert-x">Vertex X</label>
+      <input id="me-vert-x" type="number" step="0.01" disabled />
+      <label for="me-vert-y">Vertex Y</label>
+      <input id="me-vert-y" type="number" step="0.01" disabled />
+      <button class="me-btn" id="me-vert-del" disabled>Delete Vertex</button>
     </div>
   </body>
 </html>
