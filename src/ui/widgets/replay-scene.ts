@@ -744,15 +744,21 @@ function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | null {
 
   // doc units -> world yards -> scene: the same framing-centre offset
   // every unit / marker / cast uses, so the map registers with real
-  // positions at true scale (no fit-to-span).
+  // positions at true scale (no fit-to-span). The shape's Y is negated
+  // because the finished geometry is `rotateX(-PI/2)`'d, which sends
+  // shape +Y to scene -Z -- units place world-Y straight onto scene +Z,
+  // so without this the map is mirrored across the framing centre in Z
+  // (looked fine in the editor's 2D overlay, ~40 yd off in the replay).
+  // Point order is reversed to keep the winding (cap normals) upright.
   const toWorld = mapDocToWorld(doc.calibration);
-  const trace = (dst: THREE.Shape | THREE.Path, pts: [number, number][]) =>
-    pts.forEach(([x, y], i) => {
-      const [wx, wy] = toWorld(x, y);
+  const trace = (dst: THREE.Shape | THREE.Path, pts: [number, number][]) => {
+    for (let k = pts.length - 1; k >= 0; k--) {
+      const [wx, wy] = toWorld(pts[k][0], pts[k][1]);
       const px = wx - framing.cx;
-      const py = wy - framing.cy;
-      i === 0 ? dst.moveTo(px, py) : dst.lineTo(px, py);
-    });
+      const py = framing.cy - wy;
+      k === pts.length - 1 ? dst.moveTo(px, py) : dst.lineTo(px, py);
+    }
+  };
 
   const g = new THREE.Group();
 
