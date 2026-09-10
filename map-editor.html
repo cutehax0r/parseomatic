@@ -87,6 +87,7 @@
       .me-bar input#me-rot,
       .me-bar input#me-vert-x,
       .me-bar input#me-vert-y,
+      .me-bar input#me-shp-mat,
       .me-bar input.me-cal {
         width: 100%;
         box-sizing: border-box;
@@ -134,6 +135,26 @@
       }
       .me-btn[data-kind="mark"] {
         border-left: 4px solid #eed49f;
+      }
+      .me-btn[data-kind="wall2"] {
+        border-left: 4px solid #eebebe;
+      }
+      .me-btn[data-kind="wall3"] {
+        border-left: 4px solid #f4b8e4;
+      }
+      .me-btn[data-kind="ground"] {
+        border-left: 4px solid #89dceb;
+      }
+      .me-btn[data-kind="ground2"] {
+        border-left: 4px solid #94e2d5;
+      }
+      .me-bar input[type="color"] {
+        width: 100%;
+        height: 26px;
+        padding: 0;
+        border: 1px solid var(--border, #494d64);
+        border-radius: 5px;
+        background: var(--bg-elevated, #1e2030);
       }
       #me-canvas {
         flex: 1;
@@ -209,11 +230,16 @@
       <button class="me-btn is-active" id="me-tool-select">Select</button>
       <button class="me-btn" data-kind="safe" data-draw>+ Safe</button>
       <button class="me-btn" data-kind="wall" data-draw>+ Wall</button>
+      <button class="me-btn" data-kind="wall2" data-draw>+ Wall ×2</button>
+      <button class="me-btn" data-kind="wall3" data-draw>+ Wall ×3</button>
       <button class="me-btn" data-kind="void" data-draw>+ Void</button>
       <button class="me-btn" data-kind="mark" data-draw>+ Mark</button>
+      <button class="me-btn" data-kind="ground" data-draw>+ Ground A</button>
+      <button class="me-btn" data-kind="ground2" data-draw>+ Ground B</button>
       <button class="me-btn" id="me-tool-rect">▭ Rect</button>
       <button class="me-btn" id="me-tool-circle">◯ Circle</button>
       <button class="me-btn" id="me-tool-addvert">⊹ Add Vertex</button>
+      <label class="me-checkrow"><input id="me-snap" type="checkbox" /> Snap to 8yd grid</label>
 
       <span class="me-sep"></span>
 
@@ -221,10 +247,18 @@
       <select class="me-btn" id="me-selkind" disabled>
         <option value="safe">safe</option>
         <option value="wall">wall</option>
+        <option value="wall2">wall ×2</option>
+        <option value="wall3">wall ×3</option>
         <option value="void">void</option>
         <option value="mark">mark</option>
+        <option value="ground">ground A</option>
+        <option value="ground2">ground B</option>
       </select>
       <button class="me-btn" id="me-del" disabled>Delete</button>
+      <label for="me-shp-color" id="me-shp-color-row" hidden>Fill colour</label>
+      <input id="me-shp-color" type="color" hidden />
+      <label for="me-shp-mat" id="me-shp-mat-row" hidden>Material</label>
+      <input id="me-shp-mat" type="text" placeholder="water / ice / lava…" hidden />
 
       <span class="me-sep"></span>
 

@@ -630,7 +630,12 @@ function framingCentred(cx: number, cy: number, span: number): Framing {
 // platform depth and are grid-textured; a `wall` also rises above the
 // deck. Each `void` is a hole in whatever solid contains it; `mark` is a
 // flat decal. See docs/encounter-maps.md.
-type DevMapPoly = { id?: string; points?: [number, number][] };
+type DevMapPoly = {
+  id?: string;
+  points?: [number, number][];
+  color?: string; // "#rrggbb" -- mark / ground fill
+  material?: string; // ground only -- render tag ("water" | "ice" | "lava" | …), stashed on userData
+};
 type DevMapLayer = { kind?: string; polys?: DevMapPoly[] };
 type DevMapCalibration = {
   yardsPerUnit?: number;
@@ -670,8 +675,11 @@ function mapDocToWorld(cal: DevMapCalibration | undefined): (x: number, y: numbe
   };
 }
 
-const DEV_MAP_WALL_RAISE = 5; // wall top this far above the deck datum
+const DEV_MAP_WALL_RAISE = 5; // plain `wall` top this far above the deck datum
+const DEV_MAP_PLAYER_H = 2; // yards -- "a player's height"; wall2 = 2x, wall3 = 3x above deck
 const DEV_MAP_MARK_DEPTH = 0.15;
+const DEV_MAP_GROUND_DROP = 0.5; // ground FX top sits this far below the deck datum
+const DEV_MAP_GROUND_DEPTH = 0.3; // ground FX slab thickness
 // A `mark` decal renders as a darker grey than the deck ("base") --
 // Catppuccin "crust", the darkest step down.
 const DEV_MAP_MARK_COLOR = "var(--ctp-crust)";
@@ -723,24 +731,45 @@ function devMapWorldBox(doc: DevMapDoc): Box | null {
   return Number.isFinite(mnx) ? [mnx, mxx, mny, mxy] : null;
 }
 
+interface DevPoly {
+  pts: [number, number][];
+  color?: string;
+  material?: string;
+}
+
 function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | null {
-  const kinds = new Map<string, [number, number][][]>();
+  const kinds = new Map<string, DevPoly[]>();
   for (const layer of doc.layers ?? []) {
     const k = layer.kind ?? "";
     for (const p of layer.polys ?? []) {
       const pts = (p.points ?? []).filter(
         (q): q is [number, number] => Array.isArray(q) && q.length >= 2,
       );
-      if (pts.length >= 3) (kinds.get(k) ?? kinds.set(k, []).get(k)!).push(pts);
+      if (pts.length >= 3) {
+        (kinds.get(k) ?? kinds.set(k, []).get(k)!).push({
+          pts,
+          color: typeof p.color === "string" ? p.color : undefined,
+          material: typeof p.material === "string" ? p.material : undefined,
+        });
+      }
     }
   }
-  const solids = [
-    ...(kinds.get("safe") ?? []).map((p) => ["safe", p] as const),
-    ...(kinds.get("wall") ?? []).map((p) => ["wall", p] as const),
+  // safe + walls of every height; `raise` = top above the deck datum.
+  const solids: { pts: [number, number][]; raise: number }[] = [
+    ...(kinds.get("safe") ?? []).map((p) => ({ pts: p.pts, raise: 0 })),
+    ...(kinds.get("wall") ?? []).map((p) => ({ pts: p.pts, raise: DEV_MAP_WALL_RAISE })),
+    ...(kinds.get("wall2") ?? []).map((p) => ({ pts: p.pts, raise: 2 * DEV_MAP_PLAYER_H })),
+    ...(kinds.get("wall3") ?? []).map((p) => ({ pts: p.pts, raise: 3 * DEV_MAP_PLAYER_H })),
   ];
-  const voids = kinds.get("void") ?? [];
+  const voids = (kinds.get("void") ?? []).map((p) => p.pts);
   const marks = kinds.get("mark") ?? [];
-  if (!solids.length && !marks.length) return null;
+  const grounds = [
+    ...(kinds.get("ground") ?? []).map((p) => ({ ...p, drop: DEV_MAP_GROUND_DROP })),
+    ...(kinds.get("ground2") ?? []).map((p) => ({ ...p, drop: DEV_MAP_GROUND_DROP - 0.02 })),
+  ];
+  if (!solids.length && !marks.length && !grounds.length) return null;
+  // A ground FX region also recesses the deck above it, so the slab shows.
+  const cuts = [...voids, ...grounds.map((p) => p.pts)];
 
   // doc units -> world yards -> scene: the same framing-centre offset
   // every unit / marker / cast uses, so the map registers with real
@@ -771,18 +800,23 @@ function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | null {
     gridTex.repeat.set(1 / CELL, 1 / CELL);
   }
 
-  for (const [kind, pts] of solids) {
-    const shp = new THREE.Shape();
-    trace(shp, pts);
-    for (const v of voids) {
+  // Punch every hole in `cuts` (voids + ground recesses) that sits inside
+  // `outer` into `shp`.
+  const cutHoles = (shp: THREE.Shape, outer: [number, number][]) => {
+    for (const v of cuts) {
       const [vx, vy] = polyBBoxCenter(v);
-      if (!pointInPoly(vx, vy, pts)) continue;
+      if (!pointInPoly(vx, vy, outer)) continue;
       const hole = new THREE.Path();
       trace(hole, v);
       shp.holes.push(hole);
     }
-    // Extrude down to the platform's depth; a wall also rises above deck.
-    const depth = PILLAR_DEPTH + (kind === "wall" ? DEV_MAP_WALL_RAISE : 0);
+  };
+
+  for (const { pts, raise } of solids) {
+    const shp = new THREE.Shape();
+    trace(shp, pts);
+    cutHoles(shp, pts);
+    const depth = PILLAR_DEPTH + raise; // extrude down to the platform depth; walls also rise above deck
     const geo = new THREE.ExtrudeGeometry(shp, { depth, bevelEnabled: false });
     geo.rotateX(-Math.PI / 2); // shape plane -> bottom, extrude -> +y
     const mesh = new THREE.Mesh(
@@ -790,18 +824,45 @@ function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | null {
       new THREE.MeshStandardMaterial({ map: gridTex ?? undefined, roughness: 0.95, metalness: 0 }),
     );
     mesh.receiveShadow = true;
-    mesh.position.y = FLOOR_LIFT - PILLAR_DEPTH; // top ends at FLOOR_LIFT (+RAISE for a wall)
+    mesh.position.y = FLOOR_LIFT - PILLAR_DEPTH; // top ends at FLOOR_LIFT (+raise for a wall)
     g.add(mesh);
   }
 
-  for (const pts of marks) {
+  for (const { pts, color, material, drop } of grounds) {
     const shp = new THREE.Shape();
     trace(shp, pts);
+    const geo = new THREE.ExtrudeGeometry(shp, { depth: DEV_MAP_GROUND_DEPTH, bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2);
+    const col = cssColor(color ?? "var(--ctp-sky)");
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshStandardMaterial({
+        color: col,
+        roughness: 0.35,
+        metalness: 0.1,
+        emissive: col.clone().multiplyScalar(0.12),
+      }),
+    );
+    // Future: an animated / emissive / reflective shader keyed off `material`.
+    mesh.userData = { material: material ?? null };
+    mesh.receiveShadow = true;
+    mesh.position.y = FLOOR_LIFT - drop - DEV_MAP_GROUND_DEPTH; // slab top sits `drop` below the deck
+    g.add(mesh);
+  }
+
+  for (const { pts, color } of marks) {
+    const shp = new THREE.Shape();
+    trace(shp, pts);
+    cutHoles(shp, pts); // voids (and ground recesses) cut marks too
     const geo = new THREE.ExtrudeGeometry(shp, { depth: DEV_MAP_MARK_DEPTH, bevelEnabled: false });
     geo.rotateX(-Math.PI / 2);
     const mesh = new THREE.Mesh(
       geo,
-      new THREE.MeshBasicMaterial({ color: cssColor(DEV_MAP_MARK_COLOR), transparent: true, opacity: 0.8 }),
+      new THREE.MeshBasicMaterial({
+        color: cssColor(color ?? DEV_MAP_MARK_COLOR),
+        transparent: true,
+        opacity: 0.8,
+      }),
     );
     mesh.position.y = FLOOR_LIFT + 0.05;
     g.add(mesh);

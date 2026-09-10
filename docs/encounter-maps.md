@@ -244,10 +244,17 @@ Notes:
   drawn-on annotation (boss-marker spots, intermission lines, "stack
   here"), not collision.
 - **`kind` is an open enum.** Core kinds are `safe` / `wall` / `void` /
-  `mark`. A renderer **must** skip an unrecognised kind (and log once),
-  never fail the whole map. Reserved-but-unspecified: `widget`
-  (interactable, render as a pyramid), `spawn`, `path`. Plugin-private
-  kinds should use an `x-` prefix.
+  `mark`, plus `wall2` / `wall3` (walls extruded to 2x / 3x a player's
+  height above the deck) and `ground` / `ground2` (thin FX slabs whose
+  top sits ~0.5 yd **below** the deck, recessing the deck above them —
+  water / ice / poison / lava). `mark`, `ground` and `ground2` polys may
+  carry `"color": "#rrggbb"`; `ground` / `ground2` also carry
+  `"material": "<tag>"` (free string — the renderer stashes it for a
+  future animated / emissive / reflective shader). A `void` cuts every
+  `safe` / `wall*` / `mark` it sits inside. A renderer **must** skip an
+  unrecognised kind (and log once), never fail the whole map.
+  Reserved-but-unspecified: `widget` (interactable, render as a pyramid),
+  `spawn`, `path`. Plugin-private kinds should use an `x-` prefix.
 
 ### v1 bootstrap shape (what the editor writes today)
 

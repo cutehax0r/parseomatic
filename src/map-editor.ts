@@ -15,15 +15,29 @@ import { open, message } from "@tauri-apps/plugin-dialog";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-type Kind = "safe" | "wall" | "void" | "mark";
+type Kind = "safe" | "wall" | "wall2" | "wall3" | "void" | "mark" | "ground" | "ground2";
 type Tool = "select" | "draw" | "rect" | "ellipse" | "addvert";
 interface Shape {
   id: string;
   kind: Kind;
   points: [number, number][]; // document units
+  color?: string; // "#rrggbb" -- mark / ground fill, passed to the renderer
+  material?: string; // ground only -- free tag ("water" | "ice" | "lava" | …)
 }
 
+// Kinds whose fill is author-picked (else `KIND_COLOR[kind]`), and kinds
+// that carry a render `material` tag.
+const KIND_HAS_COLOR = new Set<Kind>(["mark", "ground", "ground2"]);
+const KIND_HAS_MATERIAL = new Set<Kind>(["ground", "ground2"]);
+
 const newShapeId = () => `s${(seq++).toString(36)}${Date.now().toString(36).slice(-3)}`;
+
+// Fresh shape; color-bearing kinds get a starting fill from the palette.
+function newShape(kind: Kind, points: [number, number][]): Shape {
+  const s: Shape = { id: newShapeId(), kind, points };
+  if (KIND_HAS_COLOR.has(kind)) s.color = KIND_COLOR[kind];
+  return s;
+}
 
 // Rectangle from two opposite corners (TL -> TR -> BR -> BL). Built in
 // *screen* space, then each corner mapped back to document units, so the
@@ -61,8 +75,12 @@ function decagonPoints(center: [number, number], edge: [number, number]): [numbe
 const KIND_COLOR: Record<Kind, string> = {
   safe: "#a6da95",
   wall: "#f5a97f",
+  wall2: "#eebebe",
+  wall3: "#f4b8e4",
   void: "#ed8796",
   mark: "#eed49f",
+  ground: "#89dceb",
+  ground2: "#94e2d5",
 };
 
 // ---- DOM ------------------------------------------------------------------
@@ -96,6 +114,11 @@ const calOx = $<HTMLInputElement>("me-cal-ox");
 const calOy = $<HTMLInputElement>("me-cal-oy");
 const calMirror = $<HTMLInputElement>("me-cal-mirror");
 const calFitBtn = $<HTMLButtonElement>("me-cal-fit");
+const snapCheckbox = $<HTMLInputElement>("me-snap");
+const shpColorRow = $<HTMLLabelElement>("me-shp-color-row");
+const shpColorInput = $<HTMLInputElement>("me-shp-color");
+const shpMatRow = $<HTMLLabelElement>("me-shp-mat-row");
+const shpMatInput = $<HTMLInputElement>("me-shp-mat");
 const drawButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-draw]")];
 
 // ---- state -------------------------------------------------------------
@@ -135,6 +158,29 @@ function worldToDoc(wx: number, wy: number): [number, number] {
   let dy = wy - cal.originYards[1];
   if (cal.mirrorY) dy = -dy;
   return [(dx * c + dy * sn) / s, (-dx * sn + dy * c) / s];
+}
+
+// doc unit -> world yard (matches replay-scene.ts mapDocToWorld).
+function docToWorld(x: number, y: number): [number, number] {
+  const s = cal.yardsPerUnit || 1;
+  const rot = (cal.rotationDeg * Math.PI) / 180;
+  const c = Math.cos(rot);
+  const sn = Math.sin(rot);
+  const px = x * s;
+  const py = y * s;
+  const my = cal.mirrorY ? -1 : 1;
+  return [px * c - py * sn + cal.originYards[0], (px * sn + py * c) * my + cal.originYards[1]];
+}
+
+// "Snap to grid" toggle: clamp a doc-unit point to the nearest 8-yard
+// world lattice (matches the replay deck grid). No-op when off; with an
+// identity calibration this just clamps to 8 doc units.
+const GRID_YD = 8;
+let snapOn = false;
+function snapDoc(p: [number, number]): [number, number] {
+  if (!snapOn) return p;
+  const [wx, wy] = docToWorld(p[0], p[1]);
+  return worldToDoc(Math.round(wx / GRID_YD) * GRID_YD, Math.round(wy / GRID_YD) * GRID_YD);
 }
 
 // ---- encounter overlay (top toolbar) --------------------------------
@@ -329,12 +375,12 @@ function snapAngle(from: [number, number], to: [number, number]): [number, numbe
 }
 
 // Pointer position the draw tool should use: angle-snapped to the last
-// draft vertex while Shift is held, otherwise the raw pointer.
+// draft vertex while Shift is held, then grid-snapped if the toggle's on.
 function effectiveCursor(): [number, number] {
   if (shiftHeld && tool === "draw" && draft && draft.length) {
-    return snapAngle(draft[draft.length - 1], rawCursor);
+    return snapDoc(snapAngle(draft[draft.length - 1], rawCursor));
   }
-  return [rawCursor[0], rawCursor[1]];
+  return snapDoc([rawCursor[0], rawCursor[1]]);
 }
 
 function status(msg: string): void {
@@ -368,6 +414,20 @@ function syncToolbar(): void {
   } else {
     vertXInput.value = "";
     vertYInput.value = "";
+  }
+
+  // Per-shape fill / material -- only for the kinds that carry them.
+  const showColor = !!sel && KIND_HAS_COLOR.has(sel.kind);
+  const showMat = !!sel && KIND_HAS_MATERIAL.has(sel.kind);
+  shpColorRow.hidden = !showColor;
+  shpColorInput.hidden = !showColor;
+  shpMatRow.hidden = !showMat;
+  shpMatInput.hidden = !showMat;
+  if (showColor && sel && document.activeElement !== shpColorInput) {
+    shpColorInput.value = sel.color ?? KIND_COLOR[sel.kind];
+  }
+  if (showMat && sel && document.activeElement !== shpMatInput) {
+    shpMatInput.value = sel.material ?? "";
   }
 }
 
@@ -405,13 +465,14 @@ function render(): void {
       i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
     });
     ctx.closePath();
+    const tint = s.color ?? KIND_COLOR[s.kind];
     ctx.globalAlpha = 0.22;
-    ctx.fillStyle = KIND_COLOR[s.kind];
+    ctx.fillStyle = tint;
     ctx.fill();
     ctx.globalAlpha = 1;
     const on = s.id === selectedId;
     ctx.lineWidth = on ? 3 : 1.5;
-    ctx.strokeStyle = on ? "#8aadf4" : KIND_COLOR[s.kind];
+    ctx.strokeStyle = on ? "#8aadf4" : tint;
     ctx.stroke();
     if (on) {
       s.points.forEach(([x, y], i) => {
@@ -585,13 +646,14 @@ canvas.addEventListener("pointerup", (e) => {
     (draft ??= []).push(effectiveCursor());
   } else if (tool === "rect" || tool === "ellipse") {
     if (!anchor) {
-      anchor = [dx, dy];
+      anchor = snapDoc([dx, dy]);
       status(tool === "rect" ? "Click the opposite corner." : "Click to set the radius.");
     } else {
-      const pts = tool === "rect" ? rectPoints(anchor, [dx, dy]) : decagonPoints(anchor, [dx, dy]);
+      const b = snapDoc([dx, dy]);
+      const pts = tool === "rect" ? rectPoints(anchor, b) : decagonPoints(anchor, b);
       anchor = null;
       if (pts) {
-        const s: Shape = { id: newShapeId(), kind: drawKind, points: pts };
+        const s = newShape(drawKind, pts);
         shapes.push(s);
         selectedId = s.id;
         selectedVertex = null;
@@ -605,7 +667,7 @@ canvas.addEventListener("pointerup", (e) => {
   } else if (tool === "addvert") {
     const hit = nearestEdge(sx, sy);
     if (hit) {
-      hit.shape.points.splice(hit.at, 0, hit.doc);
+      hit.shape.points.splice(hit.at, 0, snapDoc(hit.doc));
       selectedId = hit.shape.id;
       selectedVertex = hit.at;
       tool = "select";
@@ -689,7 +751,7 @@ function commitDraft(): void {
     if (draft) status("A shape needs at least 3 points.");
     return;
   }
-  const s: Shape = { id: newShapeId(), kind: drawKind, points: draft };
+  const s = newShape(drawKind, draft);
   shapes.push(s);
   draft = null;
   selectedId = s.id;
@@ -769,8 +831,31 @@ selKind.addEventListener("change", () => {
   const s = shapes.find((x) => x.id === selectedId);
   if (s) {
     s.kind = selKind.value as Kind;
+    if (!KIND_HAS_COLOR.has(s.kind)) delete s.color;
+    else s.color ??= KIND_COLOR[s.kind];
+    if (!KIND_HAS_MATERIAL.has(s.kind)) delete s.material;
+    syncToolbar();
     render();
   }
+});
+
+shpColorInput.addEventListener("input", () => {
+  const s = shapes.find((x) => x.id === selectedId);
+  if (s && KIND_HAS_COLOR.has(s.kind)) {
+    s.color = shpColorInput.value;
+    render();
+  }
+});
+shpMatInput.addEventListener("input", () => {
+  const s = shapes.find((x) => x.id === selectedId);
+  if (s && KIND_HAS_MATERIAL.has(s.kind)) {
+    s.material = shpMatInput.value.trim() || undefined;
+  }
+});
+
+snapCheckbox.addEventListener("change", () => {
+  snapOn = snapCheckbox.checked;
+  status(snapOn ? "Snap to 8yd grid: on." : "Snap to 8yd grid: off.");
 });
 
 delBtn.addEventListener("click", deleteSelected);
@@ -944,13 +1029,17 @@ function loadMapText(text: string, label = "map file"): void {
   draft = null;
   for (const layer of (doc.layers as { kind: Kind; polys?: unknown[] }[] | undefined) ?? []) {
     if (!KIND_COLOR[layer.kind]) continue;
-    for (const p of (layer.polys as { id?: string; points?: number[][] }[] | undefined) ?? []) {
+    for (const p of (layer.polys as
+      | { id?: string; points?: number[][]; color?: string; material?: string }[]
+      | undefined) ?? []) {
       const pts = (p.points ?? [])
         .filter((q) => Array.isArray(q) && q.length >= 2)
         .map((q) => [q[0], q[1]] as [number, number]);
-      if (pts.length >= 2) {
-        shapes.push({ id: p.id || `s${(seq++).toString(36)}`, kind: layer.kind, points: pts });
-      }
+      if (pts.length < 2) continue;
+      const s: Shape = { id: p.id || `s${(seq++).toString(36)}`, kind: layer.kind, points: pts };
+      if (typeof p.color === "string" && KIND_HAS_COLOR.has(layer.kind)) s.color = p.color;
+      if (typeof p.material === "string" && KIND_HAS_MATERIAL.has(layer.kind)) s.material = p.material;
+      shapes.push(s);
     }
   }
   idInput.value = doc.mapId != null ? String(doc.mapId) : "";
@@ -981,7 +1070,12 @@ function buildJson(): string {
   }
   const layers = [...byKind.entries()].map(([kind, ss]) => ({
     kind,
-    polys: ss.map((s) => ({ id: s.id, points: s.points })),
+    polys: ss.map((s) => ({
+      id: s.id,
+      points: s.points,
+      ...(s.color ? { color: s.color } : {}),
+      ...(s.material ? { material: s.material } : {}),
+    })),
   }));
   const doc: Record<string, unknown> = {
     schema: 2,
@@ -1038,12 +1132,29 @@ saveBtn.addEventListener("click", async () => {
 
 // ---- 3D preview ---------------------------------------------
 // A rough extruded look at the current shapes -- deck slabs, tall walls,
-// flat marks. A `void` isn't drawn: it's cut out of every `safe` / `wall`
-// polygon it sits inside (a hole in the extrusion). Not the replay
-// renderer; the seed of the eventual scene-rig + src/map/extrude.ts
-// (docs/encounter-maps.md).
-const DEPTH: Record<Kind, number> = { safe: 0.4, wall: 5, void: 0, mark: 0.15 };
-const LIFT: Record<Kind, number> = { safe: 0, wall: 0, void: 0, mark: 0.55 };
+// flat marks, sunken ground FX. A `void` is cut out of every safe / wall
+// (all heights) / mark it sits inside. Not the replay renderer; the seed
+// of the eventual scene-rig + src/map/extrude.ts (docs/encounter-maps.md).
+const DEPTH: Record<Kind, number> = {
+  safe: 0.4,
+  wall: 5,
+  wall2: 8,
+  wall3: 12,
+  void: 0,
+  mark: 0.15,
+  ground: 0.3,
+  ground2: 0.3,
+};
+const LIFT: Record<Kind, number> = {
+  safe: 0,
+  wall: 0,
+  wall2: 0,
+  wall3: 0,
+  void: 0,
+  mark: 0.55,
+  ground: -0.5,
+  ground2: -0.45,
+};
 
 // The 3D preview draws a `mark` as a darker-grey decal -- Catppuccin
 // "crust", a step down from the deck's "base" -- rather than the 2D
@@ -1105,11 +1216,13 @@ function build3d(): void {
   });
   mapGroup.clear();
 
+  const SOLID_KINDS = new Set<Kind>(["safe", "wall", "wall2", "wall3"]);
   const usable = shapes.filter((s) => s.points.length >= 3);
-  const solids = usable.filter((s) => s.kind === "safe" || s.kind === "wall");
+  const solids = usable.filter((s) => SOLID_KINDS.has(s.kind));
   const voids = usable.filter((s) => s.kind === "void");
   const marks = usable.filter((s) => s.kind === "mark");
-  if (!solids.length && !marks.length) {
+  const grounds = usable.filter((s) => s.kind === "ground" || s.kind === "ground2");
+  if (!solids.length && !marks.length && !grounds.length) {
     render3dOnce();
     return;
   }
@@ -1134,18 +1247,21 @@ function build3d(): void {
       const py = (y - cy) * k;
       i === 0 ? dst.moveTo(px, py) : dst.lineTo(px, py);
     });
-
-  for (const s of solids) {
-    const shp = new THREE.Shape();
-    trace(shp, s.points);
-    // A void punches a hole wherever it sits inside this polygon.
+  // Every `void` that sits inside `outer` becomes a hole in `shp`.
+  const cutVoids = (shp: THREE.Shape, outer: [number, number][]) => {
     for (const v of voids) {
       const [vx, vy] = bboxCenter(v.points);
-      if (!pointInPoly(vx, vy, s.points)) continue;
+      if (!pointInPoly(vx, vy, outer)) continue;
       const hole = new THREE.Path();
       trace(hole, v.points);
       shp.holes.push(hole);
     }
+  };
+
+  for (const s of solids) {
+    const shp = new THREE.Shape();
+    trace(shp, s.points);
+    cutVoids(shp, s.points);
     const geo = new THREE.ExtrudeGeometry(shp, { depth: DEPTH[s.kind], bevelEnabled: false });
     geo.rotateX(-Math.PI / 2); // shape lies flat, depth extrudes up
     const mesh = new THREE.Mesh(
@@ -1156,14 +1272,38 @@ function build3d(): void {
     mapGroup.add(mesh);
   }
 
+  for (const s of grounds) {
+    const shp = new THREE.Shape();
+    trace(shp, s.points);
+    const geo = new THREE.ExtrudeGeometry(shp, { depth: DEPTH[s.kind], bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2);
+    const col = new THREE.Color(s.color ?? KIND_COLOR[s.kind]);
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshStandardMaterial({
+        color: col,
+        roughness: 0.4,
+        metalness: 0.1,
+        emissive: col.clone().multiplyScalar(0.12),
+      }),
+    );
+    mesh.position.y = LIFT[s.kind];
+    mapGroup.add(mesh);
+  }
+
   for (const s of marks) {
     const shp = new THREE.Shape();
     trace(shp, s.points);
+    cutVoids(shp, s.points); // voids cut marks too
     const geo = new THREE.ExtrudeGeometry(shp, { depth: DEPTH.mark, bevelEnabled: false });
     geo.rotateX(-Math.PI / 2);
     const mesh = new THREE.Mesh(
       geo,
-      new THREE.MeshBasicMaterial({ color: MARK_3D_COLOR, transparent: true, opacity: 0.85 }),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(s.color ?? MARK_3D_COLOR),
+        transparent: true,
+        opacity: 0.85,
+      }),
     );
     mesh.position.y = LIFT.mark;
     mapGroup.add(mesh);
