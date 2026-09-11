@@ -219,6 +219,8 @@ export interface ReplayCastSpan {
   startMs: number;
   endMs: number;
   spellId: number | null;
+  // `null` for a self-cast / ground-targeted / unknown target.
+  targetUnit: number | null;
 }
 
 // Where the thing a unit cast at was, at cast time (snapshot). Drives

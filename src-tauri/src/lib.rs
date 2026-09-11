@@ -1755,6 +1755,8 @@ struct ReplayCastSpanRow {
     end_ms: i64,
     /// `null` for a swing / an unresolved spell.
     spell_id: Option<u16>,
+    /// `null` for a self-cast / ground-targeted / unknown target.
+    target_unit: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -1970,6 +1972,7 @@ fn replay_series(
                         start_ms: c.start_ms,
                         end_ms: c.end_ms,
                         spell_id: (c.spell_id != NO_SPELL).then_some(c.spell_id),
+                        target_unit: (c.target_unit != NO_UNIT).then_some(c.target_unit),
                     })
                     .collect(),
                 face_events: u

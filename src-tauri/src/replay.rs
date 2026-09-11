@@ -153,11 +153,15 @@ pub struct DeathSpan {
 }
 
 /// A casting / empowering window. `spell_id` is `NO_SPELL` only if the
-/// parser never resolved one.
+/// parser never resolved one. `target_unit` is the unit this cast was
+/// aimed at (`NO_UNIT` for a self-cast / ground-targeted / unknown) --
+/// the replay's selection status bar reads the latest span at/before the
+/// playhead to show "current target".
 pub struct CastSpan {
     pub start_ms: i64,
     pub end_ms: i64,
     pub spell_id: u16,
+    pub target_unit: u32,
 }
 
 /// Where the thing a unit cast *at* was, at the moment of the cast --
@@ -290,10 +294,11 @@ struct Acc {
     hp_samples: Vec<HpSample>,
     death_spans: Vec<DeathSpan>,
     cast_spans: Vec<CastSpan>,
-    /// `(start_ms, spell)` of a `CAST_START` awaiting its `CAST_SUCCESS`.
-    hard_open: Option<(i64, u16)>,
-    /// `(start_ms, spell)` of an open `SPELL_EMPOWER_START`.
-    empower_open: Option<(i64, u16)>,
+    /// `(start_ms, spell, target)` of a `CAST_START` awaiting its
+    /// `CAST_SUCCESS`.
+    hard_open: Option<(i64, u16, u32)>,
+    /// `(start_ms, spell, target)` of an open `SPELL_EMPOWER_START`.
+    empower_open: Option<(i64, u16, u32)>,
     /// Largest `maxHP` seen in this unit's advanced blocks.
     max_hp: i64,
     /// Largest `level` (advanced-block last field) seen self-reported.
@@ -307,18 +312,28 @@ impl Acc {
     /// End an in-progress hard cast at `at` -- an interrupt or a death
     /// while casting. The partial window still counts as a spin.
     fn truncate_hard(&mut self, at: i64) {
-        if let Some((start, spell)) = self.hard_open.take() {
+        if let Some((start, spell, target)) = self.hard_open.take() {
             if at > start {
-                self.cast_spans.push(CastSpan { start_ms: start, end_ms: at, spell_id: spell });
+                self.cast_spans.push(CastSpan {
+                    start_ms: start,
+                    end_ms: at,
+                    spell_id: spell,
+                    target_unit: target,
+                });
             }
         }
     }
 
     /// End an in-progress empower at `at`.
     fn truncate_empower(&mut self, at: i64) {
-        if let Some((start, spell)) = self.empower_open.take() {
+        if let Some((start, spell, target)) = self.empower_open.take() {
             if at > start {
-                self.cast_spans.push(CastSpan { start_ms: start, end_ms: at, spell_id: spell });
+                self.cast_spans.push(CastSpan {
+                    start_ms: start,
+                    end_ms: at,
+                    spell_id: spell,
+                    target_unit: target,
+                });
             }
         }
     }
@@ -503,15 +518,24 @@ pub fn series(
                 // A new start supersedes an unresolved one (rare -- a
                 // swapped cast); the old one still spun up to here.
                 a.truncate_hard(ts);
-                a.hard_open = Some((ts, events.spell[row]));
+                a.hard_open = Some((ts, events.spell[row], dst));
             }
             LineKind::Composed { suffix: Suffix::CastSuccess, .. } if src != NO_UNIT => {
                 let spell = events.spell[row];
                 let a = accs.entry(src).or_default();
+                // Prefer the success line's own target; fall back to the
+                // one recorded at CAST_START (success sometimes omits it).
+                let succ_target = if dst != NO_UNIT && dst != src { dst } else { NO_UNIT };
                 match a.hard_open.take() {
                     // Success closing a start we saw -> the hard-cast window.
-                    Some((hs, hspell)) if ts >= hs => {
-                        a.cast_spans.push(CastSpan { start_ms: hs, end_ms: ts, spell_id: hspell });
+                    Some((hs, hspell, htarget)) if ts >= hs => {
+                        let target = if succ_target != NO_UNIT { succ_target } else { htarget };
+                        a.cast_spans.push(CastSpan {
+                            start_ms: hs,
+                            end_ms: ts,
+                            spell_id: hspell,
+                            target_unit: target,
+                        });
                     }
                     // Lone success -> instant (or a channel's first tick):
                     // a short fixed spin.
@@ -520,6 +544,7 @@ pub fn series(
                             start_ms: ts,
                             end_ms: ts + INSTANT_SPIN_MS,
                             spell_id: spell,
+                            target_unit: succ_target,
                         });
                     }
                 }
@@ -533,18 +558,19 @@ pub fn series(
                 }
             }
             LineKind::Composed { suffix: Suffix::EmpowerStart, .. } if src != NO_UNIT => {
-                accs.entry(src).or_default().empower_open = Some((ts, events.spell[row]));
+                accs.entry(src).or_default().empower_open = Some((ts, events.spell[row], dst));
             }
             LineKind::Composed {
                 suffix: Suffix::EmpowerEnd | Suffix::EmpowerInterrupt,
                 ..
             } if src != NO_UNIT => {
                 if let Some(a) = accs.get_mut(&src) {
-                    if let Some((es, espell)) = a.empower_open.take() {
+                    if let Some((es, espell, etarget)) = a.empower_open.take() {
                         a.cast_spans.push(CastSpan {
                             start_ms: es,
                             end_ms: ts.max(es + INSTANT_SPIN_MS),
                             spell_id: espell,
+                            target_unit: etarget,
                         });
                     }
                 }
@@ -872,7 +898,12 @@ pub fn series(
         let mut cast_spans: Vec<CastSpan> = a
             .cast_spans
             .iter()
-            .map(|c| CastSpan { start_ms: c.start_ms, end_ms: c.end_ms, spell_id: c.spell_id })
+            .map(|c| CastSpan {
+                start_ms: c.start_ms,
+                end_ms: c.end_ms,
+                spell_id: c.spell_id,
+                target_unit: c.target_unit,
+            })
             .collect();
         cast_spans.sort_by_key(|c| c.start_ms);
 
@@ -1345,6 +1376,43 @@ mod tests {
         // lone success: short fixed spin
         assert_eq!(u.cast_spans[1].start_ms, store.timestamp_ms[2]);
         assert_eq!(u.cast_spans[1].end_ms, store.timestamp_ms[2] + INSTANT_SPIN_MS);
+    }
+
+    #[test]
+    fn cast_span_carries_its_target_unit() {
+        let healer = "Player-1-1";
+        let ally = "Player-2-2";
+        let (tables, store, mmap) = store_from(&[
+            format!(
+                "9/3/2026 19:23:01.000-6  SPELL_CAST_START,{healer},\"H-R-US\",0x511,0x0,\
+                 {ally},\"A-R-US\",0x512,0x0,100,\"Heal\",0x8"
+            ),
+            format!(
+                "9/3/2026 19:23:03.000-6  SPELL_CAST_SUCCESS,{healer},\"H-R-US\",0x511,0x0,\
+                 {ally},\"A-R-US\",0x512,0x0,100,\"Heal\",0x8,\
+                 {healer},0000000000000000,1,1,0,0,0,0,0,0,0,0,0,0,5.0,5.0,2607,0,1"
+            ),
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[1] + 1);
+        let healer_unit = s.units.iter().find(|u| u.guid == healer).unwrap();
+        assert_eq!(healer_unit.cast_spans.len(), 1);
+        // Target already known from CAST_START, so it covers the whole
+        // cast window, not just the moment it resolves.
+        assert_eq!(healer_unit.cast_spans[0].target_unit, store.dest_unit[0]);
+    }
+
+    #[test]
+    fn self_or_untargeted_cast_has_no_target_unit() {
+        let (tables, store, mmap) = store_from(&[
+            "9/3/2026 19:23:01.000-6  SPELL_CAST_START,Player-1-1,\"A-R-US\",0x512,0x0,\
+             0000000000000000,nil,0x80000000,0x80000000,100,\"Heal\",0x8"
+                .to_string(),
+            cast_success("03.000", "Player-1-1", "0000000000000000", "nil", "5.0,5.0"),
+        ]);
+        let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[1] + 1);
+        let u = &s.units[0];
+        assert_eq!(u.cast_spans.len(), 1);
+        assert_eq!(u.cast_spans[0].target_unit, NO_UNIT);
     }
 
     #[test]

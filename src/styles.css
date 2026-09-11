@@ -2937,6 +2937,26 @@ body {
   background-color: var(--ctp-green);
 }
 
+/* Target box: the selected unit's current/last cast target, docked to
+   the right of the player card. Hidden while there's no live target. */
+.rs-target {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding-left: 18px;
+  border-left: 1px solid rgb(255 255 255 / 12%);
+}
+
+.rs-target[hidden] {
+  display: none;
+}
+
+.rs-target .rs-hp {
+  flex: none;
+  max-width: 200px;
+}
+
 .rt-btn {
   display: inline-flex;
   align-items: center;

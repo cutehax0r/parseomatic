@@ -493,7 +493,10 @@ async function paint(): Promise<void> {
       samples: u.samples,
       hpSamples: u.hpSamples,
       deathSpans: u.deathSpans,
-      castSpans: u.castSpans,
+      castSpans: u.castSpans.map((c) => ({
+        ...c,
+        targetUnit: c.targetUnit != null ? (merged.remap.get(c.targetUnit) ?? c.targetUnit) : null,
+      })),
       faceEvents: u.faceEvents,
     };
   });

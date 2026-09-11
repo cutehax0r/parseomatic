@@ -234,6 +234,128 @@ function despawnPoseAt(lastMs: number, t: number, size: number): DeathPose | nul
   return leavePose(lastMs + DESPAWN_GRACE_MS, t, size, DEATH_HOLD_MS);
 }
 
+// ---- Selection status bar: shared name/HP card (player box + target box) --
+
+interface UnitCardParts {
+  card: HTMLElement; // role/ilvl + name/spec
+  hpEl: HTMLElement | null; // null when the unit never carries an HP reading
+  hpFill: HTMLElement | null;
+  hpCur: HTMLElement | null;
+  hpMax: HTMLElement | null;
+  hpPct: HTMLElement | null;
+}
+
+// Builds the Overview-style card (role glyph over item level, class-
+// coloured name, spec) plus a damage-bar-style HP readout, as separate
+// elements -- the caller decides whether they're laid out as siblings
+// (the player box, `hp` stretching to fill the bar) or nested in one
+// flex:none wrapper (the target box).
+function buildUnitCard(u: ReplaySceneUnitInput): UnitCardParts {
+  const card = document.createElement("span");
+  card.className = "rs-card";
+
+  if (u.roleRank < 4 || u.itemLevel != null) {
+    const role = document.createElement("span");
+    role.className = `rs-role pt-role ${roleIconClass(u.roleRank)}`.trim();
+    role.innerHTML = roleIcon(u.roleRank); // static, trusted SVG
+    if (u.itemLevel != null) {
+      const ilvl = document.createElement("span");
+      ilvl.className = "rs-ilvl pt-role-ilvl";
+      ilvl.textContent = String(u.itemLevel);
+      role.appendChild(ilvl);
+    }
+    card.appendChild(role);
+  }
+
+  const who = document.createElement("span");
+  who.className = "rs-who pt-who";
+  const name = document.createElement("span");
+  name.className = "rs-name pt-name";
+  name.textContent = u.name;
+  const col = cssValue(u.color);
+  if (col) name.style.color = col;
+  who.appendChild(name);
+  if (u.spec) {
+    const spec = document.createElement("span");
+    spec.className = "rs-spec pt-spec pt-dim";
+    spec.textContent = u.spec;
+    who.appendChild(spec);
+  }
+  card.appendChild(who);
+
+  if (!(u.maxHp > 0 || u.hpSamples.length > 0)) {
+    return { card, hpEl: null, hpFill: null, hpCur: null, hpMax: null, hpPct: null };
+  }
+
+  const hpEl = document.createElement("span");
+  hpEl.className = "rs-hp pt-metric";
+  const bar = document.createElement("span");
+  bar.className = "pt-bar";
+  const hpFill = document.createElement("span");
+  hpFill.className = "pt-bar-seg rs-hp-fill";
+  bar.appendChild(hpFill);
+  const nums = document.createElement("span");
+  nums.className = "pt-metric-nums";
+  const main = document.createElement("span");
+  main.className = "pt-metric-main";
+  const hpCur = document.createElement("b");
+  const hpMax = document.createElement("span");
+  hpMax.className = "pt-metric-sub";
+  main.append(hpCur, hpMax);
+  const hpPct = document.createElement("span");
+  hpPct.className = "pt-metric-sub pt-metric-aside";
+  nums.append(main, hpPct);
+  hpEl.append(bar, nums);
+  return { card, hpEl, hpFill, hpCur, hpMax, hpPct };
+}
+
+// Refresh a card's HP figures for time `t` -- last reading at/before the
+// playhead, or full HP before the first one.
+function refreshCardHp(parts: UnitCardParts, u: ReplaySceneUnitInput, t: number): void {
+  if (!parts.hpFill || !parts.hpCur || !parts.hpMax || !parts.hpPct) return;
+  const hs = u.hpSamples;
+  let lo = 0;
+  let hi = hs.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (hs[m].tMs <= t) lo = m + 1;
+    else hi = m;
+  }
+  const fix = lo > 0 ? hs[lo - 1] : null;
+  const max = (fix && fix.max > 0 ? fix.max : u.maxHp) || 1;
+  const cur = fix ? fix.cur : max; // no reading yet -> assume full
+  const frac = Math.max(0, Math.min(1, cur / max));
+  parts.hpFill.style.width = `${frac * 100}%`;
+  parts.hpCur.textContent = formatCompact(cur);
+  parts.hpMax.textContent = formatCompact(max);
+  parts.hpPct.textContent = `${Math.round(frac * 100)}%`;
+}
+
+// The unit `u` last successfully cast on, or is currently casting at, at
+// or before `t` -- `castSpans` carry the cast's target from CAST_START
+// (so it shows for the whole cast, not just on success). `null` if `u`
+// never had a targeted cast by `t` (or only ever self-cast / AoE'd).
+function latestCastTarget(u: ReplaySceneUnitInput, t: number): number | null {
+  let target: number | null = null;
+  for (const cs of u.castSpans) {
+    if (cs.startMs > t) break;
+    if (cs.targetUnit != null) target = cs.targetUnit;
+  }
+  return target;
+}
+
+// Is `u` no longer a valid target at `t` -- dead and not yet resurrected,
+// or (enemies only) quietly despawned past the same grace period the 3D
+// scene uses to drop it from the field?
+function isTargetGone(u: ReplaySceneUnitInput, t: number): boolean {
+  if (u.samples.length === 0 || t < u.samples[0].tMs) return true;
+  for (const d of u.deathSpans) {
+    if (d.startMs <= t && (d.endMs == null || t < d.endMs)) return true;
+  }
+  if (u.team === "enemy" && t > u.samples[u.samples.length - 1].tMs + DESPAWN_GRACE_MS) return true;
+  return false;
+}
+
 // ---- Cast lines (hostile -> player attack arcs) ----------------------
 const CAST_SEGMENTS = 24; // bezier samples per line
 const CAST_FADE_MS = 125; // line fade in / out
@@ -525,11 +647,10 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   // ---- playback ----
   private stage!: HTMLElement; // holds the <canvas>; the bordered box
   private statusEl!: HTMLElement; // translucent bar over the bottom of the stage
-  private statusHasHp = false; // whether the current card includes an HP bar
-  private statusHpCur!: HTMLElement; // bold current-HP figure
-  private statusHpMax!: HTMLElement; // small max-HP figure
-  private statusHpPct!: HTMLElement; // right-edge "NN%"
-  private statusHpFill!: HTMLElement; // the bar segment
+  private statusCard: UnitCardParts | null = null; // the selected unit's name/HP card
+  private targetWrapEl!: HTMLElement; // docks to the right of statusCard; hidden when no live target
+  private targetCard: UnitCardParts | null = null; // the current target's name/HP card
+  private targetUnitId: number | null = null; // unitId shown in targetWrapEl, so it only rebuilds on change
   private playBtn!: HTMLButtonElement;
   private slider!: HTMLInputElement;
   private timeEl!: HTMLElement;
@@ -1137,6 +1258,10 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.selRing.visible = false;
     this.selFill.visible = false;
     this.statusEl.hidden = true;
+    this.statusEl.replaceChildren();
+    this.statusCard = null;
+    this.targetCard = null;
+    this.targetUnitId = null;
     this.setPlaying(false);
     this.reframe();
     this.rebuildUnits(props); // creates meshes, then applyTime(playhead)
@@ -1292,104 +1417,72 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
 
   // Rebuild the bottom status bar for the current selection: an Overview-
   // style player card (role glyph over item level, class-coloured name,
-  // spec) plus a damage-bar-style HP readout. Called on selection change;
-  // `updateStatusHp` refreshes the numbers every frame.
+  // spec) plus a damage-bar-style HP readout, and an (initially hidden)
+  // target box docked to its right. Called on selection change;
+  // `updateStatusHp` refreshes both cards' numbers and the target's
+  // identity every frame.
   private syncStatus(): void {
     const u = this.selectedUnitId != null ? this.unitById.get(this.selectedUnitId) : undefined;
     if (!u) {
       this.statusEl.hidden = true;
       this.statusEl.replaceChildren();
-      this.statusHasHp = false;
+      this.statusCard = null;
+      this.targetCard = null;
+      this.targetUnitId = null;
       return;
     }
 
-    const card = document.createElement("span");
-    card.className = "rs-card";
+    this.statusCard = buildUnitCard(u);
+    const kids: HTMLElement[] = [this.statusCard.card];
+    if (this.statusCard.hpEl) kids.push(this.statusCard.hpEl);
 
-    if (u.roleRank < 4 || u.itemLevel != null) {
-      const role = document.createElement("span");
-      role.className = `rs-role pt-role ${roleIconClass(u.roleRank)}`.trim();
-      role.innerHTML = roleIcon(u.roleRank); // static, trusted SVG
-      if (u.itemLevel != null) {
-        const ilvl = document.createElement("span");
-        ilvl.className = "rs-ilvl pt-role-ilvl";
-        ilvl.textContent = String(u.itemLevel);
-        role.appendChild(ilvl);
-      }
-      card.appendChild(role);
-    }
-
-    const who = document.createElement("span");
-    who.className = "rs-who pt-who";
-    const name = document.createElement("span");
-    name.className = "rs-name pt-name";
-    name.textContent = u.name;
-    const col = cssValue(u.color);
-    if (col) name.style.color = col;
-    who.appendChild(name);
-    if (u.spec) {
-      const spec = document.createElement("span");
-      spec.className = "rs-spec pt-spec pt-dim";
-      spec.textContent = u.spec;
-      who.appendChild(spec);
-    }
-    card.appendChild(who);
-
-    const kids: HTMLElement[] = [card];
-
-    this.statusHasHp = u.maxHp > 0 || u.hpSamples.length > 0;
-    if (this.statusHasHp) {
-      const hp = document.createElement("span");
-      hp.className = "rs-hp pt-metric";
-      const bar = document.createElement("span");
-      bar.className = "pt-bar";
-      this.statusHpFill = document.createElement("span");
-      this.statusHpFill.className = "pt-bar-seg rs-hp-fill";
-      bar.appendChild(this.statusHpFill);
-      const nums = document.createElement("span");
-      nums.className = "pt-metric-nums";
-      const main = document.createElement("span");
-      main.className = "pt-metric-main";
-      this.statusHpCur = document.createElement("b");
-      this.statusHpMax = document.createElement("span");
-      this.statusHpMax.className = "pt-metric-sub";
-      main.append(this.statusHpCur, this.statusHpMax);
-      this.statusHpPct = document.createElement("span");
-      this.statusHpPct.className = "pt-metric-sub pt-metric-aside";
-      nums.append(main, this.statusHpPct);
-      hp.append(bar, nums);
-      kids.push(hp);
-    }
+    this.targetWrapEl = document.createElement("span");
+    this.targetWrapEl.className = "rs-target";
+    this.targetWrapEl.hidden = true;
+    this.targetCard = null;
+    this.targetUnitId = null;
+    kids.push(this.targetWrapEl);
 
     this.statusEl.replaceChildren(...kids);
     this.statusEl.hidden = false;
     this.updateStatusHp(this.playhead);
   }
 
-  // Refresh the HP figures for time `t` -- last reading at/before the
-  // playhead, or full HP before the first one.
+  // Refresh the selected unit's HP figures and its target box for time
+  // `t` -- last reading at/before the playhead, or full HP before the
+  // first one.
   private updateStatusHp(t: number): void {
-    if (!this.statusHasHp || this.selectedUnitId == null) return;
+    if (this.selectedUnitId == null) return;
     const u = this.unitById.get(this.selectedUnitId);
     if (!u) return;
+    if (this.statusCard) refreshCardHp(this.statusCard, u, t);
+    this.updateStatusTarget(u, t);
+  }
 
-    const hs = u.hpSamples;
-    let lo = 0;
-    let hi = hs.length;
-    while (lo < hi) {
-      const m = (lo + hi) >> 1;
-      if (hs[m].tMs <= t) lo = m + 1;
-      else hi = m;
+  // Show/refresh the target box: the unit `u` last cast on (or is
+  // currently casting at), as of `t`. Hidden if `u` never had a targeted
+  // cast yet, or that target is dead / despawned. Only rebuilds the
+  // card's DOM when the target's identity actually changes.
+  private updateStatusTarget(u: ReplaySceneUnitInput, t: number): void {
+    const wrap = this.targetWrapEl;
+    if (!wrap) return;
+    const targetId = latestCastTarget(u, t);
+    const target = targetId != null ? this.unitById.get(targetId) : undefined;
+    if (!target || isTargetGone(target, t)) {
+      wrap.hidden = true;
+      this.targetCard = null;
+      this.targetUnitId = null;
+      return;
     }
-    const fix = lo > 0 ? hs[lo - 1] : null;
-    const max = (fix && fix.max > 0 ? fix.max : u.maxHp) || 1;
-    const cur = fix ? fix.cur : max; // no reading yet -> assume full
-    const frac = Math.max(0, Math.min(1, cur / max));
-
-    this.statusHpFill.style.width = `${frac * 100}%`;
-    this.statusHpCur.textContent = formatCompact(cur);
-    this.statusHpMax.textContent = formatCompact(max);
-    this.statusHpPct.textContent = `${Math.round(frac * 100)}%`;
+    if (this.targetUnitId !== targetId) {
+      this.targetUnitId = targetId ?? null;
+      this.targetCard = buildUnitCard(target);
+      const kids: HTMLElement[] = [this.targetCard.card];
+      if (this.targetCard.hpEl) kids.push(this.targetCard.hpEl);
+      wrap.replaceChildren(...kids);
+    }
+    wrap.hidden = false;
+    if (this.targetCard) refreshCardHp(this.targetCard, target, t);
   }
 
   // Park the blue ring + fill under the selected unit's (post-de-conflict)
