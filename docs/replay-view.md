@@ -197,15 +197,21 @@ Panel/Widget spec (`docs/ui-widgets.md`).
   the top meets the sides. "80s wireframe game in our palette." Extent =
   `fit_box` padded one cell and snapped to whole cells; a fixed minimum
   span so a stationary fight isn't a postage stamp.
-- **The pillar & mist** — that same box is tall (`PILLAR_DEPTH` ≈ 90 yards),
-  rising out of a **cloudy mist** into the void. The void colour is
-  Catppuccin **`--ctp-crust`** — used for the `.replay-scene` background,
-  the box's unseen bottom face, and `THREE.Fog` (linear, `near`/`far`
-  retuned to the span each reframe) which takes over below the mist so
-  the pillar has no visible bottom edge. The mist is `MIST_LAYERS` — a
-  few stacked translucent discs (`MeshBasicMaterial` + a soft radial blob
-  texture, dark-tinted, fog-aware) just below the floor, radii scaled to
-  the framed span so they fill the lower frame all around. No far floor.
+- **The pillar & base layer** — that same box is tall (`PILLAR_DEPTH` ≈ 90
+  yards), rising out of the **base layer**: one flat slab `BASE_DROP` — 5
+  player heights (`PLAYER_H` = 2 yd, so 10 yards) — below the deck datum,
+  reading as a bottomless drop rather than a nearby floor. Scaled to
+  `span × 40` each reframe so it also reads as reaching the horizon from
+  any orbit angle. Its material is a
+  near-black `MeshStandardMaterial` (`--ctp-crust`, `metalness` 0.9,
+  `roughness` 0.6) reflecting the skybox env map — a **smeared, dock-like
+  sheen**, not a mirror, and no extra render pass. It's also the **opaque
+  depth backstop**: cast arcs, marker columns and the view through a
+  `void` hole sort against it instead of compositing wrong past the deck
+  edge. The void colour **`--ctp-crust`** is also the `.replay-scene`
+  background, the box's unseen bottom face, and `THREE.Fog` (linear,
+  `near`/`far` retuned to the span each reframe) so the distant spires
+  melt out. No far floor.
 - **Sun** — one `DirectionalLight` at a fixed angle casting shadows, plus
   a low `HemisphereLight` / ambient fill so shadowed faces aren't pure
   black. **Shadows are deliberately cheap**: a single 1024–2048 shadow

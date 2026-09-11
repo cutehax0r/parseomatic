@@ -1,9 +1,9 @@
 // The Map Editor window (map-editor.html, a separate Rollup entry). A
 // minimal polygon tracer: open/load a `.map.json`, load a backdrop image,
 // draw closed shapes over it, tag each with a `kind`, save to
-// <app data>/maps/. A "3D" toolbar button toggles a rough extruded
-// preview of the current shapes (the seed of the eventual scene-rig /
-// src/map/extrude.ts, docs/encounter-maps.md).
+// <app data>/maps/. A "3D" toolbar button toggles a live preview of the
+// current shapes built with `buildDevMap` (`src/map/extrude.ts`) -- the
+// same extrusion code the replay renderer uses (docs/encounter-maps.md).
 //
 // Coordinates are stored in *document units* -- image pixels when a
 // backdrop is loaded. World-yard calibration is a later pass
@@ -14,8 +14,10 @@ import { listen } from "@tauri-apps/api/event";
 import { open, message } from "@tauri-apps/plugin-dialog";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { buildDevMap, devMapWorldBox, framingOf } from "./map/extrude";
+import type { DevMapDoc, DevMapLayer } from "./map/extrude";
 
-type Kind = "safe" | "wall" | "wall2" | "wall3" | "void" | "mark" | "ground" | "ground2";
+type Kind = "ground" | "wall" | "wall2" | "wall3" | "void" | "mark" | "ground-1" | "ground-2";
 type Tool = "select" | "draw" | "rect" | "ellipse" | "addvert";
 interface Shape {
   id: string;
@@ -27,8 +29,8 @@ interface Shape {
 
 // Kinds whose fill is author-picked (else `KIND_COLOR[kind]`), and kinds
 // that carry a render `material` tag.
-const KIND_HAS_COLOR = new Set<Kind>(["mark", "ground", "ground2"]);
-const KIND_HAS_MATERIAL = new Set<Kind>(["ground", "ground2"]);
+const KIND_HAS_COLOR = new Set<Kind>(["mark", "ground-1", "ground-2"]);
+const KIND_HAS_MATERIAL = new Set<Kind>(["ground-1", "ground-2"]);
 
 const newShapeId = () => `s${(seq++).toString(36)}${Date.now().toString(36).slice(-3)}`;
 
@@ -73,15 +75,29 @@ function decagonPoints(center: [number, number], edge: [number, number]): [numbe
 }
 
 const KIND_COLOR: Record<Kind, string> = {
-  safe: "#a6da95",
+  ground: "#a6da95",
   wall: "#f5a97f",
   wall2: "#eebebe",
   wall3: "#f4b8e4",
   void: "#ed8796",
   mark: "#eed49f",
-  ground: "#89dceb",
-  ground2: "#94e2d5",
+  "ground-1": "#89dceb",
+  "ground-2": "#94e2d5",
 };
+
+// Display label + grouping order for the "Layers" dropdown -- same order
+// as the draw buttons / `#me-selkind` options.
+const KIND_LABEL: Record<Kind, string> = {
+  ground: "Ground",
+  wall: "Wall",
+  wall2: "Wall ×2",
+  wall3: "Wall ×3",
+  void: "Void",
+  mark: "Mark",
+  "ground-1": "Ground -1",
+  "ground-2": "Ground -2",
+};
+const KIND_ORDER: Kind[] = ["ground", "wall", "wall2", "wall3", "void", "mark", "ground-1", "ground-2"];
 
 // ---- DOM ------------------------------------------------------------------
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -99,6 +115,12 @@ const rectBtn = $<HTMLButtonElement>("me-tool-rect");
 const circleBtn = $<HTMLButtonElement>("me-tool-circle");
 const addvertBtn = $<HTMLButtonElement>("me-tool-addvert");
 const selKind = $<HTMLSelectElement>("me-selkind");
+const layersSelect = $<HTMLSelectElement>("me-layers");
+const moveStepSelect = $<HTMLSelectElement>("me-move-step");
+const moveLeftBtn = $<HTMLButtonElement>("me-move-left");
+const moveRightBtn = $<HTMLButtonElement>("me-move-right");
+const moveUpBtn = $<HTMLButtonElement>("me-move-up");
+const moveDownBtn = $<HTMLButtonElement>("me-move-down");
 const delBtn = $<HTMLButtonElement>("me-del");
 const statusEl = $<HTMLElement>("me-status");
 const rotInput = $<HTMLInputElement>("me-rot");
@@ -126,7 +148,7 @@ const shapes: Shape[] = [];
 let selectedId: string | null = null;
 let selectedVertex: number | null = null; // index into the selected shape's points, when a vertex is picked
 let tool: Tool = "select";
-let drawKind: Kind = "safe";
+let drawKind: Kind = "ground";
 let draft: [number, number][] | null = null;
 let anchor: [number, number] | null = null; // first click of the rect / circle tools
 let bg: HTMLImageElement | null = null;
@@ -399,6 +421,10 @@ function syncToolbar(): void {
   const sel = shapes.find((s) => s.id === selectedId) ?? null;
   selKind.disabled = !sel;
   delBtn.disabled = !sel;
+  moveLeftBtn.disabled = !sel;
+  moveRightBtn.disabled = !sel;
+  moveUpBtn.disabled = !sel;
+  moveDownBtn.disabled = !sel;
   if (sel) selKind.value = sel.kind;
   saveBtn.disabled = !/^\d+$/.test(idInput.value.trim()) || Number(idInput.value) < 1;
 
@@ -429,6 +455,38 @@ function syncToolbar(): void {
   if (showMat && sel && document.activeElement !== shpMatInput) {
     shpMatInput.value = sel.material ?? "";
   }
+
+  syncLayers();
+}
+
+// The "Layers" dropdown: every shape, grouped into an `<optgroup>` per
+// kind (kinds with no shapes are omitted), numbered in draw order within
+// their group. Rebuilt wholesale on every `syncToolbar` -- shape counts
+// are small (tens), so this is cheap next to a canvas redraw.
+function syncLayers(): void {
+  const groups = new Map<Kind, Shape[]>(KIND_ORDER.map((k) => [k, []]));
+  for (const s of shapes) groups.get(s.kind)!.push(s);
+
+  layersSelect.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = shapes.length ? "— select a shape —" : "— no shapes —";
+  layersSelect.appendChild(placeholder);
+
+  for (const k of KIND_ORDER) {
+    const list = groups.get(k)!;
+    if (!list.length) continue;
+    const og = document.createElement("optgroup");
+    og.label = KIND_LABEL[k];
+    list.forEach((s, i) => {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = `#${i + 1} (${s.points.length} pt${s.points.length === 1 ? "" : "s"})`;
+      og.appendChild(opt);
+    });
+    layersSelect.appendChild(og);
+  }
+  layersSelect.value = selectedId ?? "";
 }
 
 // ---- rendering -----------------------------------------------------
@@ -773,6 +831,27 @@ function deleteSelected(): void {
   status("Shape deleted.");
 }
 
+// The four "Move by" toolbar arrows: nudge just the picked vertex when
+// one's selected, else every point in the selected shape (document
+// units, independent of the current view rotation -- same space the
+// Vertex X/Y fields edit in). `dx`/`dy` are pre-signed by the caller.
+function nudgeSelected(dx: number, dy: number): void {
+  const s = shapes.find((x) => x.id === selectedId);
+  if (!s) return;
+  const v = selectedVertex != null ? s.points[selectedVertex] : null;
+  if (v) {
+    v[0] += dx;
+    v[1] += dy;
+  } else {
+    for (const p of s.points) {
+      p[0] += dx;
+      p[1] += dy;
+    }
+  }
+  syncToolbar();
+  render();
+}
+
 // ---- toolbar wiring ---------------------------------------------
 selectBtn.addEventListener("click", () => {
   tool = "select";
@@ -826,6 +905,24 @@ for (const b of drawButtons) {
     );
   });
 }
+
+layersSelect.addEventListener("change", () => {
+  const id = layersSelect.value;
+  if (!id) return;
+  const s = shapes.find((x) => x.id === id);
+  if (!s) return;
+  selectedId = s.id;
+  selectedVertex = null;
+  tool = "select";
+  syncToolbar();
+  render();
+});
+
+const moveStep = (): number => Number(moveStepSelect.value) || 1;
+moveLeftBtn.addEventListener("click", () => nudgeSelected(-moveStep(), 0));
+moveRightBtn.addEventListener("click", () => nudgeSelected(moveStep(), 0));
+moveUpBtn.addEventListener("click", () => nudgeSelected(0, -moveStep()));
+moveDownBtn.addEventListener("click", () => nudgeSelected(0, moveStep()));
 
 selKind.addEventListener("change", () => {
   const s = shapes.find((x) => x.id === selectedId);
@@ -1061,14 +1158,17 @@ function loadMapText(text: string, label = "map file"): void {
 }
 
 // ---- save -----------------------------------------------------
-function buildJson(): string {
+// Group shapes by kind into the `DevMapLayer[]` shape both the saved
+// `.map.json` and `buildDevMap` (the shared extruder, `src/map/extrude.ts`)
+// expect.
+function layersFromShapes(list: Shape[]): DevMapLayer[] {
   const byKind = new Map<Kind, Shape[]>();
-  for (const s of shapes) {
+  for (const s of list) {
     const arr = byKind.get(s.kind);
     if (arr) arr.push(s);
     else byKind.set(s.kind, [s]);
   }
-  const layers = [...byKind.entries()].map(([kind, ss]) => ({
+  return [...byKind.entries()].map(([kind, ss]) => ({
     kind,
     polys: ss.map((s) => ({
       id: s.id,
@@ -1077,6 +1177,10 @@ function buildJson(): string {
       ...(s.material ? { material: s.material } : {}),
     })),
   }));
+}
+
+function buildJson(): string {
+  const layers = layersFromShapes(shapes);
   const doc: Record<string, unknown> = {
     schema: 2,
     mapId: Number(idInput.value),
@@ -1131,50 +1235,12 @@ saveBtn.addEventListener("click", async () => {
 });
 
 // ---- 3D preview ---------------------------------------------
-// A rough extruded look at the current shapes -- deck slabs, tall walls,
-// flat marks, sunken ground FX. A `void` is cut out of every safe / wall
-// (all heights) / mark it sits inside. Not the replay renderer; the seed
-// of the eventual scene-rig + src/map/extrude.ts (docs/encounter-maps.md).
-const DEPTH: Record<Kind, number> = {
-  safe: 0.4,
-  wall: 5,
-  wall2: 8,
-  wall3: 12,
-  void: 0,
-  mark: 0.15,
-  ground: 0.3,
-  ground2: 0.3,
-};
-const LIFT: Record<Kind, number> = {
-  safe: 0,
-  wall: 0,
-  wall2: 0,
-  wall3: 0,
-  void: 0,
-  mark: 0.55,
-  ground: -0.5,
-  ground2: -0.45,
-};
-
-// The 3D preview draws a `mark` as a darker-grey decal -- Catppuccin
-// "crust", a step down from the deck's "base" -- rather than the 2D
-// editor's yellow, matching the replay renderer (docs/replay-view.md).
-const MARK_3D_COLOR =
-  getComputedStyle(document.documentElement).getPropertyValue("--ctp-crust").trim() || "#181926";
-
-function bboxCenter(pts: [number, number][]): [number, number] {
-  let mnx = Infinity;
-  let mny = Infinity;
-  let mxx = -Infinity;
-  let mxy = -Infinity;
-  for (const [x, y] of pts) {
-    mnx = Math.min(mnx, x);
-    mny = Math.min(mny, y);
-    mxx = Math.max(mxx, x);
-    mxy = Math.max(mxy, y);
-  }
-  return [(mnx + mxx) / 2, (mny + mxy) / 2];
-}
+// Builds the exact same geometry the replay renderer does --
+// `buildDevMap` in the shared `src/map/extrude.ts` -- from the shapes
+// being edited right now, so this preview and the replay can no longer
+// drift apart into two hand-rolled extrusions (docs/encounter-maps.md
+// §2 "keep the seam"). The current calibration fields are fed straight
+// in, so the preview is at true world-yard scale too.
 
 let renderer3d: THREE.WebGLRenderer | null = null;
 let scene3d: THREE.Scene;
@@ -1205,109 +1271,40 @@ function init3d(): void {
   scene3d.add(mapGroup);
 }
 
-function build3d(): void {
-  init3d();
+// Disposes every geometry + material (and any texture map -- `buildDevMap`
+// allocates a fresh grid texture per call, unlike the old flat-colour
+// preview) under `mapGroup`, then empties it.
+function disposeMapGroup(): void {
   mapGroup.traverse((o) => {
     const m = o as THREE.Mesh;
     m.geometry?.dispose();
     const mat = m.material as THREE.Material | THREE.Material[] | undefined;
-    if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
-    else mat?.dispose();
+    const mats = Array.isArray(mat) ? mat : mat ? [mat] : [];
+    for (const mm of mats) {
+      (mm as THREE.MeshStandardMaterial).map?.dispose();
+      mm.dispose();
+    }
   });
   mapGroup.clear();
+}
 
-  const SOLID_KINDS = new Set<Kind>(["safe", "wall", "wall2", "wall3"]);
-  const usable = shapes.filter((s) => s.points.length >= 3);
-  const solids = usable.filter((s) => SOLID_KINDS.has(s.kind));
-  const voids = usable.filter((s) => s.kind === "void");
-  const marks = usable.filter((s) => s.kind === "mark");
-  const grounds = usable.filter((s) => s.kind === "ground" || s.kind === "ground2");
-  if (!solids.length && !marks.length && !grounds.length) {
-    render3dOnce();
-    return;
-  }
+function build3d(): void {
+  init3d();
+  disposeMapGroup();
 
-  let mnx = Infinity;
-  let mny = Infinity;
-  let mxx = -Infinity;
-  let mxy = -Infinity;
-  for (const s of usable)
-    for (const [x, y] of s.points) {
-      mnx = Math.min(mnx, x);
-      mny = Math.min(mny, y);
-      mxx = Math.max(mxx, x);
-      mxy = Math.max(mxy, y);
-    }
-  const cx = (mnx + mxx) / 2;
-  const cy = (mny + mxy) / 2;
-  const k = 120 / (Math.max(mxx - mnx, mxy - mny) || 1); // longest side -> ~120 units
-  const trace = (dst: THREE.Shape | THREE.Path, pts: [number, number][]) =>
-    pts.forEach(([x, y], i) => {
-      const px = (x - cx) * k;
-      const py = (y - cy) * k;
-      i === 0 ? dst.moveTo(px, py) : dst.lineTo(px, py);
-    });
-  // Every `void` that sits inside `outer` becomes a hole in `shp`.
-  const cutVoids = (shp: THREE.Shape, outer: [number, number][]) => {
-    for (const v of voids) {
-      const [vx, vy] = bboxCenter(v.points);
-      if (!pointInPoly(vx, vy, outer)) continue;
-      const hole = new THREE.Path();
-      trace(hole, v.points);
-      shp.holes.push(hole);
-    }
+  const doc: DevMapDoc = {
+    layers: layersFromShapes(shapes),
+    calibration: {
+      yardsPerUnit: cal.yardsPerUnit,
+      rotationDeg: cal.rotationDeg,
+      originYards: [cal.originYards[0], cal.originYards[1]],
+      mirrorY: cal.mirrorY,
+    },
   };
-
-  for (const s of solids) {
-    const shp = new THREE.Shape();
-    trace(shp, s.points);
-    cutVoids(shp, s.points);
-    const geo = new THREE.ExtrudeGeometry(shp, { depth: DEPTH[s.kind], bevelEnabled: false });
-    geo.rotateX(-Math.PI / 2); // shape lies flat, depth extrudes up
-    const mesh = new THREE.Mesh(
-      geo,
-      new THREE.MeshStandardMaterial({ color: KIND_COLOR[s.kind], roughness: 0.92 }),
-    );
-    mesh.position.y = LIFT[s.kind];
-    mapGroup.add(mesh);
-  }
-
-  for (const s of grounds) {
-    const shp = new THREE.Shape();
-    trace(shp, s.points);
-    const geo = new THREE.ExtrudeGeometry(shp, { depth: DEPTH[s.kind], bevelEnabled: false });
-    geo.rotateX(-Math.PI / 2);
-    const col = new THREE.Color(s.color ?? KIND_COLOR[s.kind]);
-    const mesh = new THREE.Mesh(
-      geo,
-      new THREE.MeshStandardMaterial({
-        color: col,
-        roughness: 0.4,
-        metalness: 0.1,
-        emissive: col.clone().multiplyScalar(0.12),
-      }),
-    );
-    mesh.position.y = LIFT[s.kind];
-    mapGroup.add(mesh);
-  }
-
-  for (const s of marks) {
-    const shp = new THREE.Shape();
-    trace(shp, s.points);
-    cutVoids(shp, s.points); // voids cut marks too
-    const geo = new THREE.ExtrudeGeometry(shp, { depth: DEPTH.mark, bevelEnabled: false });
-    geo.rotateX(-Math.PI / 2);
-    const mesh = new THREE.Mesh(
-      geo,
-      new THREE.MeshBasicMaterial({
-        color: new THREE.Color(s.color ?? MARK_3D_COLOR),
-        transparent: true,
-        opacity: 0.85,
-      }),
-    );
-    mesh.position.y = LIFT.mark;
-    mapGroup.add(mesh);
-  }
+  const group = buildDevMap(doc, framingOf(devMapWorldBox(doc)));
+  if (group) mapGroup.add(group);
+  render3dOnce();
+  if (!group) return;
 
   const box = new THREE.Box3().setFromObject(mapGroup);
   const c = box.getCenter(new THREE.Vector3());

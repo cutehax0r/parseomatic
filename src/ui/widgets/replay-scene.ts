@@ -28,6 +28,23 @@ import type {
   ReplaySample,
   ReplayWorldMarker,
 } from "../../types";
+import {
+  CELL,
+  MIN_SPAN,
+  PILLAR_DEPTH,
+  FLOOR_LIFT,
+  PLAYER_H,
+  cssValue,
+  cssColor,
+  gridTexture,
+  framingOf,
+  unionBox,
+  framingCentred,
+  mapDocToWorld,
+  devMapWorldBox,
+  buildDevMap,
+} from "../../map/extrude";
+import type { Framing, Box, DevMapDoc } from "../../map/extrude";
 
 export type ReplayTeam = "player" | "enemy" | "other";
 export type ReplayShape = "cube" | "sphere";
@@ -74,20 +91,9 @@ export interface ReplaySceneProps {
   encounterId?: number;
 }
 
-const CELL = 8; // major grid cell, yards
-const SUBDIV = 5; // minor subdivisions per major cell
-const MIN_SPAN = 32; // floor on the framed span so a still fight isn't a postage stamp
-const PAD_CELLS = 1; // whole cells of margin around the fit box
-const PILLAR_DEPTH = 90; // yards of side wall dropping into the mist / void
-const FLOOR_LIFT = 3; // yards the floor sits above y=0 (the "few yards above the void")
-// Three stacked translucent discs sitting just below the floor -- the
-// "cloudy mist" the pillar rises out of. [y offset from floor, radius x
-// span, opacity, tint].
-const MIST_LAYERS: ReadonlyArray<readonly [number, number, number, number]> = [
-  [-2.5, 2.6, 0.5, 0x1b1e2c],
-  [-7, 3.4, 0.7, 0x12141f],
-  [-13, 4.4, 0.88, 0x0b0c14],
-];
+// The base layer reads as a bottomless drop, not a floor a few yards
+// down -- 5 player heights below the deck.
+const BASE_DROP = 5 * PLAYER_H;
 const HOVER = 0.35; // yards a shape floats above the floor
 // De-conflicting overlaps (`deconflictOverlaps`). `STACK_DIST` x the
 // mean shape size is the "overlapping" threshold. Player cubes fan up
@@ -100,7 +106,7 @@ const ADD_STEP = 0.25;
 
 // Background scenery: a scatter of tall, skinny triangular pyramids
 // standing in a wide ring beyond the play area, rooted well below the
-// deck so they rise out of the void / mist. Pure dressing -- no shadows,
+// deck so they rise out of the base layer. Pure dressing -- no shadows,
 // no animation, one shared geometry + material. Each pyramid's angle,
 // ring distance (as a fraction of the framed span), height, base radius
 // and spin are a fixed `hash01` draw so they never jitter between
@@ -112,7 +118,7 @@ const DECO_H_MIN = 17.5; // shortest pyramid, yards
 const DECO_H_SPAN = 89.75; // random height added on top
 const DECO_R_MIN = 12; // smallest base radius, yards
 const DECO_R_SPAN = 48; // random width added on top
-const DECO_ROOT_Y = FLOOR_LIFT - 30; // base sits this far down -- hidden in the mist
+const DECO_ROOT_Y = FLOOR_LIFT - 30; // base sits this far down -- below the base layer
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 const smoothstep = (k: number): number => k * k * (3 - 2 * k);
@@ -409,40 +415,6 @@ function fmtClock(ms: number): string {
   return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
 }
 
-// Resolve a `var(--token)` (or pass through a literal) to the raw CSS
-// value string, e.g. "#494d64". Follows indirection chains --
-// `--class-mage` is defined as `var(--ctp-sky)`, and `getPropertyValue`
-// returns that unresolved, so one unwrap isn't enough.
-function cssValue(spec: string): string {
-  const style = getComputedStyle(document.documentElement);
-  let cur = spec.trim();
-  for (let i = 0; i < 8; i++) {
-    const m = cur.match(/^var\((--[A-Za-z0-9-]+)\)$/);
-    if (!m) return cur;
-    const next = style.getPropertyValue(m[1]).trim();
-    if (!next) return spec;
-    cur = next;
-  }
-  return cur;
-}
-
-// "#rrggbb" (or "#rgb") -> "rgba(r,g,b,a)".
-function rgba(hex: string, a: number): string {
-  let h = hex.replace("#", "").trim();
-  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
-  const n = parseInt(h, 16) || 0;
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-}
-
-function cssColor(spec: string): THREE.Color {
-  const raw = cssValue(spec);
-  try {
-    return new THREE.Color(raw || "#8087a2");
-  } catch {
-    return new THREE.Color("#8087a2");
-  }
-}
-
 // The unit's position at time `t` -- lerp between the two bracketing
 // fixes, clamped to the ends. Phases C-D lean on this every frame.
 function posAt(samples: ReplaySample[], t: number): { x: number; y: number } | null {
@@ -526,350 +498,6 @@ function skyTexture(): THREE.Texture {
   return tex;
 }
 
-// A soft radial blob -- one texture shared by the stacked mist discs;
-// the disc's material colour tints it.
-function mistTexture(): THREE.Texture {
-  const s = 512;
-  const c = document.createElement("canvas");
-  c.width = s;
-  c.height = s;
-  const g = c.getContext("2d")!;
-  const rg = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
-  rg.addColorStop(0.0, "rgba(255,255,255,0.92)");
-  rg.addColorStop(0.5, "rgba(255,255,255,0.5)");
-  rg.addColorStop(1.0, "rgba(255,255,255,0)");
-  g.fillStyle = rg;
-  g.fillRect(0, 0, s, s);
-  // A few offset puffs so the edge isn't a perfect circle.
-  for (let i = 0; i < 7; i++) {
-    const px = s / 2 + (Math.random() - 0.5) * s * 0.55;
-    const py = s / 2 + (Math.random() - 0.5) * s * 0.55;
-    const pr = s * (0.16 + Math.random() * 0.18);
-    const pg = g.createRadialGradient(px, py, 0, px, py, pr);
-    pg.addColorStop(0, "rgba(255,255,255,0.3)");
-    pg.addColorStop(1, "rgba(255,255,255,0)");
-    g.fillStyle = pg;
-    g.fillRect(0, 0, s, s);
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-// One grid cell as a tileable texture -- dark base, a bright cell border,
-// and `SUBDIV - 1` much dimmer interior lines. Set on the platform box's
-// top and side materials (with per-face `repeat`) so the same grid runs
-// across the floor and continues down the sides. `RepeatWrapping`; the
-// border is drawn only on the left/bottom edges so tiled seams stay 1px.
-function gridTexture(): THREE.Texture {
-  const s = 256;
-  const c = document.createElement("canvas");
-  c.width = s;
-  c.height = s;
-  const g = c.getContext("2d")!;
-  // Dark deck, lighter lines drawn on top (swapped from the earlier
-  // light-deck / dark-line read): surface = "base", lines in "surface0"
-  // (minor) and "surface1" (major).
-  g.fillStyle = cssValue("var(--ctp-base)");
-  g.fillRect(0, 0, s, s);
-
-  g.fillStyle = rgba(cssValue("var(--ctp-surface0)"), 0.55);
-  for (let i = 1; i < SUBDIV; i++) {
-    const p = Math.round((s / SUBDIV) * i);
-    g.fillRect(p, 0, 1, s);
-    g.fillRect(0, p, s, 1);
-  }
-  g.fillStyle = rgba(cssValue("var(--ctp-surface1)"), 0.8);
-  g.fillRect(0, 0, 2, s);
-  g.fillRect(0, s - 2, s, 2);
-
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 4;
-  return tex;
-}
-
-interface Framing {
-  cx: number;
-  cy: number;
-  span: number;
-}
-
-type Box = [number, number, number, number]; // [minX, maxX, minY, maxY]
-
-function framingOf(fitBox: Box | null): Framing {
-  if (!fitBox) return { cx: 0, cy: 0, span: MIN_SPAN };
-  const [minX, maxX, minY, maxY] = fitBox;
-  const cx = (minX + maxX) / 2;
-  const cy = (minY + maxY) / 2;
-  const raw = Math.max(maxX - minX, maxY - minY, MIN_SPAN);
-  const span = Math.ceil(raw / CELL + PAD_CELLS * 2) * CELL;
-  return { cx, cy, span };
-}
-
-function unionBox(a: Box | null, b: Box | null): Box | null {
-  if (!a) return b;
-  if (!b) return a;
-  return [Math.min(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[3], b[3])];
-}
-
-// Framing from an explicit centre + span (the encounter `frame` override),
-// span snapped up to whole cells.
-function framingCentred(cx: number, cy: number, span: number): Framing {
-  return { cx, cy, span: Math.ceil(Math.max(span, MIN_SPAN) / CELL) * CELL };
-}
-
-// ---- dev "Pick Map" preview (View > Developer) -----------------------
-// Swap the generic deck box for an authored `.map.json`. The map is
-// placed in WORLD YARDS via its `calibration` block (true scale, true
-// position -- no fit-to-span), so it lines up with real unit positions;
-// `encounters[<id>].orientationDeg` then spins the whole scene to match
-// how players hold the arena. `safe`/`wall` polygons extrude DOWN to the
-// platform depth and are grid-textured; a `wall` also rises above the
-// deck. Each `void` is a hole in whatever solid contains it; `mark` is a
-// flat decal. See docs/encounter-maps.md.
-type DevMapPoly = {
-  id?: string;
-  points?: [number, number][];
-  color?: string; // "#rrggbb" -- mark / ground fill
-  material?: string; // ground only -- render tag ("water" | "ice" | "lava" | …), stashed on userData
-};
-type DevMapLayer = { kind?: string; polys?: DevMapPoly[] };
-type DevMapCalibration = {
-  yardsPerUnit?: number;
-  rotationDeg?: number;
-  originYards?: [number, number];
-  // Flip the Y axis after the rotation -- WoW's map image is a mirrored
-  // frame vs world axes (image-east = world -Y), so a "fit to log map"
-  // calibration is rotate 90 + mirrorY.
-  mirrorY?: boolean;
-};
-// `frame`: [centreX, centreY, span] in *doc units* (map-local) -- run
-// through `calibration` like the geometry. null/absent -> auto-fit.
-type DevMapEncounterEntry = { orientationDeg?: number; frame?: [number, number, number] | null };
-type DevMapDoc = {
-  layers?: DevMapLayer[];
-  calibration?: DevMapCalibration;
-  encounters?: Record<string, DevMapEncounterEntry>;
-};
-
-// doc-unit -> world-yard: world = rotate(doc * yardsPerUnit, rotationDeg)
-// + originYards. Missing / non-finite fields fall back to identity (doc
-// units treated as yards) -- authoring garbage is a user problem.
-function mapDocToWorld(cal: DevMapCalibration | undefined): (x: number, y: number) => [number, number] {
-  const num = (v: unknown, d: number): number => (typeof v === "number" && Number.isFinite(v) ? v : d);
-  const s = num(cal?.yardsPerUnit, 1);
-  const rot = (num(cal?.rotationDeg, 0) * Math.PI) / 180;
-  const origin: number[] = Array.isArray(cal?.originYards) ? (cal!.originYards as number[]) : [];
-  const ox = num(origin[0], 0);
-  const oy = num(origin[1], 0);
-  const c = Math.cos(rot);
-  const sn = Math.sin(rot);
-  const my = cal?.mirrorY ? -1 : 1;
-  return (x, y) => {
-    const px = x * s;
-    const py = y * s;
-    return [px * c - py * sn + ox, (px * sn + py * c) * my + oy];
-  };
-}
-
-const DEV_MAP_WALL_RAISE = 5; // plain `wall` top this far above the deck datum
-const DEV_MAP_PLAYER_H = 2; // yards -- "a player's height"; wall2 = 2x, wall3 = 3x above deck
-const DEV_MAP_MARK_DEPTH = 0.15;
-const DEV_MAP_GROUND_DROP = 0.5; // ground FX top sits this far below the deck datum
-const DEV_MAP_GROUND_DEPTH = 0.3; // ground FX slab thickness
-// A `mark` decal renders as a darker grey than the deck ("base") --
-// Catppuccin "crust", the darkest step down.
-const DEV_MAP_MARK_COLOR = "var(--ctp-crust)";
-
-function pointInPoly(px: number, py: number, pts: [number, number][]): boolean {
-  let inside = false;
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const [xi, yi] = pts[i];
-    const [xj, yj] = pts[j];
-    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-function polyBBoxCenter(pts: [number, number][]): [number, number] {
-  let a = Infinity;
-  let b = Infinity;
-  let c = -Infinity;
-  let d = -Infinity;
-  for (const [x, y] of pts) {
-    a = Math.min(a, x);
-    b = Math.min(b, y);
-    c = Math.max(c, x);
-    d = Math.max(d, y);
-  }
-  return [(a + c) / 2, (b + d) / 2];
-}
-
-// World-yard bounding box over every polygon vertex in the map, or null
-// if it has none. Lets the picker frame the camera on what you loaded.
-function devMapWorldBox(doc: DevMapDoc): Box | null {
-  const toWorld = mapDocToWorld(doc.calibration);
-  let mnx = Infinity;
-  let mxx = -Infinity;
-  let mny = Infinity;
-  let mxy = -Infinity;
-  for (const layer of doc.layers ?? []) {
-    for (const p of layer.polys ?? []) {
-      for (const q of p.points ?? []) {
-        if (!Array.isArray(q) || q.length < 2) continue;
-        const [wx, wy] = toWorld(q[0], q[1]);
-        mnx = Math.min(mnx, wx);
-        mxx = Math.max(mxx, wx);
-        mny = Math.min(mny, wy);
-        mxy = Math.max(mxy, wy);
-      }
-    }
-  }
-  return Number.isFinite(mnx) ? [mnx, mxx, mny, mxy] : null;
-}
-
-interface DevPoly {
-  pts: [number, number][];
-  color?: string;
-  material?: string;
-}
-
-function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | null {
-  const kinds = new Map<string, DevPoly[]>();
-  for (const layer of doc.layers ?? []) {
-    const k = layer.kind ?? "";
-    for (const p of layer.polys ?? []) {
-      const pts = (p.points ?? []).filter(
-        (q): q is [number, number] => Array.isArray(q) && q.length >= 2,
-      );
-      if (pts.length >= 3) {
-        (kinds.get(k) ?? kinds.set(k, []).get(k)!).push({
-          pts,
-          color: typeof p.color === "string" ? p.color : undefined,
-          material: typeof p.material === "string" ? p.material : undefined,
-        });
-      }
-    }
-  }
-  // safe + walls of every height; `raise` = top above the deck datum.
-  const solids: { pts: [number, number][]; raise: number }[] = [
-    ...(kinds.get("safe") ?? []).map((p) => ({ pts: p.pts, raise: 0 })),
-    ...(kinds.get("wall") ?? []).map((p) => ({ pts: p.pts, raise: DEV_MAP_WALL_RAISE })),
-    ...(kinds.get("wall2") ?? []).map((p) => ({ pts: p.pts, raise: 2 * DEV_MAP_PLAYER_H })),
-    ...(kinds.get("wall3") ?? []).map((p) => ({ pts: p.pts, raise: 3 * DEV_MAP_PLAYER_H })),
-  ];
-  const voids = (kinds.get("void") ?? []).map((p) => p.pts);
-  const marks = kinds.get("mark") ?? [];
-  const grounds = [
-    ...(kinds.get("ground") ?? []).map((p) => ({ ...p, drop: DEV_MAP_GROUND_DROP })),
-    ...(kinds.get("ground2") ?? []).map((p) => ({ ...p, drop: DEV_MAP_GROUND_DROP - 0.02 })),
-  ];
-  if (!solids.length && !marks.length && !grounds.length) return null;
-  // A ground FX region also recesses the deck above it, so the slab shows.
-  const cuts = [...voids, ...grounds.map((p) => p.pts)];
-
-  // doc units -> world yards -> scene: the same framing-centre offset
-  // every unit / marker / cast uses, so the map registers with real
-  // positions at true scale (no fit-to-span). The shape's Y is negated
-  // because the finished geometry is `rotateX(-PI/2)`'d, which sends
-  // shape +Y to scene -Z -- units place world-Y straight onto scene +Z,
-  // so without this the map is mirrored across the framing centre in Z
-  // (looked fine in the editor's 2D overlay, ~40 yd off in the replay).
-  // Point order is reversed to keep the winding (cap normals) upright.
-  const toWorld = mapDocToWorld(doc.calibration);
-  const trace = (dst: THREE.Shape | THREE.Path, pts: [number, number][]) => {
-    for (let k = pts.length - 1; k >= 0; k--) {
-      const [wx, wy] = toWorld(pts[k][0], pts[k][1]);
-      const px = wx - framing.cx;
-      const py = framing.cy - wy;
-      k === pts.length - 1 ? dst.moveTo(px, py) : dst.lineTo(px, py);
-    }
-  };
-
-  const g = new THREE.Group();
-
-  // One shared grid texture for every safe/wall face -- same look as the
-  // default box. ExtrudeGeometry UVs are in shape units = world yards
-  // now, so `1/CELL` puts exactly one grid tile per CELL yards.
-  let gridTex: THREE.Texture | null = null;
-  if (solids.length) {
-    gridTex = gridTexture();
-    gridTex.repeat.set(1 / CELL, 1 / CELL);
-  }
-
-  // Punch every hole in `cuts` (voids + ground recesses) that sits inside
-  // `outer` into `shp`.
-  const cutHoles = (shp: THREE.Shape, outer: [number, number][]) => {
-    for (const v of cuts) {
-      const [vx, vy] = polyBBoxCenter(v);
-      if (!pointInPoly(vx, vy, outer)) continue;
-      const hole = new THREE.Path();
-      trace(hole, v);
-      shp.holes.push(hole);
-    }
-  };
-
-  for (const { pts, raise } of solids) {
-    const shp = new THREE.Shape();
-    trace(shp, pts);
-    cutHoles(shp, pts);
-    const depth = PILLAR_DEPTH + raise; // extrude down to the platform depth; walls also rise above deck
-    const geo = new THREE.ExtrudeGeometry(shp, { depth, bevelEnabled: false });
-    geo.rotateX(-Math.PI / 2); // shape plane -> bottom, extrude -> +y
-    const mesh = new THREE.Mesh(
-      geo,
-      new THREE.MeshStandardMaterial({ map: gridTex ?? undefined, roughness: 0.95, metalness: 0 }),
-    );
-    mesh.receiveShadow = true;
-    mesh.position.y = FLOOR_LIFT - PILLAR_DEPTH; // top ends at FLOOR_LIFT (+raise for a wall)
-    g.add(mesh);
-  }
-
-  for (const { pts, color, material, drop } of grounds) {
-    const shp = new THREE.Shape();
-    trace(shp, pts);
-    const geo = new THREE.ExtrudeGeometry(shp, { depth: DEV_MAP_GROUND_DEPTH, bevelEnabled: false });
-    geo.rotateX(-Math.PI / 2);
-    const col = cssColor(color ?? "var(--ctp-sky)");
-    const mesh = new THREE.Mesh(
-      geo,
-      new THREE.MeshStandardMaterial({
-        color: col,
-        roughness: 0.35,
-        metalness: 0.1,
-        emissive: col.clone().multiplyScalar(0.12),
-      }),
-    );
-    // Future: an animated / emissive / reflective shader keyed off `material`.
-    mesh.userData = { material: material ?? null };
-    mesh.receiveShadow = true;
-    mesh.position.y = FLOOR_LIFT - drop - DEV_MAP_GROUND_DEPTH; // slab top sits `drop` below the deck
-    g.add(mesh);
-  }
-
-  for (const { pts, color } of marks) {
-    const shp = new THREE.Shape();
-    trace(shp, pts);
-    cutHoles(shp, pts); // voids (and ground recesses) cut marks too
-    const geo = new THREE.ExtrudeGeometry(shp, { depth: DEV_MAP_MARK_DEPTH, bevelEnabled: false });
-    geo.rotateX(-Math.PI / 2);
-    const mesh = new THREE.Mesh(
-      geo,
-      new THREE.MeshBasicMaterial({
-        color: cssColor(color ?? DEV_MAP_MARK_COLOR),
-        transparent: true,
-        opacity: 0.8,
-      }),
-    );
-    mesh.position.y = FLOOR_LIFT + 0.05;
-    g.add(mesh);
-  }
-  return g;
-}
-
 class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   readonly element: HTMLElement;
 
@@ -880,13 +508,11 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private ro: ResizeObserver;
 
   private sun = new THREE.DirectionalLight(0xffffff, 2.4);
-  private platform?: THREE.Mesh; // one box: grid-textured top + sides, dropping into the mist
-  private voidFloor?: THREE.Mesh; // opaque backstop below the mist -- fixes transparency sorting past the deck
+  private platform?: THREE.Mesh; // one box: grid-textured top + sides, dropping past the base layer
+  private baseLayer?: THREE.Mesh; // near-black faintly-reflective slab a few yards down, out to the horizon; also the opaque depth backstop past the deck
   private devMap: THREE.Group | null = null; // View > Developer > Pick Map override
   private gridTexTop?: THREE.Texture;
   private gridTexSide?: THREE.Texture;
-  private mist = new THREE.Group();
-  private mistTex?: THREE.Texture;
   private deco = new THREE.Group(); // background pyramid spires out in the void
   private decoSpec: { ang: number; distF: number; h: number; r: number; rot: number }[] = [];
   private unitsGroup = new THREE.Group();
@@ -1001,7 +627,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.scene.background = sky;
     // Linear fog in Catppuccin "crust" (the void colour), retuned to the
     // framed span each `reframe` -- keeps the play area clear while the
-    // pillar's lower reaches fade into the void.
+    // outer reaches (base layer, distant spires) fade into the void.
     this.scene.fog = new THREE.Fog(cssColor("var(--ctp-crust)").getHex(), MIN_SPAN * 2, MIN_SPAN * 6);
 
     this.scene.add(new THREE.HemisphereLight(0x8792b5, 0x191b27, 0.7));
@@ -1009,7 +635,6 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.sun.shadow.mapSize.set(2048, 2048);
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
-    this.scene.add(this.mist);
     this.scene.add(this.unitsGroup);
     this.scene.add(this.castGroup);
     this.buildCastPool();
@@ -1279,9 +904,9 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   // Static world geometry -- rebuilt to the framed span in `reframe`.
   private buildWorld(): void {
     // The play area is one box: a grid-textured top that IS the floor,
-    // the same grid continuing down the four sides, dropping into the
-    // mist. `repeat` per face (top vs side) is set in `reframe` so cells
-    // stay CELL-yards everywhere.
+    // the same grid continuing down the four sides, dropping past the
+    // base layer. `repeat` per face (top vs side) is set in `reframe` so
+    // cells stay CELL-yards everywhere.
     this.gridTexTop = gridTexture();
     this.gridTexSide = gridTexture();
     const gridMat = (map: THREE.Texture) =>
@@ -1305,41 +930,30 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.platform.receiveShadow = true;
     this.scene.add(this.platform);
 
-    // An opaque backstop well below the mist. Without it, transparent /
-    // non-depth-writing objects (cast arcs, marker columns, the mist
-    // discs) have nothing to sort against wherever the view sees past the
-    // deck -- a `void` hole in an authored map, or the platform edge --
-    // and composite wrong / pop as the camera orbits. Big + low; widened
-    // with the span in `reframe`.
-    const lowestMist = Math.min(...MIST_LAYERS.map((l) => l[0]));
-    this.voidFloor = new THREE.Mesh(
+    // The world's base layer: a near-black, faintly reflective slab
+    // `BASE_DROP` yards below the deck, stretched effectively to the
+    // horizon. The reflection is deliberately smeared (mid roughness on a
+    // metallic surface reflecting the skybox env map) -- the blurred
+    // sheen under the macOS dock, not a mirror. It doubles as the opaque
+    // depth backstop: transparent / non-depth-writing objects (cast arcs,
+    // marker columns) and the view through a `void` hole now sort against
+    // it instead of compositing wrong past the deck edge. One flat plane,
+    // no extra render pass; widened with the span in `reframe`.
+    const env = this.scene.background instanceof THREE.Texture ? this.scene.background : undefined;
+    this.baseLayer = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
-      new THREE.MeshBasicMaterial({ color: cssColor("var(--ctp-crust)") }),
+      new THREE.MeshStandardMaterial({
+        color: cssColor("var(--ctp-crust)"),
+        roughness: 0.6,
+        metalness: 0.9,
+        envMap: env,
+        envMapIntensity: 0.55,
+      }),
     );
-    this.voidFloor.rotation.x = -Math.PI / 2;
-    this.voidFloor.position.y = FLOOR_LIFT + lowestMist - 10;
-    this.scene.add(this.voidFloor);
-
-    // The "cloudy mist" the pillar rises out of -- stacked translucent
-    // discs just below the floor, tinted dark. Unlit + fog-aware so the
-    // outer reaches blend into the void. Scaled to the span in reframe.
-    this.mistTex = mistTexture();
-    for (const [dy, , opacity, tint] of MIST_LAYERS) {
-      const m = new THREE.Mesh(
-        new THREE.PlaneGeometry(1, 1),
-        new THREE.MeshBasicMaterial({
-          map: this.mistTex,
-          color: tint,
-          transparent: true,
-          opacity,
-          depthWrite: false,
-        }),
-      );
-      m.rotation.x = -Math.PI / 2;
-      m.position.y = FLOOR_LIFT + dy;
-      m.renderOrder = 2;
-      this.mist.add(m);
-    }
+    this.baseLayer.rotation.x = -Math.PI / 2;
+    this.baseLayer.position.y = FLOOR_LIFT - BASE_DROP;
+    this.baseLayer.receiveShadow = true;
+    this.scene.add(this.baseLayer);
 
     this.buildDeco();
     this.scene.add(this.deco);
@@ -1348,7 +962,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   // 50 tall triangular-pyramid spires standing in the void well outside
   // the play column. One shared unit `ConeGeometry(_, _, 3)` + one matte
   // dark material; each mesh is sized by its per-pyramid scale and drops
-  // its base below the deck so it climbs out of the mist. Positions are
+  // its base below the deck so it climbs out of the base layer. Positions are
   // span-relative and get baked in `layoutDeco` (called from `reframe`).
   private buildDeco(): void {
     const geom = new THREE.ConeGeometry(1, 1, 3);
@@ -1394,17 +1008,14 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     const { span } = this.framing;
 
     if (this.platform) this.platform.scale.set(span, 1, span);
-    if (this.voidFloor) this.voidFloor.scale.set(span * 14, span * 14, 1);
+    // Base layer stretched well past the camera's far plane so it reads
+    // as "forever" from any orbit angle.
+    if (this.baseLayer) this.baseLayer.scale.set(span * 40, span * 40, 1);
     // Top face: `span/CELL` cells each way. Side faces: `span/CELL`
     // across, `PILLAR_DEPTH/CELL` down -- so cells are CELL-yards on every
     // face and the grid lines line up where the top meets the sides.
     this.gridTexTop?.repeat.set(span / CELL, span / CELL);
     this.gridTexSide?.repeat.set(span / CELL, PILLAR_DEPTH / CELL);
-
-    this.mist.children.forEach((m, i) => {
-      const r = (MIST_LAYERS[i]?.[1] ?? 3) * span;
-      m.scale.set(r, r, 1);
-    });
 
     this.layoutDeco();
 
@@ -1429,7 +1040,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     // Perspective camera: face-on (dir.x = 0 -> looking straight down an
     // axis, grid square to the screen, not corner-on) and a low-ish 3/4
     // (dir.y ~0.4 -> ~22deg above the deck -- cinematic, you see the
-    // shapes standing on the board with the mist and mountains behind,
+    // shapes standing on the board with the base layer and mountains behind,
     // but still read positions on the grid). Distance fits the framed
     // span at the current FOV, pulled in close. OrbitControls frees it.
     const dir = new THREE.Vector3(0, 0.4, 1).normalize();
@@ -2406,7 +2017,6 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.markerLights.forEach((l) => l.dispose());
     const bg = this.scene.background;
     if (bg && (bg as THREE.Texture).isTexture) (bg as THREE.Texture).dispose();
-    this.mistTex?.dispose();
     this.gridTexTop?.dispose();
     this.gridTexSide?.dispose();
     this.renderer.dispose();

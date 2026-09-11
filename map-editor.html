@@ -103,6 +103,15 @@
         gap: 6px;
         color: var(--text, #cad3f5);
       }
+      .me-movepad {
+        display: flex;
+        gap: 4px;
+      }
+      .me-movepad .me-btn {
+        flex: 1;
+        min-width: 0;
+        padding: 0;
+      }
       .me-btn {
         height: 26px;
         padding: 0 10px;
@@ -124,7 +133,7 @@
         outline: 2px solid var(--accent, #8aadf4);
         outline-offset: -1px;
       }
-      .me-btn[data-kind="safe"] {
+      .me-btn[data-kind="ground"] {
         border-left: 4px solid #a6da95;
       }
       .me-btn[data-kind="wall"] {
@@ -142,10 +151,10 @@
       .me-btn[data-kind="wall3"] {
         border-left: 4px solid #f4b8e4;
       }
-      .me-btn[data-kind="ground"] {
+      .me-btn[data-kind="ground-1"] {
         border-left: 4px solid #89dceb;
       }
-      .me-btn[data-kind="ground2"] {
+      .me-btn[data-kind="ground-2"] {
         border-left: 4px solid #94e2d5;
       }
       .me-bar input[type="color"] {
@@ -228,14 +237,14 @@
       <span class="me-sep"></span>
 
       <button class="me-btn is-active" id="me-tool-select">Select</button>
-      <button class="me-btn" data-kind="safe" data-draw>+ Safe</button>
+      <button class="me-btn" data-kind="ground" data-draw>+ Ground</button>
       <button class="me-btn" data-kind="wall" data-draw>+ Wall</button>
       <button class="me-btn" data-kind="wall2" data-draw>+ Wall ×2</button>
       <button class="me-btn" data-kind="wall3" data-draw>+ Wall ×3</button>
       <button class="me-btn" data-kind="void" data-draw>+ Void</button>
       <button class="me-btn" data-kind="mark" data-draw>+ Mark</button>
-      <button class="me-btn" data-kind="ground" data-draw>+ Ground A</button>
-      <button class="me-btn" data-kind="ground2" data-draw>+ Ground B</button>
+      <button class="me-btn" data-kind="ground-1" data-draw>+ Ground -1</button>
+      <button class="me-btn" data-kind="ground-2" data-draw>+ Ground -2</button>
       <button class="me-btn" id="me-tool-rect">▭ Rect</button>
       <button class="me-btn" id="me-tool-circle">◯ Circle</button>
       <button class="me-btn" id="me-tool-addvert">⊹ Add Vertex</button>
@@ -243,22 +252,44 @@
 
       <span class="me-sep"></span>
 
+      <label for="me-layers">Layers</label>
+      <select class="me-btn" id="me-layers">
+        <option value="">— select a shape —</option>
+      </select>
+
       <label for="me-selkind">Selected</label>
       <select class="me-btn" id="me-selkind" disabled>
-        <option value="safe">safe</option>
+        <option value="ground">ground</option>
         <option value="wall">wall</option>
         <option value="wall2">wall ×2</option>
         <option value="wall3">wall ×3</option>
         <option value="void">void</option>
         <option value="mark">mark</option>
-        <option value="ground">ground A</option>
-        <option value="ground2">ground B</option>
+        <option value="ground-1">ground -1</option>
+        <option value="ground-2">ground -2</option>
       </select>
       <button class="me-btn" id="me-del" disabled>Delete</button>
       <label for="me-shp-color" id="me-shp-color-row" hidden>Fill colour</label>
       <input id="me-shp-color" type="color" hidden />
       <label for="me-shp-mat" id="me-shp-mat-row" hidden>Material</label>
       <input id="me-shp-mat" type="text" placeholder="water / ice / lava…" hidden />
+
+      <span class="me-sep"></span>
+
+      <label for="me-move-step">Move by</label>
+      <select class="me-btn" id="me-move-step">
+        <option value="0.01">0.01</option>
+        <option value="0.1">0.1</option>
+        <option value="1" selected>1.0</option>
+        <option value="10">10</option>
+        <option value="100">100</option>
+      </select>
+      <div class="me-movepad">
+        <button class="me-btn" id="me-move-left" disabled title="Move left">◀</button>
+        <button class="me-btn" id="me-move-up" disabled title="Move up">▲</button>
+        <button class="me-btn" id="me-move-down" disabled title="Move down">▼</button>
+        <button class="me-btn" id="me-move-right" disabled title="Move right">▶</button>
+      </div>
 
       <span class="me-sep"></span>
 

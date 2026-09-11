@@ -33,7 +33,7 @@ model for user files in the data dir) · `docs/windows-and-files.md`
   HTML entry, not a view), reusing the replay's Three.js renderer so the
   editor preview is pixel-identical to what the replay will show.
 - **Vector authoring.** Click out closed polygons on top of the arena map
-  image; each polygon belongs to a **layer** (`safe` / `wall` / `void` /
+  image; each polygon belongs to a **layer** (`ground` / `wall` / `void` /
   `mark`) with a flat floor/top height. Geometry is **extruded from the
   polygons at load time**, not stored as a baked mesh. See §8 for why not
   a painted heightmap; the editor also accepts a hand-drawn SVG import
@@ -94,15 +94,28 @@ The instinct to make this a standalone application is reasonable
 
 **Keep the seam, though.** Split `src/ui/widgets/replay-scene.ts` into:
 
-- **`src/ui/widgets/scene-rig.ts`** — world + camera + materials + grid +
-  void/fog/mist + `OrbitControls` + the on-demand render loop. No game
-  data. Consumed by both the replay and the editor.
+- **`src/map/extrude.ts`** — **done.** The doc-to-world extrusion pipeline
+  (`buildDevMap`, the `DevMap*` doc types, `mapDocToWorld`, framing, the
+  grid texture + CSS-token colour helpers, and the world-scale constants
+  `CELL`/`FLOOR_LIFT`/`PILLAR_DEPTH`/`PLAYER_H`/…). No app-specific
+  imports (no widget registry, no view context), so either Vite entry
+  pulls it in cheaply. `replay-scene.ts`'s dev-map preview and
+  `map-editor.ts`'s "3D" toolbar button both call the same `buildDevMap`
+  now — the editor preview builds its own `DevMapDoc` from the live
+  shapes + calibration fields and renders literally the same geometry the
+  replay would, at true world-yard scale, instead of a separate
+  hand-rolled extrusion that could drift out of sync.
+- **`src/ui/widgets/scene-rig.ts`** (still future work) — camera +
+  `OrbitControls` + the on-demand render loop + fog/base-layer/skybox
+  dressing. No game data. Would let the editor's camera rig (currently
+  its own simpler Box3-fit orbit camera, no fog/skybox) match the
+  replay's exactly too, if that's ever worth the shared complexity.
 - **`replay-scene.ts`** — unit meshes, tracks, animation, transport,
-  selection, effects; builds on `scene-rig`.
+  selection, effects; builds on `extrude` (and eventually `scene-rig`).
 
 If community map authoring ever wants a renderer without the analyzer,
-`scene-rig` + the editor extract into their own Tauri app cheaply. Not
-now.
+`extrude` (+ `scene-rig`, once it exists) and the editor extract into
+their own Tauri app cheaply. Not now.
 
 ---
 
@@ -168,7 +181,7 @@ redrawing.
 
   "layers": [
     {
-      "kind": "safe",                  // walkable deck — grey grid, like the generic box top
+      "kind": "ground",                 // walkable deck — grey grid, like the generic box top
       "floorY": 0.0,                   // deck surface, yards above the void datum
       "polys": [
         { "id": "main-deck",           // optional; only ids can be a `states` target
@@ -182,7 +195,7 @@ redrawing.
       "polys": [ … ]
     },
     {
-      "kind": "void",                  // subtracts from `safe` in draw order — donuts, pits
+      "kind": "void",                  // subtracts from `ground` in draw order — donuts, pits
       "polys": [ … ]
     },
     {
@@ -216,7 +229,7 @@ redrawing.
 Notes:
 
 - **Geometry carriers.** A layer holds `polys` (closed rings) **and/or**
-  `points` (bare positions). `safe` / `wall` / `void` are poly-only;
+  `points` (bare positions). `ground` / `wall` / `void` are poly-only;
   `mark` is usually polys but a single point renders as a glyph;
   reserved kinds like `widget` / `spawn` / `path` are point-first. Every
   poly and point may carry an optional `id`.
@@ -233,25 +246,29 @@ Notes:
   the generic box's `FLOOR_LIFT` (3 yd above `y=0`) is applied by the rig
   so a map at `floorY: 0` sits exactly where the generic deck did. A
   sunken section is `floorY: -2`; a raised ledge `floorY: +3`.
-- **`safe` without an explicit `topY`** gets a thin slab (`DECK_THICKNESS`,
+- **`ground` without an explicit `topY`** gets a thin slab (`DECK_THICKNESS`,
   ~0.4 yd) so its edge reads against the void. `wall` needs `topY`.
-- **`void` order matters** — it cuts every `safe`/`wall` polygon drawn
-  before it in the file. A donut = one `safe` decagon, then one `void`
+- **`void` order matters** — it cuts every `ground`/`wall` polygon drawn
+  before it in the file. A donut = one `ground` decagon, then one `void`
   circle inside it.
 - **Winding**: outer ring CCW, holes-within-a-single-poly CW (standard
   even-odd); the editor enforces it so hand edits don't have to.
 - **`mark`** has no back face and `depthWrite: false` (§5) — it's a
   drawn-on annotation (boss-marker spots, intermission lines, "stack
   here"), not collision.
-- **`kind` is an open enum.** Core kinds are `safe` / `wall` / `void` /
-  `mark`, plus `wall2` / `wall3` (walls extruded to 2x / 3x a player's
-  height above the deck) and `ground` / `ground2` (thin FX slabs whose
-  top sits ~0.5 yd **below** the deck, recessing the deck above them —
-  water / ice / poison / lava). `mark`, `ground` and `ground2` polys may
-  carry `"color": "#rrggbb"`; `ground` / `ground2` also carry
+- **`kind` is an open enum.** Core kinds are `ground` / `wall` / `void` /
+  `mark`, plus `wall2` / `wall3` (walls extruded to **2x / 3x a plain
+  `wall`'s** height above the deck) and `ground-1` / `ground-2` (thin FX
+  slabs whose top sits **1/4** and **1/2 a player's height below** the
+  deck, recessing the deck above them — water / ice / poison / lava). `mark`, `ground-1` and `ground-2` polys may
+  carry `"color": "#rrggbb"`; `ground-1` / `ground-2` also carry
   `"material": "<tag>"` (free string — the renderer stashes it for a
   future animated / emissive / reflective shader). A `void` cuts every
-  `safe` / `wall*` / `mark` it sits inside. A renderer **must** skip an
+  `ground` / `wall*` / `mark` / `ground-1` / `ground-2` it sits inside —
+  all the way through, deck to water. A `ground-1`/`ground-2` recess only
+  cuts `ground` / `wall*` / `mark` above it, never another ground slab —
+  overlapping ground layers just render one under the other at their own
+  depths, no hole punched between them. A renderer **must** skip an
   unrecognised kind (and log once), never fail the whole map.
   Reserved-but-unspecified: `widget` (interactable, render as a pyramid),
   `spawn`, `path`. Plugin-private kinds should use an `x-` prefix.
@@ -337,7 +354,7 @@ Load path (`scene-rig` helper, `src/map/extrude.ts`) — runs every load,
 from the polygons; there is no baked-mesh cache:
 
 1. Parse `.map.json`; skip unknown `layer.kind`, cap vertex counts.
-2. Per `safe`/`wall` layer: triangulate each polygon (ear-clipping —
+2. Per `ground`/`wall` layer: triangulate each polygon (ear-clipping —
    `THREE.ShapeUtils.triangulateShape`, or `earcut`), applying every
    later `void` polygon in file order as a hole contour. Extrude
    `floorY -> topY` (or the thin slab). One `BufferGeometry` per layer,
@@ -428,7 +445,7 @@ A greyscale-heightmap pipeline (paint height per pixel, sample into a
 tessellated plane) was considered and rejected for this content:
 
 - Raid arenas are **flat plateaus with hard vertical edges into the
-  void** and **sharp-edged obstacles**. The safe/void boundary — the most
+  void** and **sharp-edged obstacles**. The ground/void boundary — the most
   important line on the map — is exactly what a heightmap renders worst
   (stair-stepping or a fuzzy ramp unless resolution is huge).
 - The authoring interaction is **corner-clicking on the map image** —
@@ -478,7 +495,7 @@ and would make a map a ~5-minute job:
    as a build/tooling script, not in the app; output is
    `_src/<id>.trace.svg` (the same SVG import path as §8).
 3. A **labelling pass** — a human, or Claude given the image + the
-   contours — tags each contour `safe` / `wall` / `void` / `mark` and
+   contours — tags each contour `ground` / `wall` / `void` / `mark` and
    sets heights. This is the part pure CV can't do.
 4. Import the labelled polygons into the editor; clean up by hand.
 
@@ -506,7 +523,7 @@ encounter's tracks and calibrates off them:
 3. **Walkable heatmap.** The union of *every* player fix across the pull
    is a dense "definitely stood here" point cloud. Render it under the
    trace image and trace the outline of where people went — a
-   near-automatic deck boundary for the `safe` layer.
+   near-automatic deck boundary for the `ground` layer.
 
 Caveat: the replay's coordinate handling and the map's `worldBounds` must
 use the same axes and signs. `movement-view.md` §5 notes the `MAP_CHANGE`
@@ -533,11 +550,11 @@ end-to-end before trusting the pipeline.
 - **D — backdrop + calibration.** **Open…** file picker →
   `import_backdrop`; show the image on the deck; load-reference-replay +
   the anchor-point / heatmap calibration that writes `worldBounds` (§10).
-- **E — polygon tool + `safe`.** Click vertices, close, Enter to commit;
+- **E — polygon tool + `ground`.** Click vertices, close, Enter to commit;
   edit/delete vertices; snap to grid + to existing vertices; assign an
-  `id`. Live extrude of the `safe` layer. Save / load.
+  `id`. Live extrude of the `ground` layer. Save / load.
 - **F — the other layers.** `wall` (with `topY`), `void` (boolean into
-  `safe`), `mark` (palette, `closed` toggle). Per-layer height fields.
+  `ground`), `mark` (palette, `closed` toggle). Per-layer height fields.
   `raid.json` write. SVG import.
 - **G — polish.** File-watch reload, the `_src/` trace import hook, undo.
 

@@ -2095,7 +2095,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     // on whether the focused window has a log.
     let new_window_item =
         MenuItem::with_id(app, "new_window", "New Window", true, Some("CmdOrCtrl+N"))?;
-    let new_map_item = MenuItem::with_id(app, "new_map", "New Map", true, None::<&str>)?;
+    let new_map_item = MenuItem::with_id(app, "new_map", "Map Editor", true, None::<&str>)?;
     let duplicate_item = MenuItem::with_id(
         app,
         "duplicate_window",
@@ -2227,8 +2227,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let pick_map_item = MenuItem::with_id(app, "pick_map", "Pick Map\u{2026}", true, None::<&str>)?;
     let clear_map_item = MenuItem::with_id(app, "clear_map", "Clear Map", true, None::<&str>)?;
     // Top-level "Develop" menu: the Debug / Raw views plus the map tools
-    // (New Map opens the map editor; Pick / Clear Map swap the replay's
-    // deck). Not part of the everyday flow.
+    // (Map Editor opens the map editor window; Pick / Clear Map swap the
+    // replay's deck). Not part of the everyday flow.
     let develop_menu = SubmenuBuilder::new(app, "Develop")
         .item(&debug_view_item)
         .item(&raw_view_item)
