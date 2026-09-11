@@ -350,8 +350,8 @@ resolve reads it (§6), falling back to a small bundled table and then to
 
 ## 5. Extrusion + materials
 
-Load path (`scene-rig` helper, `src/map/extrude.ts`) — runs every load,
-from the polygons; there is no baked-mesh cache:
+Load path (`buildDevMap`, `src/map/extrude.ts`) — runs every load, from
+the polygons; there is no baked-mesh cache:
 
 1. Parse `.map.json`; skip unknown `layer.kind`, cap vertex counts.
 2. Per `ground`/`wall` layer: triangulate each polygon (ear-clipping —
@@ -397,9 +397,9 @@ encounter (cached like `replay_series`):
    `encounterId -> mapId` table, then the encounter's own zone `mapId`
    from `log_lists` as a last resort.
 2. `UiMapID` → `<id>.map.json` via the startup index.
-3. Found → `scene-rig` builds the map geometry instead of the generic
-   scaled box, frames on `worldBounds`. Not found → **exactly today's
-   behaviour**, no regression.
+3. Found → `buildDevMap` (`src/map/extrude.ts`) builds the map geometry
+   instead of the generic scaled box, frames on `worldBounds`. Not found →
+   **exactly today's behaviour**, no regression.
 
 New Rust commands (`src-tauri/src/maps.rs`):
 

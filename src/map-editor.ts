@@ -14,7 +14,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, message } from "@tauri-apps/plugin-dialog";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { buildDevMap, devMapWorldBox, framingOf } from "./map/extrude";
+import { buildDevMap, devMapWorldBox, framingOf, mapDocToWorld, pointInPoly } from "./map/extrude";
 import type { DevMapDoc, DevMapLayer } from "./map/extrude";
 
 type Kind = "ground" | "wall" | "wall2" | "wall3" | "void" | "mark" | "ground-1" | "ground-2";
@@ -27,10 +27,37 @@ interface Shape {
   material?: string; // ground only -- free tag ("water" | "ice" | "lava" | …)
 }
 
+// Single source of truth for the fixed `Kind` enum: display order, label,
+// 2D/3D fill colour, and whether a shape of that kind carries an
+// author-picked fill (`color`) / render `material` tag. `KIND_ORDER`,
+// `KIND_LABEL`, `KIND_COLOR`, `KIND_HAS_COLOR` and `KIND_HAS_MATERIAL`
+// below are all derived from this one list -- adding or renaming a kind
+// is a one-line edit here (the draw-button row and `#me-selkind` options
+// in map-editor.html still need their own matching edit).
+const KIND_META: {
+  kind: Kind;
+  label: string;
+  color: string;
+  hasColor?: boolean;
+  hasMaterial?: boolean;
+}[] = [
+  { kind: "ground", label: "Ground", color: "#a6da95" },
+  { kind: "wall", label: "Wall", color: "#f5a97f" },
+  { kind: "wall2", label: "Wall ×2", color: "#eebebe" },
+  { kind: "wall3", label: "Wall ×3", color: "#f4b8e4" },
+  { kind: "void", label: "Void", color: "#ed8796" },
+  { kind: "mark", label: "Mark", color: "#eed49f", hasColor: true },
+  { kind: "ground-1", label: "Ground -1", color: "#89dceb", hasColor: true, hasMaterial: true },
+  { kind: "ground-2", label: "Ground -2", color: "#94e2d5", hasColor: true, hasMaterial: true },
+];
+// Display order for the "Layers" dropdown / draw buttons / `#me-selkind`.
+const KIND_ORDER: Kind[] = KIND_META.map((m) => m.kind);
+const KIND_LABEL = Object.fromEntries(KIND_META.map((m) => [m.kind, m.label])) as Record<Kind, string>;
+const KIND_COLOR = Object.fromEntries(KIND_META.map((m) => [m.kind, m.color])) as Record<Kind, string>;
 // Kinds whose fill is author-picked (else `KIND_COLOR[kind]`), and kinds
 // that carry a render `material` tag.
-const KIND_HAS_COLOR = new Set<Kind>(["mark", "ground-1", "ground-2"]);
-const KIND_HAS_MATERIAL = new Set<Kind>(["ground-1", "ground-2"]);
+const KIND_HAS_COLOR = new Set<Kind>(KIND_META.filter((m) => m.hasColor).map((m) => m.kind));
+const KIND_HAS_MATERIAL = new Set<Kind>(KIND_META.filter((m) => m.hasMaterial).map((m) => m.kind));
 
 const newShapeId = () => `s${(seq++).toString(36)}${Date.now().toString(36).slice(-3)}`;
 
@@ -73,31 +100,6 @@ function decagonPoints(center: [number, number], edge: [number, number]): [numbe
     return toDoc(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
   });
 }
-
-const KIND_COLOR: Record<Kind, string> = {
-  ground: "#a6da95",
-  wall: "#f5a97f",
-  wall2: "#eebebe",
-  wall3: "#f4b8e4",
-  void: "#ed8796",
-  mark: "#eed49f",
-  "ground-1": "#89dceb",
-  "ground-2": "#94e2d5",
-};
-
-// Display label + grouping order for the "Layers" dropdown -- same order
-// as the draw buttons / `#me-selkind` options.
-const KIND_LABEL: Record<Kind, string> = {
-  ground: "Ground",
-  wall: "Wall",
-  wall2: "Wall ×2",
-  wall3: "Wall ×3",
-  void: "Void",
-  mark: "Mark",
-  "ground-1": "Ground -1",
-  "ground-2": "Ground -2",
-};
-const KIND_ORDER: Kind[] = ["ground", "wall", "wall2", "wall3", "void", "mark", "ground-1", "ground-2"];
 
 // ---- DOM ------------------------------------------------------------------
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -182,16 +184,12 @@ function worldToDoc(wx: number, wy: number): [number, number] {
   return [(dx * c + dy * sn) / s, (-dx * sn + dy * c) / s];
 }
 
-// doc unit -> world yard (matches replay-scene.ts mapDocToWorld).
+// doc unit -> world yard -- the shared `mapDocToWorld` (src/map/extrude.ts),
+// same transform `buildDevMap` uses for the 3D preview and the replay uses
+// for the picked map, so this editor's 2D coordinate mapping can't drift
+// from either.
 function docToWorld(x: number, y: number): [number, number] {
-  const s = cal.yardsPerUnit || 1;
-  const rot = (cal.rotationDeg * Math.PI) / 180;
-  const c = Math.cos(rot);
-  const sn = Math.sin(rot);
-  const px = x * s;
-  const py = y * s;
-  const my = cal.mirrorY ? -1 : 1;
-  return [px * c - py * sn + cal.originYards[0], (px * sn + py * c) * my + cal.originYards[1]];
+  return mapDocToWorld(cal)(x, y);
 }
 
 // "Snap to grid" toggle: clamp a doc-unit point to the nearest 8-yard
@@ -309,16 +307,6 @@ const toScreen = (x: number, y: number): [number, number] => {
 function pointerCss(e: PointerEvent | WheelEvent): [number, number] {
   const r = canvas.getBoundingClientRect();
   return [e.clientX - r.left, e.clientY - r.top];
-}
-
-function pointInPoly(px: number, py: number, pts: [number, number][]): boolean {
-  let inside = false;
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const [xi, yi] = pts[i];
-    const [xj, yj] = pts[j];
-    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
 }
 
 // Index of `s`'s vertex within VERT_HIT_PX screen pixels of (sx, sy) --
@@ -459,22 +447,39 @@ function syncToolbar(): void {
   syncLayers();
 }
 
+// Bucket shapes by kind, pre-seeded with every `KIND_ORDER` entry (so a
+// kind with no shapes still comes back as an empty array rather than a
+// missing key) -- shared by the "Layers" dropdown and the save/3D-preview
+// doc builder (`layersFromShapes`) so there's one grouping to keep in sync.
+function groupByKind(list: Shape[]): Map<Kind, Shape[]> {
+  const groups = new Map<Kind, Shape[]>(KIND_ORDER.map((k) => [k, []]));
+  for (const s of list) groups.get(s.kind)!.push(s);
+  return groups;
+}
+
 // The "Layers" dropdown: every shape, grouped into an `<optgroup>` per
 // kind (kinds with no shapes are omitted), numbered in draw order within
-// their group. Rebuilt wholesale on every `syncToolbar` -- shape counts
-// are small (tens), so this is cheap next to a canvas redraw.
+// their group. `syncToolbar` calls this on every edit, including ones
+// that only move the selection (a vertex pick, a nudge) -- skip the
+// teardown/rebuild of every <option> when the shape set itself (ids,
+// kinds, point counts) hasn't actually changed since the last build.
+let lastLayersSig: string | null = null;
 function syncLayers(): void {
-  const groups = new Map<Kind, Shape[]>(KIND_ORDER.map((k) => [k, []]));
-  for (const s of shapes) groups.get(s.kind)!.push(s);
+  const sig = shapes.map((s) => `${s.id}:${s.kind}:${s.points.length}`).join("|");
+  if (sig === lastLayersSig) {
+    layersSelect.value = selectedId ?? "";
+    return;
+  }
+  lastLayersSig = sig;
 
+  const groups = groupByKind(shapes);
   layersSelect.replaceChildren();
   const placeholder = document.createElement("option");
   placeholder.value = "";
   placeholder.textContent = shapes.length ? "— select a shape —" : "— no shapes —";
   layersSelect.appendChild(placeholder);
 
-  for (const k of KIND_ORDER) {
-    const list = groups.get(k)!;
+  for (const [k, list] of groups) {
     if (!list.length) continue;
     const og = document.createElement("optgroup");
     og.label = KIND_LABEL[k];
@@ -1158,25 +1163,25 @@ function loadMapText(text: string, label = "map file"): void {
 }
 
 // ---- save -----------------------------------------------------
-// Group shapes by kind into the `DevMapLayer[]` shape both the saved
-// `.map.json` and `buildDevMap` (the shared extruder, `src/map/extrude.ts`)
-// expect.
+// Group shapes by kind (via the shared `groupByKind`) into the
+// `DevMapLayer[]` shape both the saved `.map.json` and `buildDevMap` (the
+// shared extruder, `src/map/extrude.ts`) expect. Kinds with no shapes are
+// dropped rather than written as an empty layer.
 function layersFromShapes(list: Shape[]): DevMapLayer[] {
-  const byKind = new Map<Kind, Shape[]>();
-  for (const s of list) {
-    const arr = byKind.get(s.kind);
-    if (arr) arr.push(s);
-    else byKind.set(s.kind, [s]);
+  const layers: DevMapLayer[] = [];
+  for (const [kind, ss] of groupByKind(list)) {
+    if (!ss.length) continue;
+    layers.push({
+      kind,
+      polys: ss.map((s) => ({
+        id: s.id,
+        points: s.points,
+        ...(s.color ? { color: s.color } : {}),
+        ...(s.material ? { material: s.material } : {}),
+      })),
+    });
   }
-  return [...byKind.entries()].map(([kind, ss]) => ({
-    kind,
-    polys: ss.map((s) => ({
-      id: s.id,
-      points: s.points,
-      ...(s.color ? { color: s.color } : {}),
-      ...(s.material ? { material: s.material } : {}),
-    })),
-  }));
+  return layers;
 }
 
 function buildJson(): string {
@@ -1302,9 +1307,11 @@ function build3d(): void {
     },
   };
   const group = buildDevMap(doc, framingOf(devMapWorldBox(doc)));
-  if (group) mapGroup.add(group);
-  render3dOnce();
-  if (!group) return;
+  if (!group) {
+    render3dOnce();
+    return;
+  }
+  mapGroup.add(group);
 
   const box = new THREE.Box3().setFromObject(mapGroup);
   const c = box.getCenter(new THREE.Vector3());

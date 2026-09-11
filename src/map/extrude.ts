@@ -261,7 +261,12 @@ export function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | nul
         (q): q is [number, number] => Array.isArray(q) && q.length >= 2,
       );
       if (pts.length >= 3) {
-        (kinds.get(k) ?? kinds.set(k, []).get(k)!).push({
+        let arr = kinds.get(k);
+        if (!arr) {
+          arr = [];
+          kinds.set(k, arr);
+        }
+        arr.push({
           pts,
           color: typeof p.color === "string" ? p.color : undefined,
           material: typeof p.material === "string" ? p.material : undefined,
@@ -306,24 +311,26 @@ export function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | nul
 
   const g = new THREE.Group();
 
-  // One shared grid texture for every ground/wall face -- same look as the
-  // default box. ExtrudeGeometry UVs are in shape units = world yards
-  // now, so `1/CELL` puts exactly one grid tile per CELL yards.
+  // One shared grid texture + material for every ground/wall face -- same
+  // look as the default box, and one `MeshStandardMaterial` (shader
+  // binding) reused across every solid mesh instead of a fresh one per
+  // shape. ExtrudeGeometry UVs are in shape units = world yards now, so
+  // `1/CELL` puts exactly one grid tile per CELL yards.
   let gridTex: THREE.Texture | null = null;
+  let solidMat: THREE.MeshStandardMaterial | null = null;
   if (solids.length) {
     gridTex = gridTexture();
     gridTex.repeat.set(1 / CELL, 1 / CELL);
+    solidMat = new THREE.MeshStandardMaterial({ map: gridTex, roughness: 0.95, metalness: 0 });
   }
 
-  // Punch every hole in `list` (default `cuts` = voids + ground recesses)
-  // that sits inside `outer` into `shp`. `ground-1`/`ground-2` pass just
-  // `voids` -- a void cuts all the way through everything, but a ground
-  // recess only cuts the solids/marks above it, not another ground slab.
-  const cutHoles = (
-    shp: THREE.Shape,
-    outer: [number, number][],
-    list: [number, number][][] = cuts,
-  ) => {
+  // Punch every hole in `list` that sits inside `outer` into `shp`. Every
+  // call site passes its own list explicitly: `solids`/`marks` pass
+  // `cuts` (voids + ground recesses -- a ground recess also recesses
+  // whatever contains it), `grounds` pass just `voids` -- a void cuts all
+  // the way through everything, but a ground recess never cuts another
+  // ground slab.
+  const cutHoles = (shp: THREE.Shape, outer: [number, number][], list: [number, number][][]) => {
     for (const v of list) {
       const [vx, vy] = polyBBoxCenter(v);
       if (!pointInPoly(vx, vy, outer)) continue;
@@ -336,14 +343,11 @@ export function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | nul
   for (const { pts, raise } of solids) {
     const shp = new THREE.Shape();
     trace(shp, pts);
-    cutHoles(shp, pts);
+    cutHoles(shp, pts, cuts);
     const depth = PILLAR_DEPTH + raise; // extrude down to the platform depth; walls also rise above deck
     const geo = new THREE.ExtrudeGeometry(shp, { depth, bevelEnabled: false });
     geo.rotateX(-Math.PI / 2); // shape plane -> bottom, extrude -> +y
-    const mesh = new THREE.Mesh(
-      geo,
-      new THREE.MeshStandardMaterial({ map: gridTex ?? undefined, roughness: 0.95, metalness: 0 }),
-    );
+    const mesh = new THREE.Mesh(geo, solidMat!); // non-null: solids.length > 0 guarantees the block above ran
     mesh.receiveShadow = true;
     mesh.position.y = FLOOR_LIFT - PILLAR_DEPTH; // top ends at FLOOR_LIFT (+raise for a wall)
     g.add(mesh);
@@ -375,7 +379,7 @@ export function buildDevMap(doc: DevMapDoc, framing: Framing): THREE.Group | nul
   for (const { pts, color } of marks) {
     const shp = new THREE.Shape();
     trace(shp, pts);
-    cutHoles(shp, pts); // voids (and ground recesses) cut marks too
+    cutHoles(shp, pts, cuts); // voids (and ground recesses) cut marks too
     const geo = new THREE.ExtrudeGeometry(shp, { depth: DEV_MAP_MARK_DEPTH, bevelEnabled: false });
     geo.rotateX(-Math.PI / 2);
     const mesh = new THREE.Mesh(
