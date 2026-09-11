@@ -162,6 +162,17 @@ pub struct CastSpan {
     pub end_ms: i64,
     pub spell_id: u16,
     pub target_unit: u32,
+    /// `true` for a hard cast / empower whose window is a real observed
+    /// `CAST_START`->`CAST_SUCCESS` (or `EMPOWER_START`->`_END`/
+    /// `_INTERRUPT`) pair -- `end_ms` is a genuine resolve time, so the
+    /// cast bar can fill empty -> full across `[start_ms, end_ms]`.
+    /// `false` for a lone `CAST_SUCCESS` (instant, or a channel's
+    /// opening tick): `end_ms` is just `start_ms + INSTANT_SPIN_MS`, a
+    /// fixed guess for the cube-spin animation, not a real duration --
+    /// the cast bar instead drains over a nominal window and (for a
+    /// channel) gets topped off by each later tick, since the log never
+    /// tells us in advance how long an instant / channel will run.
+    pub real_duration: bool,
 }
 
 /// Where the thing a unit cast *at* was, at the moment of the cast --
@@ -319,6 +330,7 @@ impl Acc {
                     end_ms: at,
                     spell_id: spell,
                     target_unit: target,
+                    real_duration: true,
                 });
             }
         }
@@ -333,6 +345,7 @@ impl Acc {
                     end_ms: at,
                     spell_id: spell,
                     target_unit: target,
+                    real_duration: true,
                 });
             }
         }
@@ -535,6 +548,7 @@ pub fn series(
                             end_ms: ts,
                             spell_id: hspell,
                             target_unit: target,
+                            real_duration: true,
                         });
                     }
                     // Lone success -> instant (or a channel's first tick):
@@ -545,6 +559,7 @@ pub fn series(
                             end_ms: ts + INSTANT_SPIN_MS,
                             spell_id: spell,
                             target_unit: succ_target,
+                            real_duration: false,
                         });
                     }
                 }
@@ -571,6 +586,7 @@ pub fn series(
                             end_ms: ts.max(es + INSTANT_SPIN_MS),
                             spell_id: espell,
                             target_unit: etarget,
+                            real_duration: true,
                         });
                     }
                 }
@@ -903,6 +919,7 @@ pub fn series(
                 end_ms: c.end_ms,
                 spell_id: c.spell_id,
                 target_unit: c.target_unit,
+                real_duration: c.real_duration,
             })
             .collect();
         cast_spans.sort_by_key(|c| c.start_ms);
@@ -1370,12 +1387,14 @@ mod tests {
         let s = series(&store, &tables, &mmap, store.timestamp_ms[0] - 1, store.timestamp_ms[2] + 1);
         let u = &s.units[0];
         assert_eq!(u.cast_spans.len(), 2);
-        // hard cast: START -> SUCCESS
+        // hard cast: START -> SUCCESS, a real window (cast bar can fill it)
         assert_eq!(u.cast_spans[0].start_ms, store.timestamp_ms[0]);
         assert_eq!(u.cast_spans[0].end_ms, store.timestamp_ms[1]);
-        // lone success: short fixed spin
+        assert!(u.cast_spans[0].real_duration);
+        // lone success: short fixed spin, NOT a real duration
         assert_eq!(u.cast_spans[1].start_ms, store.timestamp_ms[2]);
         assert_eq!(u.cast_spans[1].end_ms, store.timestamp_ms[2] + INSTANT_SPIN_MS);
+        assert!(!u.cast_spans[1].real_duration);
     }
 
     #[test]

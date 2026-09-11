@@ -441,3 +441,12 @@ Phases A + B land first for review, then C–E.
 - `ENVIRONMENTAL_DAMAGE` positions are currently dropped
   (`movement-view.md` §6) — a unit that only ever took falling damage
   would be absent. Rare; fix the field offset if it matters.
+- **Playback feels stepped at 0.5x / 0.25x speed.** `tick()`
+  (`replay-scene.ts`) already advances `playhead` by `dt * speed` every
+  rAF and re-lerps via `posAt`, so it isn't waiting on a fixed-rate
+  source — but at slow speeds the *visible* motion per frame shrinks
+  below whatever's causing the perceived "wait for the next frame"
+  feel, worth a closer look (frame-to-frame position deltas quantized by
+  something else? a lower-precision sample track cadence reads as
+  choppier once real motion per frame gets small?). Not yet diagnosed —
+  revisit before relying on sub-1x scrubbing for anything precise.

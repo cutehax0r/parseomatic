@@ -27,6 +27,7 @@ import type {
   ReplayPeriodicHit,
   ReplaySample,
   ReplayWorldMarker,
+  SpellRow,
 } from "../../types";
 import {
   CELL,
@@ -89,6 +90,10 @@ export interface ReplaySceneProps {
   // Numeric encounterID (0 = custom range) -- picks the per-encounter
   // entry in a loaded map's `encounters` block (orientation, …).
   encounterId?: number;
+  // Index-aligned with the backend intern id (`ReplayCastSpan.spellId`) --
+  // resolves the cast bar's ability name. `ctx.spells`, same lookup the
+  // Timeline / Interrupts views use.
+  spells?: SpellRow[];
 }
 
 // The base layer reads as a bottomless drop, not a floor a few yards
@@ -354,6 +359,132 @@ function isTargetGone(u: ReplaySceneUnitInput, t: number): boolean {
   }
   if (u.team === "enemy" && t > u.samples[u.samples.length - 1].tMs + DESPAWN_GRACE_MS) return true;
   return false;
+}
+
+// ---- Cast bar ----------------------------------------------------------
+// The log never carries a spell's cast time (client-side data, and it
+// drifts with haste anyway), so only a hard cast / empower's window is a
+// real, known duration (`realDuration`, resolved by CAST_START ->
+// CAST_SUCCESS / EMPOWER_END). A lone CAST_SUCCESS (instant, or a
+// channel's opening tick) gets a nominal drain instead: a channel
+// (Arcane Missiles, ...) keeps getting topped off by its own periodic
+// ticks, so it reads as full while it's still going; a true instant
+// (Arcane Barrage, ...) never gets a tick and just drains once, over the
+// GCD -- an approximation, not a real GCD tracker (see `docs/replay-view.md`).
+const GCD_MS = 1400; // nominal global cooldown -- the instant-cast drain window
+const CHANNEL_TICK_MS = 750; // nominal per-tick drain window once a channel is confirmed by a real tick
+
+interface CastBarState {
+  progress: number; // 0 (empty) -> 1 (full), independent of fill vs drain
+  spellId: number | null;
+}
+
+// Merge every periodic tick (damage or heal, either direction) into one
+// ascending-by-time list per source unit -- the cast bar's only signal
+// that a lone CAST_SUCCESS was a channel, not a true instant.
+function buildTicksBySource(props: ReplaySceneProps): Map<number, number[]> {
+  const out = new Map<number, number[]>();
+  const all = [
+    ...(props.periodicHits ?? []),
+    ...(props.hostilePeriodicHits ?? []),
+    ...(props.periodicHeals ?? []),
+  ];
+  for (const hit of all) {
+    let arr = out.get(hit.sourceUnit);
+    if (!arr) {
+      arr = [];
+      out.set(hit.sourceUnit, arr);
+    }
+    arr.push(hit.tMs);
+  }
+  for (const arr of out.values()) arr.sort((a, b) => a - b);
+  return out;
+}
+
+// Index of the rightmost value <= `t` in an ascending array, or -1.
+function floorIndex(arr: number[], t: number): number {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (arr[m] <= t) lo = m + 1;
+    else hi = m;
+  }
+  return lo - 1;
+}
+
+// The selected unit's cast bar state at `t`, or `null` if nothing to show
+// (no cast yet, a resolved hard cast, or a drained-out instant/channel).
+function computeCastBar(
+  u: ReplaySceneUnitInput,
+  t: number,
+  ticksBySource: Map<number, number[]>,
+): CastBarState | null {
+  const spans = u.castSpans; // ascending by startMs
+  let idx = -1;
+  for (let i = 0; i < spans.length; i++) {
+    if (spans[i].startMs > t) break;
+    idx = i;
+  }
+  if (idx < 0) return null;
+  const cs = spans[idx];
+
+  if (cs.realDuration) {
+    if (t > cs.endMs) return null; // resolved -- nothing to show till the next cast
+    const span = Math.max(1, cs.endMs - cs.startMs);
+    return { progress: clamp01((t - cs.startMs) / span), spellId: cs.spellId };
+  }
+
+  // Lone CAST_SUCCESS: drain from the cast, or from the latest tick since
+  // it (while still before the next cast span) -- whichever's later.
+  const nextStart = idx + 1 < spans.length ? spans[idx + 1].startMs : Infinity;
+  const ticks = ticksBySource.get(u.unitId) ?? [];
+  const upper = Math.min(t, nextStart);
+  const i = floorIndex(ticks, upper);
+  let refillAt = cs.startMs;
+  let nominal = GCD_MS;
+  if (i >= 0 && ticks[i] > cs.startMs) {
+    refillAt = ticks[i];
+    nominal = CHANNEL_TICK_MS;
+  }
+  const over = t - refillAt;
+  if (over > nominal) return null; // fully drained, no further tick -- done
+  return { progress: 1 - clamp01(over / nominal), spellId: cs.spellId };
+}
+
+// ---- Recent abilities list ---------------------------------------------
+const RECENT_COUNT = 3;
+
+// The unit's last `limit` resolved casts at/before `t`, newest first.
+// `castSpans` is ascending by startMs, so this is a binary search for the
+// cutoff plus a short walk backward -- cheap even for a long fight.
+function recentCastSpans(u: ReplaySceneUnitInput, t: number, limit: number): ReplayCastSpan[] {
+  const spans = u.castSpans;
+  let lo = 0;
+  let hi = spans.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (spans[m].startMs <= t) lo = m + 1;
+    else hi = m;
+  }
+  const out: ReplayCastSpan[] = [];
+  for (let i = lo - 1; i >= 0 && out.length < limit; i--) out.push(spans[i]);
+  return out;
+}
+
+function spellNameFor(spells: SpellRow[], id: number | null): string {
+  return id != null ? (spells[id]?.name ?? `#${id}`) : "?";
+}
+
+// One row: just the ability name. `cs === null` renders an empty
+// placeholder row -- always filling all `RECENT_COUNT` slots keeps the
+// list's height constant as entries fall in and out, instead of the
+// status bar growing/shrinking with it.
+function buildRecentRow(cs: ReplayCastSpan | null, spells: SpellRow[]): HTMLElement {
+  const row = document.createElement("span");
+  row.className = "rs-recent-row";
+  row.textContent = cs ? spellNameFor(spells, cs.spellId) : "";
+  return row;
 }
 
 // ---- Cast lines (hostile -> player attack arcs) ----------------------
@@ -651,6 +782,13 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private targetWrapEl!: HTMLElement; // docks to the right of statusCard; hidden when no live target
   private targetCard: UnitCardParts | null = null; // the current target's name/HP card
   private targetUnitId: number | null = null; // unitId shown in targetWrapEl, so it only rebuilds on change
+  private castBarWrapEl!: HTMLElement; // docks right of the target box; hidden when nothing's casting
+  private castBarFillEl!: HTMLElement;
+  private castBarNameEl!: HTMLElement;
+  private recentWrapEl!: HTMLElement; // docks right of the cast bar; up to 3 rows, newest on top
+  private recentKey = ""; // joined startMs of the shown spans, so it only rebuilds on change
+  private spells: SpellRow[] = []; // index-aligned with backend intern id -- ctx.spells
+  private ticksBySource = new Map<number, number[]>(); // sourceUnit -> ascending tick times, cast bar channel detection
   private playBtn!: HTMLButtonElement;
   private slider!: HTMLInputElement;
   private timeEl!: HTMLElement;
@@ -1254,6 +1392,8 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.periodicHeals = props.periodicHeals ?? [];
     this.envHits = props.envHits ?? [];
     this.worldMarkers = props.worldMarkers ?? [];
+    this.spells = props.spells ?? [];
+    this.ticksBySource = buildTicksBySource(props);
     this.selectedUnitId = null; // a new window -> clear the selection
     this.selRing.visible = false;
     this.selFill.visible = false;
@@ -1443,20 +1583,80 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.targetUnitId = null;
     kids.push(this.targetWrapEl);
 
+    this.castBarWrapEl = document.createElement("span");
+    this.castBarWrapEl.className = "rs-cast";
+    this.castBarWrapEl.hidden = true;
+    const castBar = document.createElement("span");
+    castBar.className = "pt-bar";
+    this.castBarFillEl = document.createElement("span");
+    this.castBarFillEl.className = "pt-bar-seg rs-cast-fill";
+    castBar.appendChild(this.castBarFillEl);
+    this.castBarNameEl = document.createElement("span");
+    this.castBarNameEl.className = "rs-cast-name";
+    this.castBarWrapEl.append(castBar, this.castBarNameEl);
+    kids.push(this.castBarWrapEl);
+
+    this.recentWrapEl = document.createElement("span");
+    this.recentWrapEl.className = "rs-recent";
+    this.recentWrapEl.hidden = true;
+    this.recentKey = "";
+    kids.push(this.recentWrapEl);
+
     this.statusEl.replaceChildren(...kids);
     this.statusEl.hidden = false;
     this.updateStatusHp(this.playhead);
   }
 
-  // Refresh the selected unit's HP figures and its target box for time
-  // `t` -- last reading at/before the playhead, or full HP before the
-  // first one.
+  // Refresh the selected unit's HP figures, target box, cast bar, and
+  // recent-abilities list for time `t` -- last reading at/before the
+  // playhead, or full HP before the first one.
   private updateStatusHp(t: number): void {
     if (this.selectedUnitId == null) return;
     const u = this.unitById.get(this.selectedUnitId);
     if (!u) return;
     if (this.statusCard) refreshCardHp(this.statusCard, u, t);
     this.updateStatusTarget(u, t);
+    this.updateCastBar(u, t);
+    this.updateRecentAbilities(u, t);
+  }
+
+  // Show/refresh the cast bar: the selected unit's current/last cast
+  // (bar fills for a real hard-cast/empower window; drains, refilled by
+  // ticks, for an instant/channel), with the ability name underneath.
+  private updateCastBar(u: ReplaySceneUnitInput, t: number): void {
+    const wrap = this.castBarWrapEl;
+    if (!wrap) return;
+    const cb = computeCastBar(u, t, this.ticksBySource);
+    if (!cb) {
+      wrap.hidden = true;
+      return;
+    }
+    wrap.hidden = false;
+    this.castBarFillEl.style.width = `${cb.progress * 100}%`;
+    this.castBarNameEl.textContent =
+      cb.spellId != null ? (this.spells[cb.spellId]?.name ?? `#${cb.spellId}`) : "";
+  }
+
+  // Show/refresh the recent-abilities list: the selected unit's last
+  // `RECENT_COUNT` resolved casts at/before `t`, newest on top. Only
+  // rebuilds the DOM when the shown set of casts actually changes.
+  private updateRecentAbilities(u: ReplaySceneUnitInput, t: number): void {
+    const wrap = this.recentWrapEl;
+    if (!wrap) return;
+    const recent = recentCastSpans(u, t, RECENT_COUNT);
+    if (recent.length === 0) {
+      wrap.hidden = true;
+      this.recentKey = "";
+      return;
+    }
+    const key = recent.map((cs) => cs.startMs).join(",");
+    if (key !== this.recentKey) {
+      this.recentKey = key;
+      const rows: HTMLElement[] = recent.map((cs) => buildRecentRow(cs, this.spells));
+      while (rows.length < RECENT_COUNT) rows.push(buildRecentRow(null, this.spells));
+      wrap.replaceChildren(...rows);
+    }
+    wrap.hidden = false;
   }
 
   // Show/refresh the target box: the unit `u` last cast on (or is

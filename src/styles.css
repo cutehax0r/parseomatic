@@ -2897,14 +2897,20 @@ body {
   padding: 2px 2px 10px;
 }
 
-/* Selection status bar -- overlays the bottom of the render view. */
+/* Selection status bar -- overlays the bottom of the render view. Five
+   equal fixed-width columns (player card, player HP, target, cast bar,
+   recent abilities) via `grid-template-columns`, each pinned to its own
+   column below -- so hiding any one of them (no target, nothing casting)
+   leaves its column empty instead of the others reflowing to fill the
+   gap, which is what happened under flexbox. */
 .replay-status {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 5;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
   align-items: center;
   gap: 18px;
   padding: 8px 16px;
@@ -2917,6 +2923,26 @@ body {
 
 .replay-status[hidden] {
   display: none;
+}
+
+.replay-status > .rs-card {
+  grid-column: 1;
+}
+
+.replay-status > .rs-hp {
+  grid-column: 2;
+}
+
+.replay-status > .rs-target {
+  grid-column: 3;
+}
+
+.replay-status > .rs-cast {
+  grid-column: 4;
+}
+
+.replay-status > .rs-recent {
+  grid-column: 5;
 }
 
 /* player-card block: role glyph + ilvl, then name over spec */
@@ -2937,13 +2963,14 @@ body {
   background-color: var(--ctp-green);
 }
 
-/* Target box: the selected unit's current/last cast target, docked to
-   the right of the player card. Hidden while there's no live target. */
+/* Target box: the selected unit's current/last cast target. Always
+   column 3 (see `.replay-status > .rs-target` above) -- hidden while
+   there's no live target, but its column stays reserved so the columns
+   after it don't shift. */
 .rs-target {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex: none;
   padding-left: 18px;
   border-left: 1px solid rgb(255 255 255 / 12%);
 }
@@ -2955,6 +2982,59 @@ body {
 .rs-target .rs-hp {
   flex: none;
   max-width: 200px;
+}
+
+/* Cast bar: the selected unit's current cast. Always column 4 -- hidden
+   while nothing's casting, but its column stays reserved. */
+.rs-cast {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 18px;
+  border-left: 1px solid rgb(255 255 255 / 12%);
+}
+
+.rs-cast[hidden] {
+  display: none;
+}
+
+.rs-cast-fill {
+  background-color: var(--ctp-blue);
+}
+
+.rs-cast-name {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Recent-abilities list: always 3 row slots (blank ones included) so the
+   status bar's height stays put as entries fall in and out, newest on
+   top. Always column 5 (see `.replay-status > .rs-recent` above), so it
+   stays put whether or not the target/cast-bar columns are showing.
+   Hidden until the selected unit has cast something. */
+.rs-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 18px;
+  border-left: 1px solid rgb(255 255 255 / 12%);
+}
+
+.rs-recent[hidden] {
+  display: none;
+}
+
+.rs-recent-row {
+  font-size: 11px;
+  line-height: 15px;
+  min-height: 15px; /* an empty placeholder row still holds its slot's height */
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .rt-btn {

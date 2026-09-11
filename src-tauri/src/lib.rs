@@ -1757,6 +1757,10 @@ struct ReplayCastSpanRow {
     spell_id: Option<u16>,
     /// `null` for a self-cast / ground-targeted / unknown target.
     target_unit: Option<u32>,
+    /// `true` if `end_ms` is a real observed resolve time (hard cast /
+    /// empower); `false` if it's just a fixed spin-animation guess off a
+    /// lone `CAST_SUCCESS` (instant, or a channel's opening tick).
+    real_duration: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -1973,6 +1977,7 @@ fn replay_series(
                         end_ms: c.end_ms,
                         spell_id: (c.spell_id != NO_SPELL).then_some(c.spell_id),
                         target_unit: (c.target_unit != NO_UNIT).then_some(c.target_unit),
+                        real_duration: c.real_duration,
                     })
                     .collect(),
                 face_events: u

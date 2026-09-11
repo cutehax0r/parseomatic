@@ -221,6 +221,10 @@ export interface ReplayCastSpan {
   spellId: number | null;
   // `null` for a self-cast / ground-targeted / unknown target.
   targetUnit: number | null;
+  // `true` if `endMs` is a real observed resolve time (hard cast /
+  // empower) -- `false` for a lone CAST_SUCCESS (instant, or a channel's
+  // opening tick), where `endMs` is just a fixed spin-animation guess.
+  realDuration: boolean;
 }
 
 // Where the thing a unit cast at was, at cast time (snapshot). Drives

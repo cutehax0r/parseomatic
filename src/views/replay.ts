@@ -544,5 +544,6 @@ async function paint(): Promise<void> {
     startMs: series.startMs,
     endMs: series.endMs,
     encounterId: win.encounterId,
+    spells: ctx.spells,
   });
 }
