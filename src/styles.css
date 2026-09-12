@@ -195,6 +195,7 @@ body {
   pointer-events: none;
 }
 
+
 /* ---------------------------------------------------------------------------
    Encounter picker -- a custom popup listbox in the toolbar. A native
    <select>/<optgroup> can't express the mockup: an Encounters/Trash section
@@ -634,6 +635,78 @@ body {
 
 .debug-view[hidden] {
   display: none;
+}
+
+.encounter-editor-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+
+.encounter-editor-view[hidden] {
+  display: none;
+}
+
+.encounter-editor-status {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.encounter-editor-json {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.encounter-editor-json[hidden] {
+  display: none;
+}
+
+/* highlight.js JSON grammar's token classes (src/views/encounter-editor.ts) --
+   mapped to our own palette rather than importing a prebuilt hljs theme. */
+.encounter-editor-json .hljs-attr {
+  color: var(--ctp-sky);
+}
+.encounter-editor-json .hljs-string {
+  color: var(--ctp-green);
+}
+.encounter-editor-json .hljs-number {
+  color: var(--ctp-peach);
+}
+.encounter-editor-json .hljs-literal,
+.encounter-editor-json .hljs-keyword {
+  color: var(--ctp-mauve);
+}
+.encounter-editor-json .hljs-punctuation {
+  color: var(--text-muted);
+}
+
+.encounter-editor-graph {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  position: relative;
+}
+
+.encounter-editor-graph[hidden] {
+  display: none;
+}
+
+.encounter-editor-graph canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .tabs {
@@ -2269,7 +2342,8 @@ body {
 .deaths-view,
 .movement-view,
 .timeline-view,
-.interrupts-view {
+.interrupts-view,
+.raid-view {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -2283,8 +2357,16 @@ body {
 .deaths-view[hidden],
 .movement-view[hidden],
 .timeline-view[hidden],
-.interrupts-view[hidden] {
+.interrupts-view[hidden],
+.raid-view[hidden] {
   display: none;
+}
+
+.raid-placeholder {
+  margin: 48px auto 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
 }
 
 .damage-hint,

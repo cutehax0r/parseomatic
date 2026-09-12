@@ -2,6 +2,7 @@ mod damage;
 mod deaths;
 mod hits;
 mod interrupts;
+mod encounters;
 mod maps;
 mod movement;
 mod parser;
@@ -75,6 +76,7 @@ enum ViewKind {
     Overview,
     Replay,
     Interrupts,
+    Raid,
     Character,
     Damage,
     Healing,
@@ -84,16 +86,18 @@ enum ViewKind {
     Timeline,
     Debug,
     Raw,
+    EncounterEditor,
 }
 
 // Every view in the radio group, in toolbar/menu display order -- the
 // single source of truth for `sync_view_menu`'s loop and anywhere else
 // that has to touch them all.
-const ALL_VIEWS: [ViewKind; 13] = [
+const ALL_VIEWS: [ViewKind; 15] = [
     ViewKind::Encounters,
     ViewKind::Overview,
     ViewKind::Replay,
     ViewKind::Interrupts,
+    ViewKind::Raid,
     ViewKind::Character,
     ViewKind::Damage,
     ViewKind::Healing,
@@ -103,6 +107,7 @@ const ALL_VIEWS: [ViewKind; 13] = [
     ViewKind::Timeline,
     ViewKind::Debug,
     ViewKind::Raw,
+    ViewKind::EncounterEditor,
 ];
 
 impl ViewKind {
@@ -120,6 +125,7 @@ impl ViewKind {
             ViewKind::Overview => "overview",
             ViewKind::Replay => "replay",
             ViewKind::Interrupts => "interrupts",
+            ViewKind::Raid => "raid",
             ViewKind::Character => "character",
             ViewKind::Damage => "damage",
             ViewKind::Healing => "healing",
@@ -129,6 +135,7 @@ impl ViewKind {
             ViewKind::Timeline => "timeline",
             ViewKind::Debug => "debug",
             ViewKind::Raw => "raw",
+            ViewKind::EncounterEditor => "encounter-editor",
         }
     }
 
@@ -138,6 +145,7 @@ impl ViewKind {
             ViewKind::Overview => "view_overview",
             ViewKind::Replay => "view_replay",
             ViewKind::Interrupts => "view_interrupts",
+            ViewKind::Raid => "view_raid",
             ViewKind::Character => "view_character",
             ViewKind::Damage => "view_damage",
             ViewKind::Healing => "view_healing",
@@ -147,6 +155,7 @@ impl ViewKind {
             ViewKind::Timeline => "view_timeline",
             ViewKind::Debug => "view_debug",
             ViewKind::Raw => "view_raw",
+            ViewKind::EncounterEditor => "view_encounter_editor",
         }
     }
 }
@@ -165,6 +174,7 @@ struct ViewMenu {
     overview: CheckMenuItem<tauri::Wry>,
     replay: CheckMenuItem<tauri::Wry>,
     interrupts: CheckMenuItem<tauri::Wry>,
+    raid: CheckMenuItem<tauri::Wry>,
     character: CheckMenuItem<tauri::Wry>,
     damage: CheckMenuItem<tauri::Wry>,
     healing: CheckMenuItem<tauri::Wry>,
@@ -174,6 +184,7 @@ struct ViewMenu {
     timeline: CheckMenuItem<tauri::Wry>,
     debug: CheckMenuItem<tauri::Wry>,
     raw: CheckMenuItem<tauri::Wry>,
+    encounter_editor: CheckMenuItem<tauri::Wry>,
 }
 
 impl ViewMenu {
@@ -183,6 +194,7 @@ impl ViewMenu {
             ViewKind::Overview => &self.overview,
             ViewKind::Replay => &self.replay,
             ViewKind::Interrupts => &self.interrupts,
+            ViewKind::Raid => &self.raid,
             ViewKind::Character => &self.character,
             ViewKind::Damage => &self.damage,
             ViewKind::Healing => &self.healing,
@@ -192,6 +204,7 @@ impl ViewMenu {
             ViewKind::Timeline => &self.timeline,
             ViewKind::Debug => &self.debug,
             ViewKind::Raw => &self.raw,
+            ViewKind::EncounterEditor => &self.encounter_editor,
         }
     }
 }
@@ -2172,6 +2185,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    let raid_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::Raid.menu_id(),
+        "Raid",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let character_view_item = CheckMenuItem::with_id(
         app,
         ViewKind::Character.menu_id(),
@@ -2232,14 +2253,23 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         CheckMenuItem::with_id(app, ViewKind::Debug.menu_id(), "Debug", true, false, None::<&str>)?;
     let raw_view_item =
         CheckMenuItem::with_id(app, ViewKind::Raw.menu_id(), "Raw", true, false, None::<&str>)?;
+    let encounter_editor_view_item = CheckMenuItem::with_id(
+        app,
+        ViewKind::EncounterEditor.menu_id(),
+        "Encounter Editor",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let pick_map_item = MenuItem::with_id(app, "pick_map", "Pick Map\u{2026}", true, None::<&str>)?;
     let clear_map_item = MenuItem::with_id(app, "clear_map", "Clear Map", true, None::<&str>)?;
-    // Top-level "Develop" menu: the Debug / Raw views plus the map tools
-    // (Map Editor opens the map editor window; Pick / Clear Map swap the
-    // replay's deck). Not part of the everyday flow.
+    // Top-level "Develop" menu: the Debug / Raw / Encounter Editor views
+    // plus the map tools (Map Editor opens the map editor window; Pick /
+    // Clear Map swap the replay's deck). Not part of the everyday flow.
     let develop_menu = SubmenuBuilder::new(app, "Develop")
         .item(&debug_view_item)
         .item(&raw_view_item)
+        .item(&encounter_editor_view_item)
         .separator()
         .item(&new_map_item)
         .item(&pick_map_item)
@@ -2256,13 +2286,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         MenuItem::with_id(app, "zoom_reset", "Actual Size", true, Some("CmdOrCtrl+0"))?;
 
     // Two groups, separator between: raid-wide views (Encounters /
-    // Overview / Interrupts / Replay) and per-character views
+    // Overview / Interrupts / Replay / Raid) and per-character views
     // (Character ... Timeline), then the zoom controls.
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&encounters_view_item)
         .item(&overview_view_item)
         .item(&interrupts_view_item)
         .item(&replay_view_item)
+        .item(&raid_view_item)
         .separator()
         .item(&character_view_item)
         .item(&damage_view_item)
@@ -2347,6 +2378,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             overview: overview_view_item,
             replay: replay_view_item,
             interrupts: interrupts_view_item,
+            raid: raid_view_item,
             character: character_view_item,
             damage: damage_view_item,
             healing: healing_view_item,
@@ -2356,6 +2388,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             timeline: timeline_view_item,
             debug: debug_view_item,
             raw: raw_view_item,
+            encounter_editor: encounter_editor_view_item,
         },
         history: HistoryMenu {
             back: history_back,
@@ -2522,7 +2555,10 @@ pub fn run() {
             maps::save_map,
             maps::read_image_bytes,
             maps::maps_dir_path,
-            maps::read_map_text
+            maps::read_map_text,
+            encounters::encounters_dir_path,
+            encounters::read_encounter_text,
+            encounters::save_encounter_text
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

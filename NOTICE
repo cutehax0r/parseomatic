@@ -4,20 +4,37 @@ Material Design Icons (https://pictogrammers.com/library/mdi/)
   The `sword` and `bow-arrow` glyph outlines used for role icons in the
   Overview players table (src/ui/widgets/role-icon.ts), and the
   `sword-cross` / `heart-plus` / `grave-stone` / `shoe-print` / `chart-timeline`
-  / `head-remove` (Nerd Fonts aliases `nf-md-grave_stone` / `nf-md-shoe_print` /
-  `nf-md-chart_timeline` / `nf-md-head_remove`) toolbar icons for the Damage /
-  Healing / Deaths / Movement / Timeline / Interrupts views (index.html), and
+  / `head-remove` / `timetable` (Nerd Fonts aliases `nf-md-grave_stone` /
+  `nf-md-shoe_print` / `nf-md-chart_timeline` / `nf-md-head_remove` /
+  `nf-md-timetable`) toolbar icons for the Damage / Healing / Deaths /
+  Movement / Timeline / Interrupts / Raid views (index.html), and
   the `filter-variant` glyph used for the Timeline view's per-lane ability
-  filter (src/ui/widgets/timeline-lanes.ts).
+  filter (src/ui/widgets/timeline-lanes.ts), and the `code-json` glyph
+  (Nerd Fonts alias `nf-md-code_json`) used for the Encounter Editor's
+  JSON-view toggle button (index.html).
   Copyright Pictogrammers contributors.
   Licensed under the Apache License, Version 2.0
   (https://www.apache.org/licenses/LICENSE-2.0).
 
 Octicons (https://primer.style/octicons/)
   The `plug` glyph outline (Nerd Fonts alias `nf-oct-plug`) used for the
-  toolbar's "open data folder" button (index.html).
+  toolbar's "open data folder" button (index.html), and the `git-branch`
+  glyph outline used for the Encounter Editor's "Tidy" button (index.html;
+  substituted for the requested `nf-dev-git_branch`, which has no
+  fetchable vector source -- Nerd Fonts patches it in from a font file,
+  not published SVG).
   Copyright GitHub, Inc.
   Licensed under the MIT License (https://opensource.org/licenses/MIT).
+
+Codicons (https://github.com/microsoft/vscode-codicons)
+  The `new-file`, `file`, and `save` glyph outlines (Nerd Fonts aliases
+  `nf-cod-new_file` / `nf-cod-file` / `nf-cod-save`) used for the Encounter
+  Editor's New / Open / Save toolbar buttons (index.html).
+  Copyright Microsoft Corporation.
+  Icon designs licensed under CC BY 4.0
+  (https://creativecommons.org/licenses/by/4.0/) -- the codicons font-build
+  tooling itself is separately MIT-licensed, but that license doesn't cover
+  the icon artwork.
 
 Font Awesome Free (https://fontawesome.com)
   The `bandage` glyph outline (Nerd Fonts alias `nf-fa-bandage`) used for

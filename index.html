@@ -264,6 +264,20 @@
             ></path>
           </svg>
         </button>
+        <button
+          id="view-raid-btn"
+          class="toolbar-btn"
+          data-view="raid"
+          title="Raid"
+          aria-pressed="false"
+        >
+          <!-- Material Design Icons `timetable` (nf-md-timetable, Apache-2.0, see NOTICE) -->
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path
+              d="M14,12H15.5V14.82L17.94,16.23L17.19,17.53L14,15.69V12M4,2H18A2,2 0 0 1 20,4V10.1C21.24,11.36 22,13.09 22,15A7,7 0 0 1 15,22C13.09,22 11.36,21.24 10.1,20H4A2,2 0 0 1 2,18V4A2,2 0 0 1 4,2M4,15V18H8.67C8.24,17.09 8,16.07 8,15H4M4,8H10V5H4V8M18,8V5H12V8H18M4,13H8.29C8.63,11.85 9.26,10.82 10.1,10H4V13M15,10.15A4.85,4.85 0 0 0 10.15,15C10.15,17.68 12.32,19.85 15,19.85A4.85,4.85 0 0 0 19.85,15C19.85,12.32 17.68,10.15 15,10.15Z"
+            ></path>
+          </svg>
+        </button>
       </div>
       <div class="toolbar-divider"></div>
       <div class="toolbar-group">
@@ -582,6 +596,74 @@
           </div>
         </div>
       </div>
+      <div id="encounter-editor-view" class="encounter-editor-view" hidden>
+        <div class="toolbar encounter-editor-toolbar">
+          <div class="toolbar-group">
+            <button id="encounter-editor-new-btn" class="toolbar-btn" type="button" title="New">
+              <!-- Codicons `new-file` (nf-cod-new_file, CC BY 4.0, see NOTICE) -->
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M5 14C4.448 14 4 13.552 4 13V3C4 2.448 4.448 2 5 2H8V4.5C8 5.328 8.672 6 9.5 6H12V6.025C12.344 6.056 12.677 6.121 13 6.213V5.414C13 5.016 12.842 4.635 12.561 4.353L9.647 1.439C9.366 1.158 8.984 1 8.586 1H5C3.895 1 3 1.895 3 3V13C3 14.105 3.895 15 5 15H7.261C7.008 14.693 6.791 14.357 6.607 14H5ZM9 2.207L11.793 5H9.5C9.224 5 9 4.776 9 4.5V2.207ZM11.5 7C9.015 7 7 9.015 7 11.5C7 13.985 9.015 16 11.5 16C13.985 16 16 13.985 16 11.5C16 9.015 13.985 7 11.5 7ZM14 12H12V14C12 14.276 11.776 14.5 11.5 14.5C11.224 14.5 11 14.276 11 14V12H9C8.724 12 8.5 11.776 8.5 11.5C8.5 11.224 8.724 11 9 11H11V9C11 8.724 11.224 8.5 11.5 8.5C11.776 8.5 12 8.724 12 9V11H14C14.276 11 14.5 11.224 14.5 11.5C14.5 11.776 14.276 12 14 12Z"
+                ></path>
+              </svg>
+            </button>
+            <button id="encounter-editor-open-btn" class="toolbar-btn" type="button" title="Open&hellip;">
+              <!-- Codicons `file` (nf-cod-file, CC BY 4.0, see NOTICE) -->
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M5 1C3.89543 1 3 1.89543 3 3V13C3 14.1046 3.89543 15 5 15H11C12.1046 15 13 14.1046 13 13V5.41421C13 5.01639 12.842 4.63486 12.5607 4.35355L9.64645 1.43934C9.36514 1.15804 8.98361 1 8.58579 1H5ZM4 3C4 2.44772 4.44772 2 5 2H8V4.5C8 5.32843 8.67157 6 9.5 6H12V13C12 13.5523 11.5523 14 11 14H5C4.44772 14 4 13.5523 4 13V3ZM11.7929 5H9.5C9.22386 5 9 4.77614 9 4.5V2.20711L11.7929 5Z"
+                ></path>
+              </svg>
+            </button>
+            <button id="encounter-editor-save-btn" class="toolbar-btn" type="button" title="Save">
+              <!-- Codicons `save` (nf-cod-save, CC BY 4.0, see NOTICE) -->
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M14.414 3.207L12.793 1.586C12.421 1.213 11.905 1 11.379 1H3C1.897 1 1 1.897 1 3V13C1 14.103 1.897 15 3 15H13C14.103 15 15 14.103 15 13V4.621C15 4.095 14.787 3.579 14.414 3.207ZM9 2V3.5C9 3.776 8.776 4 8.5 4H6.5C6.224 4 6 3.776 6 3.5V2H9ZM5 14V9.5C5 9.224 5.224 9 5.5 9H10.5C10.776 9 11 9.224 11 9.5V14H5ZM14 13C14 13.551 13.551 14 13 14H12V9.5C12 8.673 11.327 8 10.5 8H5.5C4.673 8 4 8.673 4 9.5V14H3C2.449 14 2 13.551 2 13V3C2 2.449 2.449 2 3 2H5V3.5C5 4.327 5.673 5 6.5 5H8.5C9.327 5 10 4.327 10 3.5V2H11.379C11.642 2 11.9 2.107 12.086 2.293L13.707 3.914C13.893 4.1 14 4.358 14 4.621V13Z"
+                ></path>
+              </svg>
+            </button>
+          </div>
+          <div class="toolbar-divider"></div>
+          <div class="toolbar-group">
+            <button id="encounter-editor-tidy-btn" class="toolbar-btn" type="button" title="Tidy">
+              <!-- Octicons `git-branch` (substituted for nf-dev-git_branch, which
+                   has no fetchable vector source -- MIT, see NOTICE) -->
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M15 4.75a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0ZM2.5 19.25a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0Zm0-14.5a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0ZM5.75 6.5a1.75 1.75 0 1 0-.001-3.501A1.75 1.75 0 0 0 5.75 6.5Zm0 14.5a1.75 1.75 0 1 0-.001-3.501A1.75 1.75 0 0 0 5.75 21Zm12.5-14.5a1.75 1.75 0 1 0-.001-3.501A1.75 1.75 0 0 0 18.25 6.5Z"
+                ></path>
+                <path d="M5.75 16.75A.75.75 0 0 1 5 16V8a.75.75 0 0 1 1.5 0v8a.75.75 0 0 1-.75.75Z"></path>
+                <path
+                  d="M17.5 8.75v-1H19v1a3.75 3.75 0 0 1-3.75 3.75h-7a1.75 1.75 0 0 0-1.75 1.75H5A3.25 3.25 0 0 1 8.25 11h7a2.25 2.25 0 0 0 2.25-2.25Z"
+                ></path>
+              </svg>
+            </button>
+          </div>
+          <div class="toolbar-divider"></div>
+          <div class="toolbar-group">
+            <button
+              id="encounter-editor-json-toggle-btn"
+              type="button"
+              class="toolbar-btn"
+              aria-pressed="false"
+              title="JSON"
+            >
+              <!-- Material Design Icons `code-json` (nf-md-code_json, Apache-2.0, see NOTICE) -->
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M5,3H7V5H5V10A2,2 0 0,1 3,12A2,2 0 0,1 5,14V19H7V21H5C3.93,20.73 3,20.1 3,19V15A2,2 0 0,0 1,13H0V11H1A2,2 0 0,0 3,9V5A2,2 0 0,1 5,3M19,3A2,2 0 0,1 21,5V9A2,2 0 0,0 23,11H24V13H23A2,2 0 0,0 21,15V19A2,2 0 0,1 19,21H17V19H19V14A2,2 0 0,1 21,12A2,2 0 0,1 19,10V5H17V3H19M12,15A1,1 0 0,1 13,16A1,1 0 0,1 12,17A1,1 0 0,1 11,16A1,1 0 0,1 12,15M8,15A1,1 0 0,1 9,16A1,1 0 0,1 8,17A1,1 0 0,1 7,16A1,1 0 0,1 8,15M16,15A1,1 0 0,1 17,16A1,1 0 0,1 16,17A1,1 0 0,1 15,16A1,1 0 0,1 16,15Z"
+                ></path>
+              </svg>
+            </button>
+          </div>
+          <span id="encounter-editor-status" class="encounter-editor-status"></span>
+        </div>
+        <div id="encounter-editor-graph" class="encounter-editor-graph">
+          <canvas id="encounter-editor-canvas"></canvas>
+        </div>
+        <pre id="encounter-editor-json" class="encounter-editor-json" hidden><code id="encounter-editor-json-code" class="language-json"></code></pre>
+      </div>
       <div id="raw-view" class="raw-view" hidden>
         <div class="raw-header">
           <span class="raw-col raw-col-time">Time</span>
@@ -613,6 +695,9 @@
         <p id="interrupts-hint" class="interrupts-hint" hidden>
           Pick an encounter or a range to list interrupts.
         </p>
+      </section>
+      <section id="raid-view" class="raid-view" hidden>
+        <div id="raid-mount"></div>
       </section>
       <section id="character-view" class="character-view" hidden>
         <div id="character-mount"></div>

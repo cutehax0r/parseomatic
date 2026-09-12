@@ -47,6 +47,8 @@ import { renderMovement } from "./views/movement";
 import { renderTimeline } from "./views/timeline";
 import { renderReplay } from "./views/replay";
 import { renderInterrupts } from "./views/interrupts";
+import { renderRaid } from "./views/raid";
+import { renderEncounterEditor } from "./views/encounter-editor";
 import { renderLaunch } from "./views/launch";
 import { renderEncounterGrid } from "./views/encounter-grid";
 
@@ -141,6 +143,7 @@ type ViewMode =
   | "overview"
   | "replay"
   | "interrupts"
+  | "raid"
   | "character"
   | "damage"
   | "healing"
@@ -149,7 +152,8 @@ type ViewMode =
   | "movement"
   | "timeline"
   | "debug"
-  | "raw";
+  | "raw"
+  | "encounter-editor";
 let currentViewMode: ViewMode = "encounters";
 
 const RAW_ROW_HEIGHT = 24;
@@ -1385,9 +1389,11 @@ async function refreshStatus() {
   const encountersGrid = document.querySelector<HTMLElement>("#encounters-grid");
   const debugView = document.querySelector<HTMLElement>("#debug-view");
   const rawView = document.querySelector<HTMLElement>("#raw-view");
+  const encounterEditorView = document.querySelector<HTMLElement>("#encounter-editor-view");
   const overviewView = document.querySelector<HTMLElement>("#overview-view");
   const replayView = document.querySelector<HTMLElement>("#replay-view");
   const interruptsView = document.querySelector<HTMLElement>("#interrupts-view");
+  const raidView = document.querySelector<HTMLElement>("#raid-view");
   const characterView = document.querySelector<HTMLElement>("#character-view");
   const damageView = document.querySelector<HTMLElement>("#damage-view");
   const healingView = document.querySelector<HTMLElement>("#healing-view");
@@ -1399,6 +1405,7 @@ async function refreshStatus() {
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
   const replayBtn = document.querySelector<HTMLButtonElement>("#view-replay-btn");
   const interruptsBtn = document.querySelector<HTMLButtonElement>("#view-interrupts-btn");
+  const raidBtn = document.querySelector<HTMLButtonElement>("#view-raid-btn");
   const characterBtn = document.querySelector<HTMLButtonElement>("#view-character-btn");
   const damageBtn = document.querySelector<HTMLButtonElement>("#view-damage-btn");
   const healingBtn = document.querySelector<HTMLButtonElement>("#view-healing-btn");
@@ -1418,9 +1425,11 @@ async function refreshStatus() {
     !encountersGrid ||
     !debugView ||
     !rawView ||
+    !encounterEditorView ||
     !overviewView ||
     !replayView ||
     !interruptsView ||
+    !raidView ||
     !characterView ||
     !damageView ||
     !healingView ||
@@ -1432,6 +1441,7 @@ async function refreshStatus() {
     !overviewBtn ||
     !replayBtn ||
     !interruptsBtn ||
+    !raidBtn ||
     !characterBtn ||
     !damageBtn ||
     !healingBtn ||
@@ -1456,6 +1466,7 @@ async function refreshStatus() {
       "overview",
       "replay",
       "interrupts",
+      "raid",
       "character",
       "damage",
       "healing",
@@ -1465,6 +1476,7 @@ async function refreshStatus() {
       "timeline",
       "raw",
       "debug",
+      "encounter-editor",
     ].includes(viewId)
       ? viewId
       : "encounters"
@@ -1491,6 +1503,7 @@ async function refreshStatus() {
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
   replayBtn.setAttribute("aria-pressed", String(currentViewMode === "replay"));
   interruptsBtn.setAttribute("aria-pressed", String(currentViewMode === "interrupts"));
+  raidBtn.setAttribute("aria-pressed", String(currentViewMode === "raid"));
   characterBtn.setAttribute("aria-pressed", String(currentViewMode === "character"));
   damageBtn.setAttribute("aria-pressed", String(currentViewMode === "damage"));
   healingBtn.setAttribute("aria-pressed", String(currentViewMode === "healing"));
@@ -1501,6 +1514,35 @@ async function refreshStatus() {
   refreshCharacterViewButtons();
   // "Duplicate window" needs a loaded log to copy from.
   if (newWindowBtn) newWindowBtn.disabled = !info || !info.done;
+
+  if (!info && viewId === "encounter-editor") {
+    // The Encounter Editor authors config files from scratch -- it has no
+    // dependency on a loaded log, so it's exempt from the "no log ->
+    // Encounters" bounce below.
+    currentViewMode = "encounter-editor";
+    statusEl.hidden = true;
+    statusBar.hidden = true;
+    encountersView.hidden = true;
+    content.classList.add("has-data");
+    debugView.hidden = true;
+    rawView.hidden = true;
+    overviewView.hidden = true;
+    replayView.hidden = true;
+    interruptsView.hidden = true;
+    raidView.hidden = true;
+    characterView.hidden = true;
+    damageView.hidden = true;
+    healingView.hidden = true;
+    damageTakenView.hidden = true;
+    deathsView.hidden = true;
+    movementView.hidden = true;
+    timelineView.hidden = true;
+    encounterEditorView.hidden = false;
+    setEncounterPickerVisible(false);
+    setPlayerPickerVisible(false);
+    renderEncounterEditor();
+    return;
+  }
 
   if (!info) {
     // No log: the Encounters view shows the open-a-file / recent-logs UI.
@@ -1635,6 +1677,7 @@ async function refreshStatus() {
   overviewView.hidden = currentViewMode !== "overview";
   replayView.hidden = currentViewMode !== "replay";
   interruptsView.hidden = currentViewMode !== "interrupts";
+  raidView.hidden = currentViewMode !== "raid";
   characterView.hidden = currentViewMode !== "character";
   damageView.hidden = currentViewMode !== "damage";
   healingView.hidden = currentViewMode !== "healing";
@@ -1642,6 +1685,7 @@ async function refreshStatus() {
   deathsView.hidden = currentViewMode !== "deaths";
   movementView.hidden = currentViewMode !== "movement";
   timelineView.hidden = currentViewMode !== "timeline";
+  encounterEditorView.hidden = currentViewMode !== "encounter-editor";
   // The "X lines — Y players" line is parser-sanity-check context for
   // Debug/Raw; on the everyday views it's just noise.
   statusEl.hidden = currentViewMode !== "debug" && currentViewMode !== "raw";
@@ -1653,6 +1697,8 @@ async function refreshStatus() {
     renderReplay();
   } else if (currentViewMode === "interrupts") {
     renderInterrupts();
+  } else if (currentViewMode === "raid") {
+    renderRaid();
   } else if (currentViewMode === "character") {
     renderCharacter();
   } else if (currentViewMode === "damage") {
@@ -1669,6 +1715,8 @@ async function refreshStatus() {
     renderTimeline();
   } else if (currentViewMode === "raw") {
     await loadRawView();
+  } else if (currentViewMode === "encounter-editor") {
+    renderEncounterEditor();
   } else {
     // The active tab's scroll container had clientHeight 0 while the
     // whole debug view was hidden (e.g. we were showing Raw) -- force a
@@ -1723,6 +1771,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.querySelector("#view-replay-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "replay" });
+  });
+  document.querySelector("#view-raid-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "raid" });
   });
   document.querySelector("#view-interrupts-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "interrupts" });
