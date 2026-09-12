@@ -17,14 +17,6 @@ import { findInfoNode, registerEncounterNodeTypes, resetGraphWithInfoNode } from
 
 hljs.registerLanguage("json", jsonLang);
 
-function slugify(text: string): string {
-  return text
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
 let currentPath: string | null = null;
 let wired = false;
 let showJson = false;
@@ -154,7 +146,7 @@ export function renderEncounterEditor(): void {
 
   const g = ensureGraph(canvasEl);
   if (!findInfoNode(g)) {
-    resetGraphWithInfoNode(g, { zone: 0, id: "", name: "", difficulty: "mythic" });
+    resetGraphWithInfoNode(g, { encounterId: 0, id: "", name: "", difficulty: "mythic", mapId: 0 });
     setStatus(status, "New encounter (unsaved)");
   }
   refreshJsonPreview(jsonCode, g, status);
@@ -179,7 +171,7 @@ export function renderEncounterEditor(): void {
 
   newBtn.addEventListener("click", () => {
     currentPath = null;
-    resetGraphWithInfoNode(g, { zone: 0, id: "", name: "", difficulty: "mythic" });
+    resetGraphWithInfoNode(g, { encounterId: 0, id: "", name: "", difficulty: "mythic", mapId: 0 });
     refreshJsonPreview(jsonCode, g, status);
     setStatus(status, "New encounter (unsaved)");
   });
@@ -234,12 +226,9 @@ export function renderEncounterEditor(): void {
       let path = currentPath;
       if (!path) {
         const dir = await encountersDir();
-        const zone = info.properties.zone;
-        const idSlug = slugify(info.properties.id);
+        const encounterId = info.properties.encounterId;
         const suggested =
-          dir && zone > 0 && idSlug
-            ? `${dir}/${zone}/${idSlug}.${info.properties.difficulty}.json`
-            : dir;
+          dir && encounterId > 0 ? `${dir}/${encounterId}.${info.properties.difficulty}.json` : dir;
         const picked = await save({
           defaultPath: suggested,
           filters: [{ name: "Encounter", extensions: ["json"] }],

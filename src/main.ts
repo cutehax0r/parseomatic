@@ -12,7 +12,6 @@ import type {
 } from "./types";
 import {
   classColorVar,
-  formatDuration,
   formatEncounterResult,
   formatSpec,
   formatUnitName,
@@ -47,7 +46,7 @@ import { renderMovement } from "./views/movement";
 import { renderTimeline } from "./views/timeline";
 import { renderReplay } from "./views/replay";
 import { renderInterrupts } from "./views/interrupts";
-import { renderRaid } from "./views/raid";
+import { renderKanban } from "./views/kanban";
 import { renderEncounterEditor } from "./views/encounter-editor";
 import { renderLaunch } from "./views/launch";
 import { renderEncounterGrid } from "./views/encounter-grid";
@@ -143,7 +142,7 @@ type ViewMode =
   | "overview"
   | "replay"
   | "interrupts"
-  | "raid"
+  | "kanban"
   | "character"
   | "damage"
   | "healing"
@@ -289,12 +288,14 @@ function renderDebugLists(lists: LogListsPayload): DebugCounts {
 
   renderTable(
     "encounters",
-    "1fr 100px 120px 120px",
+    "1fr 100px 100px 140px 140px 100px",
     lists.encounters.map((e) => [
       e.isTrash ? "Trash" : e.name,
       formatEncounterResult(e),
-      formatDuration(e.durationMs),
-      e.isTrash ? "" : String(e.groupSize),
+      String(e.encounterId),
+      new Date(e.startMs).toLocaleTimeString(),
+      new Date(e.endMs).toLocaleTimeString(),
+      String(e.difficultyId),
     ]),
     "No encounters found in this log.",
   );
@@ -1393,7 +1394,7 @@ async function refreshStatus() {
   const overviewView = document.querySelector<HTMLElement>("#overview-view");
   const replayView = document.querySelector<HTMLElement>("#replay-view");
   const interruptsView = document.querySelector<HTMLElement>("#interrupts-view");
-  const raidView = document.querySelector<HTMLElement>("#raid-view");
+  const kanbanView = document.querySelector<HTMLElement>("#kanban-view");
   const characterView = document.querySelector<HTMLElement>("#character-view");
   const damageView = document.querySelector<HTMLElement>("#damage-view");
   const healingView = document.querySelector<HTMLElement>("#healing-view");
@@ -1405,7 +1406,7 @@ async function refreshStatus() {
   const overviewBtn = document.querySelector<HTMLButtonElement>("#view-overview-btn");
   const replayBtn = document.querySelector<HTMLButtonElement>("#view-replay-btn");
   const interruptsBtn = document.querySelector<HTMLButtonElement>("#view-interrupts-btn");
-  const raidBtn = document.querySelector<HTMLButtonElement>("#view-raid-btn");
+  const kanbanBtn = document.querySelector<HTMLButtonElement>("#view-kanban-btn");
   const characterBtn = document.querySelector<HTMLButtonElement>("#view-character-btn");
   const damageBtn = document.querySelector<HTMLButtonElement>("#view-damage-btn");
   const healingBtn = document.querySelector<HTMLButtonElement>("#view-healing-btn");
@@ -1429,7 +1430,7 @@ async function refreshStatus() {
     !overviewView ||
     !replayView ||
     !interruptsView ||
-    !raidView ||
+    !kanbanView ||
     !characterView ||
     !damageView ||
     !healingView ||
@@ -1441,7 +1442,7 @@ async function refreshStatus() {
     !overviewBtn ||
     !replayBtn ||
     !interruptsBtn ||
-    !raidBtn ||
+    !kanbanBtn ||
     !characterBtn ||
     !damageBtn ||
     !healingBtn ||
@@ -1466,7 +1467,7 @@ async function refreshStatus() {
       "overview",
       "replay",
       "interrupts",
-      "raid",
+      "kanban",
       "character",
       "damage",
       "healing",
@@ -1503,7 +1504,7 @@ async function refreshStatus() {
   overviewBtn.setAttribute("aria-pressed", String(currentViewMode === "overview"));
   replayBtn.setAttribute("aria-pressed", String(currentViewMode === "replay"));
   interruptsBtn.setAttribute("aria-pressed", String(currentViewMode === "interrupts"));
-  raidBtn.setAttribute("aria-pressed", String(currentViewMode === "raid"));
+  kanbanBtn.setAttribute("aria-pressed", String(currentViewMode === "kanban"));
   characterBtn.setAttribute("aria-pressed", String(currentViewMode === "character"));
   damageBtn.setAttribute("aria-pressed", String(currentViewMode === "damage"));
   healingBtn.setAttribute("aria-pressed", String(currentViewMode === "healing"));
@@ -1529,7 +1530,7 @@ async function refreshStatus() {
     overviewView.hidden = true;
     replayView.hidden = true;
     interruptsView.hidden = true;
-    raidView.hidden = true;
+    kanbanView.hidden = true;
     characterView.hidden = true;
     damageView.hidden = true;
     healingView.hidden = true;
@@ -1677,7 +1678,7 @@ async function refreshStatus() {
   overviewView.hidden = currentViewMode !== "overview";
   replayView.hidden = currentViewMode !== "replay";
   interruptsView.hidden = currentViewMode !== "interrupts";
-  raidView.hidden = currentViewMode !== "raid";
+  kanbanView.hidden = currentViewMode !== "kanban";
   characterView.hidden = currentViewMode !== "character";
   damageView.hidden = currentViewMode !== "damage";
   healingView.hidden = currentViewMode !== "healing";
@@ -1697,8 +1698,8 @@ async function refreshStatus() {
     renderReplay();
   } else if (currentViewMode === "interrupts") {
     renderInterrupts();
-  } else if (currentViewMode === "raid") {
-    renderRaid();
+  } else if (currentViewMode === "kanban") {
+    renderKanban();
   } else if (currentViewMode === "character") {
     renderCharacter();
   } else if (currentViewMode === "damage") {
@@ -1772,8 +1773,8 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#view-replay-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "replay" });
   });
-  document.querySelector("#view-raid-btn")?.addEventListener("click", () => {
-    invoke("set_current_view", { view: "raid" });
+  document.querySelector("#view-kanban-btn")?.addEventListener("click", () => {
+    invoke("set_current_view", { view: "kanban" });
   });
   document.querySelector("#view-interrupts-btn")?.addEventListener("click", () => {
     invoke("set_current_view", { view: "interrupts" });

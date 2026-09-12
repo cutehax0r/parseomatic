@@ -76,7 +76,7 @@ enum ViewKind {
     Overview,
     Replay,
     Interrupts,
-    Raid,
+    Kanban,
     Character,
     Damage,
     Healing,
@@ -97,7 +97,7 @@ const ALL_VIEWS: [ViewKind; 15] = [
     ViewKind::Overview,
     ViewKind::Replay,
     ViewKind::Interrupts,
-    ViewKind::Raid,
+    ViewKind::Kanban,
     ViewKind::Character,
     ViewKind::Damage,
     ViewKind::Healing,
@@ -125,7 +125,7 @@ impl ViewKind {
             ViewKind::Overview => "overview",
             ViewKind::Replay => "replay",
             ViewKind::Interrupts => "interrupts",
-            ViewKind::Raid => "raid",
+            ViewKind::Kanban => "kanban",
             ViewKind::Character => "character",
             ViewKind::Damage => "damage",
             ViewKind::Healing => "healing",
@@ -145,7 +145,7 @@ impl ViewKind {
             ViewKind::Overview => "view_overview",
             ViewKind::Replay => "view_replay",
             ViewKind::Interrupts => "view_interrupts",
-            ViewKind::Raid => "view_raid",
+            ViewKind::Kanban => "view_kanban",
             ViewKind::Character => "view_character",
             ViewKind::Damage => "view_damage",
             ViewKind::Healing => "view_healing",
@@ -174,7 +174,7 @@ struct ViewMenu {
     overview: CheckMenuItem<tauri::Wry>,
     replay: CheckMenuItem<tauri::Wry>,
     interrupts: CheckMenuItem<tauri::Wry>,
-    raid: CheckMenuItem<tauri::Wry>,
+    kanban: CheckMenuItem<tauri::Wry>,
     character: CheckMenuItem<tauri::Wry>,
     damage: CheckMenuItem<tauri::Wry>,
     healing: CheckMenuItem<tauri::Wry>,
@@ -194,7 +194,7 @@ impl ViewMenu {
             ViewKind::Overview => &self.overview,
             ViewKind::Replay => &self.replay,
             ViewKind::Interrupts => &self.interrupts,
-            ViewKind::Raid => &self.raid,
+            ViewKind::Kanban => &self.kanban,
             ViewKind::Character => &self.character,
             ViewKind::Damage => &self.damage,
             ViewKind::Healing => &self.healing,
@@ -2185,10 +2185,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
-    let raid_view_item = CheckMenuItem::with_id(
+    let kanban_view_item = CheckMenuItem::with_id(
         app,
-        ViewKind::Raid.menu_id(),
-        "Raid",
+        ViewKind::Kanban.menu_id(),
+        "Kanban",
         true,
         false,
         None::<&str>,
@@ -2269,6 +2269,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let develop_menu = SubmenuBuilder::new(app, "Develop")
         .item(&debug_view_item)
         .item(&raw_view_item)
+        .separator()
         .item(&encounter_editor_view_item)
         .separator()
         .item(&new_map_item)
@@ -2286,14 +2287,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         MenuItem::with_id(app, "zoom_reset", "Actual Size", true, Some("CmdOrCtrl+0"))?;
 
     // Two groups, separator between: raid-wide views (Encounters /
-    // Overview / Interrupts / Replay / Raid) and per-character views
+    // Overview / Interrupts / Replay / Kanban) and per-character views
     // (Character ... Timeline), then the zoom controls.
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&encounters_view_item)
         .item(&overview_view_item)
         .item(&interrupts_view_item)
         .item(&replay_view_item)
-        .item(&raid_view_item)
+        .item(&kanban_view_item)
         .separator()
         .item(&character_view_item)
         .item(&damage_view_item)
@@ -2378,7 +2379,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
             overview: overview_view_item,
             replay: replay_view_item,
             interrupts: interrupts_view_item,
-            raid: raid_view_item,
+            kanban: kanban_view_item,
             character: character_view_item,
             damage: damage_view_item,
             healing: healing_view_item,
@@ -2558,7 +2559,8 @@ pub fn run() {
             maps::read_map_text,
             encounters::encounters_dir_path,
             encounters::read_encounter_text,
-            encounters::save_encounter_text
+            encounters::save_encounter_text,
+            encounters::find_encounter_config
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

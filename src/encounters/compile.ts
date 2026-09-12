@@ -129,10 +129,11 @@ export function graphToConfig(info: EncounterInfoNode): EncounterConfig {
       : [];
   return {
     schemaVersion: 1,
+    encounterId: info.properties.encounterId,
     id: info.properties.id.trim(),
     name: info.properties.name.trim(),
     difficulty: info.properties.difficulty,
-    zone: info.properties.zone,
+    mapId: info.properties.mapId,
     ...(Object.keys(ctx.triggers).length ? { triggers: ctx.triggers } : {}),
     phases,
     mechanics: {},
@@ -206,10 +207,11 @@ export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarni
 
   const info = addNode<EncounterInfoNode>(graph, "encounter/info");
   info.setValues({
-    zone: config.zone ?? 0,
+    encounterId: config.encounterId ?? 0,
     id: config.id,
     name: config.name,
     difficulty: config.difficulty,
+    mapId: config.mapId ?? 0,
   });
 
   if (config.phases.length) {

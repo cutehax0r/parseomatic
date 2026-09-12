@@ -25,7 +25,8 @@ import type {
   TimelineTone,
 } from "../ui/widgets/timeline-lanes";
 import type { TimelineInstantKind } from "../types";
-import { formatCompact, formatUnitName } from "../format";
+import { formatClockTime, formatCompact, formatUnitName } from "../format";
+import { evaluatePhases } from "../encounters/evaluate";
 
 function fmtDur(ms: number): string {
   const s = ms / 1000;
@@ -90,9 +91,79 @@ export function renderTimeline(): void {
   void paint();
 }
 
+/** The "# Phases" table -- independent of the player-gated lanes below it
+ *  (a phase breakdown is a property of the encounter, not of who's
+ *  selected), so it's driven straight off ctx.encounterConfig rather than
+ *  folded into the widget-panel spec. Event counts use `ctx.query`'s
+ *  count aggregate (src/ui/query.ts) over `[startMs+1, endMs]` -- the +1
+ *  excludes the boundary instant so an event exactly on a phase split
+ *  can't be double-counted by both phases. */
+async function paintPhases(seq: number): Promise<void> {
+  const el = document.querySelector<HTMLElement>("#timeline-phases");
+  if (!el || !ctx) return;
+
+  const resolved = ctx.encounterConfig;
+  const phases = resolved?.config.phases ?? [];
+  if (!resolved || phases.length === 0) {
+    el.hidden = true;
+    el.replaceChildren();
+    return;
+  }
+
+  const { startMs: combatStartMs, endMs: combatEndMs } = ctx.range;
+  const evaluated = evaluatePhases(resolved.config, combatStartMs, combatEndMs);
+  const counts = await Promise.all(
+    evaluated.map(async ({ range }) => {
+      if (!range) return null;
+      const rows = await ctx!.query<{ n: number }>({
+        startMs: range.startMs + 1,
+        endMs: range.endMs,
+        aggregate: [{ op: "count", as: "n" }],
+      });
+      return rows[0]?.n ?? 0;
+    }),
+  );
+  if (seq !== paintSeq) return;
+
+  el.hidden = false;
+  el.replaceChildren();
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Phases";
+  el.append(heading);
+
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  thead.innerHTML =
+    "<tr><th>Name</th><th>Start</th><th>End</th><th>Event count</th></tr>";
+  const tbody = document.createElement("tbody");
+  evaluated.forEach(({ phase, range }, i) => {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = phase.label || phase.id;
+    const start = document.createElement("td");
+    const end = document.createElement("td");
+    const count = document.createElement("td");
+    if (range) {
+      start.textContent = formatClockTime(range.startMs);
+      end.textContent = formatClockTime(range.endMs);
+      count.textContent = (counts[i] ?? 0).toLocaleString();
+    } else {
+      start.textContent = end.textContent = count.textContent = "—";
+      start.className = end.className = count.className = "unresolved";
+    }
+    tr.append(name, start, end, count);
+    tbody.append(tr);
+  });
+  table.append(thead, tbody);
+  el.append(table);
+}
+
 async function paint(): Promise<void> {
   if (!ctx || !built) return;
   const seq = ++paintSeq;
+
+  void paintPhases(seq);
 
   const hintEl = document.querySelector<HTMLElement>("#timeline-hint");
   const mount = document.querySelector<HTMLElement>("#timeline-mount");

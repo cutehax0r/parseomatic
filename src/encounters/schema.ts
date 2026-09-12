@@ -8,16 +8,39 @@
 
 export type Difficulty = "lfr" | "normal" | "heroic" | "mythic";
 
+/** `EncounterRow.difficultyId` (retail raid instance difficulty ids,
+ *  `src/format.ts`'s DIFFICULTY table) for each schema difficulty --
+ *  how a log encounter's numeric difficulty is matched to a config file. */
+export const DIFFICULTY_ID: Record<Difficulty, number> = {
+  normal: 14,
+  heroic: 15,
+  mythic: 16,
+  lfr: 17,
+};
+
+export function difficultyFromId(difficultyId: number): Difficulty | null {
+  const found = (Object.entries(DIFFICULTY_ID) as Array<[Difficulty, number]>).find(
+    ([, id]) => id === difficultyId,
+  );
+  return found?.[0] ?? null;
+}
+
 export interface EncounterConfig {
   schemaVersion: 1;
+  /** The real WoW encounter id (from the log's ENCOUNTER_START event).
+   *  Also *is* the file's name (`<encounterId>.<difficulty>.json` --
+   *  "Matching a log encounter" below) -- kept here too so the value
+   *  survives the file being opened from somewhere else (a copy, a
+   *  plugin's bundled encounters/), even though matching itself no longer
+   *  reads this field. Distinct from `id`, a human-chosen display slug.
+   *  0/omitted = unset. */
+  encounterId: number;
   id: string;
   name: string;
   difficulty: Difficulty;
   /** The map's numeric id -- matches a `<mapId>.map.json` file
-   *  (encounter-maps.md). Also mirrored in the file's directory
-   *  (encounter-config.md's "File location"), but stored here too so it
-   *  survives the file being opened from somewhere else. 0/omitted = unset. */
-  zone?: number;
+   *  (encounter-maps.md). 0/omitted = unset. */
+  mapId?: number;
   /** Named trigger definitions, referenced by `{ type: "ref", id }` from
    *  phases or other entries here. Only a trigger whose graph node feeds
    *  more than one consumer (e.g. one Time Math result used as both Phase

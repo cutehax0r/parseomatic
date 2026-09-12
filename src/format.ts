@@ -12,6 +12,15 @@ export function formatDuration(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+// "7:45:01.000" -- wall-clock time with milliseconds, matching what the
+// combat log itself timestamps events with. Absolute (not relative to an
+// encounter's start), so it's the right format wherever times from
+// *different* encounters/pulls might appear side by side (the Kanban and
+// Timeline phase tables).
+export function formatClockTime(ms: number): string {
+  return `${new Date(ms).toLocaleTimeString()}.${String(((ms % 1000) + 1000) % 1000).padStart(3, "0")}`;
+}
+
 // Time label whose precision follows the tick/bucket step it's labelling:
 // a sub-second axis reads "0.4s", a minutes axis "2:00", a long one
 // "1:05:00". `stepSec` is the spacing between adjacent labels.

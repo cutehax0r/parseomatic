@@ -2343,7 +2343,7 @@ body {
 .movement-view,
 .timeline-view,
 .interrupts-view,
-.raid-view {
+.kanban-view {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -2358,15 +2358,45 @@ body {
 .movement-view[hidden],
 .timeline-view[hidden],
 .interrupts-view[hidden],
-.raid-view[hidden] {
+.kanban-view[hidden] {
   display: none;
 }
 
-.raid-placeholder {
+.kanban-placeholder {
   margin: 48px auto 0;
   text-align: center;
   color: var(--text-muted);
   font-size: 14px;
+}
+
+/* Kanban's flat phase table (src/views/kanban.ts) -- same plain-grid
+   approach as `.timeline-phases`, just full width in its own view rather
+   than a strip above the lanes. */
+.kanban-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.kanban-table th,
+.kanban-table td {
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.kanban-table th {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background-color: var(--bg-elevated);
+  position: sticky;
+  top: 0;
+}
+
+.kanban-table td.unresolved {
+  color: var(--text-faint);
+  font-style: italic;
 }
 
 .damage-hint,
@@ -2390,6 +2420,56 @@ body {
 .timeline-hint[hidden],
 .interrupts-hint[hidden] {
   display: none;
+}
+
+/* Timeline's phase table (src/views/timeline.ts) -- the matched encounter
+   config's phases, with times/event counts computed by
+   src/encounters/evaluate.ts. A handful of rows at most, so a plain
+   static grid rather than the virtualized `.data-*` tables above. */
+.timeline-phases {
+  margin-bottom: 16px;
+}
+
+.timeline-phases[hidden] {
+  display: none;
+}
+
+.timeline-phases h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.timeline-phases table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.timeline-phases th,
+.timeline-phases td {
+  padding: 5px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-phases th {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background-color: var(--bg-elevated);
+}
+
+.timeline-phases td:not(:first-child),
+.timeline-phases th:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-phases td.unresolved {
+  color: var(--text-faint);
+  font-style: italic;
 }
 
 /* ===========================================================================

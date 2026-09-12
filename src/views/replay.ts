@@ -285,10 +285,41 @@ let ctx: ViewContext | null = null;
 let built: BuiltView | null = null;
 let paintSeq = 0;
 let devMapWired = false;
+// Once the dev "Pick Map"/"Clear Map" command is used, it wins for the
+// rest of the session -- auto-loading (below) would otherwise clobber a
+// deliberate manual override on the very next paint.
+let devMapOverride = false;
+// The map id `autoMapDoc` was resolved for (or 0), and the parsed doc
+// itself (or null -- unset id, or no map file for it). Cached across
+// paints so re-showing the same encounter doesn't re-read the file --
+// see `ensureAutoMapDoc`.
+let autoMapZone = -1;
+let autoMapDoc: unknown = null;
+
+/** Resolves `autoMapDoc` for `mapId`, fetching `<app data>/maps/<mapId>.map.json`
+ *  only when `mapId` differs from the last call (docs/encounter-config.md's
+ *  `mapId` field, `main.ts`'s "Raid" step 3). Doesn't apply it to the scene
+ *  itself -- `scene.update()` unconditionally clears any map on every
+ *  paint (see its own comment), so the caller must re-`setMap` after
+ *  every `update()`, not just when `mapId` changes. */
+async function ensureAutoMapDoc(mapId: number): Promise<void> {
+  if (mapId === autoMapZone) return;
+  autoMapZone = mapId;
+  autoMapDoc = null;
+  if (!mapId) return;
+  try {
+    const dir = await invoke<string>("maps_dir_path");
+    const text = await invoke<string>("read_map_text", { path: `${dir}/${mapId}.map.json` });
+    autoMapDoc = JSON.parse(text);
+  } catch {
+    autoMapDoc = null; // no map authored for this id yet -- default deck
+  }
+}
 
 // View > Developer > Pick Map / Clear Map -- swap the replay's generic
 // deck for an authored `.map.json` (a dev sanity check; not calibrated).
 async function onDevMap(pick: boolean): Promise<void> {
+  devMapOverride = true;
   const scene = built?.get("scene") as { setMap?(doc: unknown): void } | undefined;
   if (!scene?.setMap) return;
   if (!pick) {
@@ -366,6 +397,9 @@ async function paint(): Promise<void> {
   if (hintEl) hintEl.hidden = ready;
   if (mount) mount.hidden = !ready;
   if (!ready) return;
+
+  const autoMapId = ctx.encounterConfig?.config.mapId ?? 0;
+  if (!devMapOverride) void ensureAutoMapDoc(autoMapId); // may already be cached -- fire early either way
 
   const win: EncounterRow = e ?? {
     name: "Custom range",
@@ -546,4 +580,16 @@ async function paint(): Promise<void> {
     encounterId: win.encounterId,
     spells: ctx.spells,
   });
+
+  // `update()` above unconditionally clears any map on the scene (a new
+  // encounter should drop a stale dev override) -- so the auto-loaded map
+  // has to be reapplied after every `update()`, not just when it changes,
+  // or simply re-showing this view after switching away would silently
+  // fall back to the default deck.
+  if (!devMapOverride) {
+    await ensureAutoMapDoc(autoMapId);
+    if (seq !== paintSeq) return;
+    const scene = built.get("scene") as { setMap?(doc: unknown): void } | undefined;
+    scene?.setMap?.(autoMapDoc);
+  }
 }

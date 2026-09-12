@@ -15,6 +15,7 @@ import type {
   RangeSelection,
 } from "../types";
 import { query, invalidateQueryCache, type QuerySpec } from "./query";
+import { findEncounterConfig, type ResolvedEncounterConfig } from "../encounters/lookup";
 import { invalidateEncounterStatsCache } from "./encounter-stats";
 import { invalidateSpellBreakdownCache } from "./spell-breakdown";
 import { invalidateDeathDetailCache } from "./death-detail";
@@ -39,11 +40,52 @@ export function getRange(): RangeSelection {
 export function setRange(next: RangeSelection): void {
   currentRange = next;
   for (const fn of rangeSubs) fn(next);
+  void refreshEncounterConfig(next);
 }
 
 export function subscribeRange(fn: (r: RangeSelection) => void): () => void {
   rangeSubs.add(fn);
   return () => rangeSubs.delete(fn);
+}
+
+// ---- Matched encounter config ------------------------------------------
+//
+// Whenever the range selection picks a specific log encounter, look up
+// its config file (src/encounters/lookup.ts) so views (Timeline's phase
+// table, Replay's auto-loaded map) can use it without each re-deriving
+// the match themselves. `null` while nothing is selected, the encounter
+// has no match, or (briefly) while a lookup is in flight.
+
+let currentEncounterConfig: ResolvedEncounterConfig | null = null;
+const encounterConfigSubs = new Set<(c: ResolvedEncounterConfig | null) => void>();
+let encounterConfigSeq = 0;
+
+export function getEncounterConfig(): ResolvedEncounterConfig | null {
+  return currentEncounterConfig;
+}
+
+export function subscribeEncounterConfig(
+  fn: (c: ResolvedEncounterConfig | null) => void,
+): () => void {
+  encounterConfigSubs.add(fn);
+  return () => encounterConfigSubs.delete(fn);
+}
+
+function setEncounterConfig(next: ResolvedEncounterConfig | null): void {
+  currentEncounterConfig = next;
+  for (const fn of encounterConfigSubs) fn(next);
+}
+
+async function refreshEncounterConfig(range: RangeSelection): Promise<void> {
+  const seq = ++encounterConfigSeq;
+  const e = range.source.kind === "encounter" ? currentLogData.encounters[range.source.index] : undefined;
+  if (!e) {
+    setEncounterConfig(null);
+    return;
+  }
+  const found = await findEncounterConfig(e.encounterId, e.difficultyId);
+  if (seq !== encounterConfigSeq) return; // a newer selection landed first
+  setEncounterConfig(found);
 }
 
 // ---- Selected player -------------------------------------------------
@@ -98,6 +140,7 @@ export function setLogData(next: LogData): void {
   invalidateInterruptsCache();
   invalidateReplaySeriesCache();
   setSelectedPlayer(null); // a new log's roster is different -- drop the pick
+  setEncounterConfig(null); // stale until the next setRange re-resolves it
   for (const fn of logDataSubs) fn(next);
 }
 
@@ -117,6 +160,7 @@ export interface ViewContext {
   readonly players: UnitRow[]; // units where kind === "Player"
   readonly combatants: CombatantRow[]; // COMBATANT_INFO spec/gear; often empty
   readonly selectedPlayer: number | null; // picker's current player (unit intern id)
+  readonly encounterConfig: ResolvedEncounterConfig | null; // the selected encounter's matched config file, if any
 
   query<T>(spec: QuerySpec): Promise<T[]>;
   // Batches redraw callbacks into one requestAnimationFrame per window.
@@ -155,6 +199,9 @@ export function createViewContext(): ViewContext {
     get selectedPlayer() {
       return currentPlayerUnitId;
     },
+    get encounterConfig() {
+      return currentEncounterConfig;
+    },
     query,
     requestFrame(cb) {
       frameCbs.push(cb);
@@ -178,12 +225,14 @@ export function createViewContext(): ViewContext {
   const offRange = subscribeRange(notify);
   const offLog = subscribeLogData(notify);
   const offPlayer = subscribeSelectedPlayer(notify);
+  const offEncounterConfig = subscribeEncounterConfig(notify);
 
   // Not currently torn down -- one ViewContext lives for the window's
   // lifetime. Kept so a future multi-window/teardown path has the hook.
   void offRange;
   void offLog;
   void offPlayer;
+  void offEncounterConfig;
 
   return ctx;
 }

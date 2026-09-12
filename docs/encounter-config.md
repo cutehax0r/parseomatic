@@ -13,31 +13,66 @@ TypeScript types mirroring this schema: `src/encounters/schema.ts`.
 
 ## File location
 
-`<app data dir>/encounters/<zone>/<encounter-slug>.<difficulty>.json`,
-where `<zone>` is the numeric map id — the same id a `<mapId>.map.json`
-file is named after (`encounter-maps.md`), not a directory slug. E.g.
-`encounters/2606/twin-fangs.mythic.json` alongside `maps/**/2606.map.json`.
-Also scanned under `plugins/*/encounters/**` the same way `plugins/*/maps/**`
-works (`plugins.md`) — a plugin can ship encounter configs alongside its
-maps and widget code.
+`<app data dir>/encounters/<encounterId>.<difficulty>.json` — flat, no
+zone/name subfolder. E.g. `encounters/2549.mythic.json`. The filename
+*is* the lookup key (see "Matching a log encounter" below): with a
+couple thousand encounters in the game and ~50 more a year, a flat,
+directly-addressable path is an O(1) file read instead of an O(n) scan
+over every config ever authored. Also read from `plugins/*/encounters/`
+the same way `plugins/*/maps/` works (`plugins.md`) — a plugin can ship
+encounter configs alongside its maps and widget code; not yet wired up
+(see below).
 
 ## File identity
 
-One file per difficulty — `twin-fangs.heroic.json`, `twin-fangs.mythic.json`
-— rather than one file with a `difficultyOverrides` block. Simpler to
-reason about and edit; the cost (duplicating phase structure across
-difficulties) is accepted since difficulties often add or remove whole
-mechanics, not just retune numbers.
+One file per difficulty — `2549.heroic.json`, `2549.mythic.json` — rather
+than one file with a `difficultyOverrides` block. Simpler to reason about
+and edit; the cost (duplicating phase structure across difficulties) is
+accepted since difficulties often add or remove whole mechanics, not just
+retune numbers.
+
+## Matching a log encounter
+
+Picking an encounter from the log's own encounter list (main.ts) reads
+`<app data dir>/encounters/<encounterId>.<difficulty>.json` directly —
+`encounterId` is the log's real WoW encounter id (from ENCOUNTER_START),
+`difficulty` is mapped from the log's numeric `difficultyId` via
+`DIFFICULTY_ID` in `src/encounters/schema.ts`. The filename is the only
+thing consulted — the backend (`find_encounter_config`,
+`src-tauri/src/encounters.rs`) does one `read_to_string` at the computed
+path, not a directory walk, and doesn't re-check the file's own
+`encounterId`/`difficulty` fields against it. That's a deliberate
+trade-off against the old content-scanned design: a file that's been
+renamed or copied without updating its name will silently stop matching
+(or start matching the wrong encounter) — the `encounterId` field inside
+the file is kept for authoring/provenance only, not as a fallback.
+
+No match (unrecognized encounter, unrecognized difficulty, or nothing
+authored yet) just means every consumer below falls back to its default:
+
+- **Replay's map**: `mapId` (below) picks `maps/<mapId>.map.json` for the
+  playback backdrop instead of the generic deck (`src/views/replay.ts`).
+- **Timeline's phase table**: `phases` renders as a Name/Start/End/Event
+  count table, with each phase's bounds resolved against the selected
+  encounter's actual start/end (`src/encounters/evaluate.ts`,
+  `src/views/timeline.ts`). Only phases whose triggers are `combatStart`
+  / `combatEnd` / `offset` / `ref` resolve today — anything log-event-based
+  (`castStart`, `auraApplied`, ...) has no detector yet and shows as
+  unresolved (—), not a wrong number.
+
+Plugin-shipped configs (`plugins/*/encounters/`, mentioned above) aren't
+read by `find_encounter_config` yet — only `<app data dir>/encounters/`.
 
 ## Shape
 
 ```jsonc
 {
   "schemaVersion": 1,
+  "encounterId": 2549,
   "id": "twin-fangs",
   "name": "Twin Fangs",
   "difficulty": "mythic",
-  "zone": 2606,
+  "mapId": 2606,
 
   "phases": [
     { "id": "phase1", "label": "Phase 1", "kind": "phase",
@@ -204,8 +239,11 @@ opening the same file always re-lays-out from scratch. The editor's
 rewiring things by hand.
 
 **Value contracts** for what a connection resolves to once evaluated
-against a real log live in `src/encounters/runtime.ts` (no evaluator
-exists yet — this only pins down the types it will produce):
+against a real log live in `src/encounters/runtime.ts`. The evaluator
+itself (`src/encounters/evaluate.ts`) only walks the compiled JSON's
+`combatStart`/`combatEnd`/`offset`/`ref` triggers today (see "Matching a
+log encounter" above) — the graph node types below all compile down to
+those, so anything buildable in the editor already evaluates:
 
 | slot type | resolves to |
 |---|---|
@@ -214,11 +252,12 @@ exists yet — this only pins down the types it will produce):
 | `phase` | `TimeRange` — `{ startMs, endMs }`. Node identity (id/label/kind) stays on the Phase node itself, not in this value |
 | `phases` | `PhaseTimeline` — `TimeRange[]`, in slot order. Exactly what a playback scrollbar, timeline, or kanban view needs |
 
-- **`encounter/info`** (`info.ts`) — the encounter's identity: zone (a
-  numeric map id — matches a `<mapId>.map.json` file, also stored in the
-  JSON as `zone`), id, name, difficulty, and a `phases` input that takes a
-  Phase List's output — this is what attaches the phase graph to the
-  encounter. One per graph.
+- **`encounter/info`** (`info.ts`) — the encounter's identity: encounter id
+  (the log's real WoW encounter id, stored as `encounterId` — together
+  with difficulty, this *is* the file's name), display name, difficulty,
+  map id (stored as `mapId` — matches a `<mapId>.map.json` file), and a
+  `phases` input that takes a Phase List's output — this is what attaches
+  the phase graph to the encounter. One per graph.
 - **`encounter/trigger-start`** / **`encounter/trigger-end`** (`trigger.ts`)
   — fixed-value carriers for `{ type: "combatStart" }` /
   `{ type: "combatEnd" }`. A `moment`-typed output that plugs into a Phase
@@ -262,7 +301,7 @@ encounter with a computed enrage boundary, end to end. Next: mechanics.
   duplicate file; revisit if that proves painful in practice (tier with
   4 difficulties, mostly-numeric deltas).
 - `EncounterAnalysis` output shape (how instances + analyzer results reach
-  the Raid view) isn't designed yet — this doc only covers the config
+  the Kanban view) isn't designed yet — this doc only covers the config
   input, not the runtime engine or its frontend payload.
 - Where the standard mechanic-kind library's code lives (in-repo vs a
   separate package importable from `custom` modules) — undecided.

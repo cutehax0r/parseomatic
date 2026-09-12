@@ -9,24 +9,31 @@ import type { Difficulty } from "../schema";
 export const DIFFICULTIES: Difficulty[] = ["lfr", "normal", "heroic", "mythic"];
 
 export interface EncounterInfoValues {
-  /** The map's numeric id -- matches `<mapId>.map.json` (encounter-maps.md),
-   *  not a directory slug. 0 means unset. */
-  zone: number;
+  /** The real WoW encounter id (from the log's ENCOUNTER_START event) --
+   *  together with `difficulty`, this *is* the file's name
+   *  (`<encounterId>.<difficulty>.json`, docs/encounter-config.md
+   *  "Matching a log encounter"). Distinct from `id` below, a
+   *  human-chosen display slug. 0 means unset. */
+  encounterId: number;
   id: string;
   name: string;
   difficulty: Difficulty;
+  /** The map's numeric id -- matches `<mapId>.map.json` (encounter-maps.md).
+   *  0 means unset. */
+  mapId: number;
   [key: string]: NodeProperty | undefined;
 }
 
-const ZONE = 0;
+const ENCOUNTER_ID = 0;
 const ID = 1;
 const NAME = 2;
 const DIFFICULTY = 3;
+const MAP_ID = 4;
 
-/** The encounter's identity -- zone (a map id, not part of the JSON
- *  schema), id, display name, and difficulty. One instance per graph; New /
- *  Open create it, Save reads it back (docs/encounter-config.md's file
- *  location convention). */
+/** The encounter's identity -- encounter id, display name, difficulty
+ *  (together, its filename), and the map id its playback backdrop should
+ *  use. One instance per graph; New / Open create it, Save reads it back
+ *  (docs/encounter-config.md's file location convention). */
 export class EncounterInfoNode extends LGraphNode {
   static override title = "Encounter Info";
 
@@ -34,14 +41,14 @@ export class EncounterInfoNode extends LGraphNode {
 
   constructor() {
     super("Encounter Info");
-    this.properties = { zone: 0, id: "", name: "", difficulty: "mythic" };
+    this.properties = { encounterId: 0, id: "", name: "", difficulty: "mythic", mapId: 0 };
     this.addInput("phases", "phases");
     this.addWidget(
       "number",
-      "Zone",
+      "Encounter ID",
       0,
       (v: number) => {
-        this.properties.zone = Math.trunc(v);
+        this.properties.encounterId = Math.trunc(v);
       },
       { min: 0, precision: 0, step2: 1 },
     );
@@ -60,16 +67,26 @@ export class EncounterInfoNode extends LGraphNode {
       },
       { values: DIFFICULTIES },
     );
-    this.size = [220, 150];
+    this.addWidget(
+      "number",
+      "Map",
+      0,
+      (v: number) => {
+        this.properties.mapId = Math.trunc(v);
+      },
+      { min: 0, precision: 0, step2: 1 },
+    );
+    this.size = [220, 170];
   }
 
   setValues(values: EncounterInfoValues): void {
     this.properties = { ...values };
     const widgets = this.widgets ?? [];
-    if (widgets[ZONE]) widgets[ZONE].value = values.zone;
+    if (widgets[ENCOUNTER_ID]) widgets[ENCOUNTER_ID].value = values.encounterId;
     if (widgets[ID]) widgets[ID].value = values.id;
     if (widgets[NAME]) widgets[NAME].value = values.name;
     if (widgets[DIFFICULTY]) widgets[DIFFICULTY].value = values.difficulty;
+    if (widgets[MAP_ID]) widgets[MAP_ID].value = values.mapId;
   }
 }
 

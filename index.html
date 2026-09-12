@@ -265,10 +265,10 @@
           </svg>
         </button>
         <button
-          id="view-raid-btn"
+          id="view-kanban-btn"
           class="toolbar-btn"
-          data-view="raid"
-          title="Raid"
+          data-view="kanban"
+          title="Kanban"
           aria-pressed="false"
         >
           <!-- Material Design Icons `timetable` (nf-md-timetable, Apache-2.0, see NOTICE) -->
@@ -559,8 +559,10 @@
             <div id="encounters-header" class="data-header">
               <span class="data-col">Name</span>
               <span class="data-col">Result</span>
-              <span class="data-col">Duration</span>
-              <span class="data-col">Group Size</span>
+              <span class="data-col">Encounter ID</span>
+              <span class="data-col">Start Time</span>
+              <span class="data-col">End Time</span>
+              <span class="data-col">Difficulty ID</span>
             </div>
             <p id="encounters-empty" class="empty-message" hidden></p>
             <div id="encounters-scroll" class="data-scroll">
@@ -696,8 +698,8 @@
           Pick an encounter or a range to list interrupts.
         </p>
       </section>
-      <section id="raid-view" class="raid-view" hidden>
-        <div id="raid-mount"></div>
+      <section id="kanban-view" class="kanban-view" hidden>
+        <div id="kanban-mount"></div>
       </section>
       <section id="character-view" class="character-view" hidden>
         <div id="character-mount"></div>
@@ -734,6 +736,7 @@
         </p>
       </section>
       <section id="timeline-view" class="timeline-view" hidden>
+        <div id="timeline-phases" class="timeline-phases" hidden></div>
         <div id="timeline-mount"></div>
         <p id="timeline-hint" class="timeline-hint" hidden>
           Select a player from the toolbar to see their timeline.

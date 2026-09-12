@@ -7,7 +7,7 @@ Material Design Icons (https://pictogrammers.com/library/mdi/)
   / `head-remove` / `timetable` (Nerd Fonts aliases `nf-md-grave_stone` /
   `nf-md-shoe_print` / `nf-md-chart_timeline` / `nf-md-head_remove` /
   `nf-md-timetable`) toolbar icons for the Damage / Healing / Deaths /
-  Movement / Timeline / Interrupts / Raid views (index.html), and
+  Movement / Timeline / Interrupts / Kanban views (index.html), and
   the `filter-variant` glyph used for the Timeline view's per-lane ability
   filter (src/ui/widgets/timeline-lanes.ts), and the `code-json` glyph
   (Nerd Fonts alias `nf-md-code_json`) used for the Encounter Editor's

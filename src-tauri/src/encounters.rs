@@ -32,8 +32,8 @@ pub fn read_encounter_text(path: String) -> Result<String, String> {
 }
 
 /// Write encounter config JSON to an exact path (chosen by the frontend's
-/// save dialog). Creates the destination's parent directory (the zone
-/// subfolder) if it doesn't exist yet.
+/// save dialog). Creates the destination's parent directory if it doesn't
+/// exist yet.
 #[tauri::command]
 pub fn save_encounter_text(path: String, json: String) -> Result<(), String> {
     let path = std::path::Path::new(&path);
@@ -41,4 +41,37 @@ pub fn save_encounter_text(path: String, json: String) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundEncounterConfig {
+    path: String,
+    json: String,
+}
+
+/// Direct `<app data>/encounters/<encounter_id>.<difficulty>.json` lookup
+/// for a selected log encounter (`main.ts`'s encounter picker, via
+/// `difficultyFromId` -- `src/encounters/schema.ts`) -- one filesystem
+/// stat/read, not a directory scan. The filename *is* the identity now
+/// (contrast `zone`/`mapId`, still read from the file's content since a
+/// misnamed-but-loadable map file is far less likely and less costly than
+/// re-scanning thousands of encounter files every time a raid picks a
+/// boss pull). Returns `None` if the file doesn't exist.
+#[tauri::command]
+pub fn find_encounter_config(
+    app: AppHandle,
+    encounter_id: u32,
+    difficulty: String,
+) -> Result<Option<FoundEncounterConfig>, String> {
+    let path = encounters_dir(&app)?.join(format!("{encounter_id}.{difficulty}.json"));
+    let json = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    Ok(Some(FoundEncounterConfig {
+        path: path.to_string_lossy().into_owned(),
+        json,
+    }))
 }
