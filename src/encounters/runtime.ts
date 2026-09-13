@@ -1,8 +1,8 @@
 // Value contracts for what the encounter graph's nodes resolve to once
-// evaluated against a real log. Distinct from schema.ts, which is the
-// JSON document shape -- these are runtime values, produced by walking
-// the graph (docs/encounter-config.md "Graph node types"). No evaluator
-// exists yet; this only pins down the types it will produce/consume.
+// evaluated against a real log (src/encounters/evaluate.ts). Distinct
+// from schema.ts, which is the JSON document shape -- these are runtime
+// values, produced by walking the graph (docs/encounter-config.md "Graph
+// node types").
 
 /** A single instant, milliseconds since ENCOUNTER_START. Carried by
  *  "moment"-typed graph connections -- a Trigger node's output, a Time
@@ -16,6 +16,15 @@ export type ResolvedMoment = number;
  *  turns out to be an interval (interval +/- interval, or moment -
  *  moment). */
 export type ResolvedInterval = number;
+
+/** A plain float. Carried by "number"-typed graph connections -- a Unit
+ *  Health / Number / Number Math node's output, and a Threshold node's
+ *  `value`/`threshold` inputs. Unlike `ResolvedMoment`/`ResolvedInterval`,
+ *  a "number" value generally *changes* over the encounter (a unit's
+ *  health, for instance) -- resolving a Threshold trigger means scanning
+ *  for the first instant this crosses another one, not evaluating it
+ *  once (see src/encounters/evaluate.ts). */
+export type ResolvedNumber = number;
 
 /** What a Phase node resolves to: its time bounds, derived from its
  *  start/end moment inputs. Carried by "phase"-typed graph connections.

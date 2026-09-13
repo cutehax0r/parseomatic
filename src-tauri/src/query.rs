@@ -55,7 +55,10 @@ impl QuerySpec {
 /// kind (`"Player"` for players and player-owned pets, `"Creature"` for
 /// bosses/adds) -- the player-side vs enemy-side split. `SpellId` is the
 /// intern-table index, not the WoW spell id (frontend maps via the
-/// index-aligned `log_lists`).
+/// index-aligned `log_lists`). `PosUnit` is the unit the row's advanced
+/// block (position + health, `EventStore::pos_unit`) describes -- filter
+/// on it to pull one unit's HP time series (the encounter-config "health
+/// threshold" trigger, `src/encounters/evaluate.ts`).
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum Field {
@@ -69,6 +72,7 @@ pub enum Field {
     HitType,
     Amount,
     Crit,
+    PosUnit,
 }
 
 impl Field {
@@ -82,6 +86,7 @@ impl Field {
             Field::TargetUnit => "targetUnit",
             Field::SpellId => "spellId",
             Field::HitType => "hitType",
+            Field::PosUnit => "posUnit",
             Field::Amount => "amount",
             Field::Crit => "crit",
         }
@@ -209,6 +214,7 @@ fn row_value(field: Field, row: usize, events: &EventStore, tables: &InternTable
         ),
         Field::Amount => Val::Int(events.amount[row]),
         Field::Crit => Val::Int((events.flags[row] & FLAG_CRIT != 0) as i64),
+        Field::PosUnit => Val::Int(unit_id(events.pos_unit[row])),
     }
 }
 

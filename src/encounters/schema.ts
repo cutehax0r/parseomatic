@@ -51,6 +51,12 @@ export interface EncounterConfig {
   triggers?: Record<string, Trigger>;
   phases: PhaseDef[];
   mechanics: Record<string, MechanicDef>;
+  /** Free-text author notes -- Comment nodes in the graph
+   *  (`src/encounters/nodes/comment.ts`), unconnected to anything and
+   *  with no effect on evaluation. Collected from every Comment node in
+   *  the graph regardless of position; order isn't meaningful. Omitted
+   *  when there are none. */
+  comments?: string[];
 }
 
 export type PhaseKind = "phase" | "intermission" | "enrage";
@@ -60,9 +66,15 @@ export interface PhaseDef {
   label: string;
   kind: PhaseKind;
   start: Trigger;
-  /** Usually omitted -- a phase normally ends where the next one starts.
-   *  Only needed for the last phase of an encounter (end = ENCOUNTER_END)
-   *  or another case with no following phase to imply it. */
+  /** Usually omitted -- a phase normally ends where the next resolvable
+   *  phase starts (src/encounters/evaluate.ts scans forward through
+   *  `phases` for the first one whose `start` actually resolves, not
+   *  just the very next array entry -- so mutually-exclusive named
+   *  phases, e.g. a council fight's "King" / "Queen" / "Prince" phases
+   *  where only one ever fires, don't need `phases` to be in strict
+   *  chronological order). Only needed for the last resolvable phase of
+   *  an encounter (end = ENCOUNTER_END) or another case with nothing
+   *  after it to imply an end. */
   end?: Trigger;
   /** Mechanic ids (keys into EncounterConfig.mechanics) active in this phase. */
   mechanics: string[];
@@ -88,14 +100,29 @@ export type MechanicKind =
 export type Trigger =
   | { type: "combatStart" }
   | { type: "combatEnd" }
-  | { type: "castStart"; spellId: number; sourceNpcId?: number }
-  | { type: "castEnd"; spellId: number; sourceNpcId?: number }
+  /** Fires on the first SPELL_CAST_START / SPELL_CAST_SUCCESS matching
+   *  any id in `spellIds`, optionally restricted to a caster in
+   *  `sourceNpcIds` (omitted/empty = any source). Both take more than one
+   *  entry so one trigger covers "any of these bosses casts any of these
+   *  spells" (a council fight's phase-change condition) as well as the
+   *  single-spell/single-caster case (a one-element list). */
+  | { type: "castStart"; spellIds: number[]; sourceNpcIds?: number[] }
+  | { type: "castSuccess"; spellIds: number[]; sourceNpcIds?: number[] }
   | { type: "auraApplied"; spellId: number }
   | { type: "auraRemoved"; spellId: number }
   | { type: "stackCount"; spellId: number; atLeast: number }
   | { type: "unitSpawn"; npcIds: number[] }
   | { type: "unitDied"; npcIds: number[] }
-  | { type: "healthPct"; npcId: number; atOrBelow: number }
+  /** Fires at the first point where `value op threshold` holds, scanning
+   *  the real log for whatever `NumberExpr`s `value`/`threshold` actually
+   *  reference (e.g. a unit's health%, or a fixed number) -- see
+   *  `NumberExpr` below and src/encounters/evaluate.ts. Supersedes the
+   *  narrower single-purpose `healthPct` this replaced: `threshold` with
+   *  a `unitHealthCurrent`/`unitHealthMax` ratio on one side and a
+   *  `numberValue` on the other covers that case, plus unit-vs-unit
+   *  comparisons ("boss A drops 10% under boss B") a fixed-field trigger
+   *  couldn't. */
+  | { type: "threshold"; value: NumberExpr; op: "above" | "below" | "equal"; threshold: NumberExpr }
   | { type: "timer"; since: string; seconds: number }
   /** A Time Math node's result (src/encounters/nodes/time-math.ts): `from`
    *  offset by `seconds`. Inlines the base trigger directly rather than
@@ -108,6 +135,31 @@ export type Trigger =
    *  feeding more than one consumer) is represented everywhere but its
    *  one definition. */
   | { type: "ref"; id: string };
+
+/** A plain numeric expression -- the "number" slot type's JSON shape,
+ *  parallel to `Trigger`'s "moment" one. Only ever appears nested inside
+ *  a `threshold` Trigger today (`value`/`threshold`), not standalone or
+ *  shareable via `EncounterConfig.triggers` (that dictionary is keyed for
+ *  `Trigger`s only) -- a reused number expression is simply inlined
+ *  twice, accepted since sharing one is expected to be rare. */
+export type NumberExpr =
+  | { type: "numberValue"; value: number }
+  /** The current/max health of the unit matching `npcId` (the *last*
+   *  known value as of a given evaluation instant -- see
+   *  src/encounters/evaluate.ts). Two separate node types produce these
+   *  (`encounter/unit-health-current` / `-max`) rather than one node with
+   *  two outputs, matching Encounter Start/End's precedent. */
+  | { type: "unitHealthCurrent"; npcId: number }
+  | { type: "unitHealthMax"; npcId: number }
+  /** A running count of UNIT_DIED events for a unit matching one of
+   *  `npcIds` -- omitted/empty means any unit's death counts (e.g. "this
+   *  many players have died"). Paired with a `threshold` trigger's
+   *  `equal` op for "N adds have died" / "N players have died" -- there's
+   *  no equivalent *spawn* counter yet (`unitSpawn` above has no
+   *  evaluator case: WoW's combat log has no reliable universal "this
+   *  unit just appeared" event to detect it from). */
+  | { type: "unitDeathCount"; npcIds?: number[] }
+  | { type: "numberMath"; a: NumberExpr; op: "+" | "-" | "*" | "/"; b: NumberExpr };
 
 // Kind-specific `params` shapes -- not yet enforced in MechanicDef.params
 // (kept as Record<string, unknown> until a loader validates by `kind`).

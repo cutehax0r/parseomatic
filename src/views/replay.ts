@@ -33,6 +33,7 @@ import {
   formatSpec,
   roleRank,
 } from "../format";
+import { npcIdOf } from "../wow-guid";
 
 // roleRank (tank 0, healer 1, melee 2, ranged 3, unknown 4) -> the
 // replay's bottom-to-top stack order: tank, melee, ranged, healer.
@@ -152,14 +153,6 @@ function enemyNameColors(enemies: ReplayUnit[], units: UnitRow[]): Map<number, s
 // and tail) logs as `Vehicle`, so it has to size + colour + shape like
 // any other enemy, not fall through to the grey player-cube branch.
 const ENEMY_KINDS = new Set(["Creature", "Vehicle"]);
-
-// `Creature-0-<server>-<inst>-<zone>-<npcId>-<spawn>` -- the npcId is the
-// stable identity across a unit's spawns. Same shape for `Vehicle-`.
-// `null` for players / anything without the 6-dash creature form.
-function npcIdOf(guid: string): string | null {
-  const m = /^(?:Creature|Vehicle)-\d+-\d+-\d+-\d+-(\d+)-/.exec(guid);
-  return m ? m[1] : null;
-}
 
 // A phased / council boss re-spawns a fresh GUID (sometimes a fresh
 // npcId) each stage, and `replay.rs` hands each back as its own unit --

@@ -44,7 +44,13 @@ async function paint(): Promise<void> {
     const found = await findEncounterConfig(encounter.encounterId, encounter.difficultyId);
     if (seq !== paintSeq) return; // a newer log/paint landed while this was in flight
     if (!found || found.config.phases.length === 0) continue;
-    for (const { phase, range } of evaluatePhases(found.config, encounter.startMs, encounter.endMs)) {
+    const evaluated = await evaluatePhases(found.config, encounter.startMs, encounter.endMs, {
+      query: ctx.query,
+      spells: ctx.spells,
+      units: ctx.units,
+    });
+    if (seq !== paintSeq) return;
+    for (const { phase, range } of evaluated) {
       rows.push({ encounter, phase, startMs: range?.startMs ?? null, endMs: range?.endMs ?? null });
     }
   }

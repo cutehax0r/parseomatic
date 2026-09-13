@@ -270,6 +270,19 @@ pub struct EventStore {
     /// player's boss-melee events at the boss's coordinates. Hence a
     /// promoted column rather than a `match` on `kind`.
     pub pos_unit: Vec<u32>,
+    /// `pos_unit`'s health, from the same advanced-params block (indices
+    /// 2/3, `docs/combat-log-format.md` §5) that yields `pos_x`/`pos_y` --
+    /// same unit, same "which of source/dest" caveat applies, but parsed
+    /// independently of `pos_x`/`pos_y` (indices 14/15) so a malformed
+    /// position doesn't also drop otherwise-good HP data. `-1` on every
+    /// row with no advanced block or a malformed HP field, mirroring
+    /// `pos_x`'s `NAN` (no float-`NaN`-equivalent sentinel needed since
+    /// real HP is never negative). Promoted for the encounter-config
+    /// "health threshold" trigger (`src/encounters/evaluate.ts`), which
+    /// needs a per-unit HP time series without re-parsing `raw_fields`
+    /// per row.
+    pub current_hp: Vec<i64>,
+    pub max_hp: Vec<i64>,
     raw_field_ranges: Vec<(u32, u32)>,
     raw_field_arena: Vec<FieldSpan>,
 }
@@ -304,6 +317,8 @@ impl EventStore {
         pos_x: f32,
         pos_y: f32,
         pos_unit: u32,
+        current_hp: i64,
+        max_hp: i64,
         raw_fields: &[FieldSpan],
     ) {
         self.timestamp_ms.push(timestamp_ms);
@@ -318,6 +333,8 @@ impl EventStore {
         self.pos_x.push(pos_x);
         self.pos_y.push(pos_y);
         self.pos_unit.push(pos_unit);
+        self.current_hp.push(current_hp);
+        self.max_hp.push(max_hp);
         let start = self.raw_field_arena.len() as u32;
         self.raw_field_arena.extend_from_slice(raw_fields);
         self.raw_field_ranges.push((start, raw_fields.len() as u32));
@@ -337,6 +354,8 @@ impl EventStore {
             f32::NAN,
             f32::NAN,
             intern::NO_UNIT,
+            -1,
+            -1,
             &[],
         );
     }
@@ -385,6 +404,8 @@ impl EventStore {
         self.pos_x.extend(other.pos_x);
         self.pos_y.extend(other.pos_y);
         self.pos_unit.extend(other.pos_unit);
+        self.current_hp.extend(other.current_hp);
+        self.max_hp.extend(other.max_hp);
         self.amount.extend(other.amount);
         self.flags.extend(other.flags);
         self.raw_field_arena.extend(other.raw_field_arena);
@@ -762,6 +783,21 @@ fn parse_composed(
         intern::NO_UNIT
     };
 
+    // Health: advanced-block indices 2/3 (`docs/combat-log-format.md` §5),
+    // `pos_unit`'s -- independent of whether position (indices 14/15)
+    // itself parsed, so a malformed/edge-case position doesn't also drop
+    // otherwise-good HP data.
+    let (current_hp, max_hp) = if has_advanced {
+        let adv = &fields[after_prefix..advanced_end];
+        let at = |i: usize| adv.get(i).and_then(|f| f.resolve_str(data).parse::<i64>().ok());
+        match (at(2), at(3)) {
+            (Some(cur), Some(max)) => (cur, max),
+            _ => (-1, -1),
+        }
+    } else {
+        (-1, -1)
+    };
+
     store.push(
         timestamp_ms,
         line_start as u32,
@@ -775,6 +811,8 @@ fn parse_composed(
         pos_x,
         pos_y,
         pos_unit,
+        current_hp,
+        max_hp,
         raw,
     );
 }
@@ -826,6 +864,8 @@ fn push_raw_only(
         f32::NAN,
         f32::NAN,
         intern::NO_UNIT,
+        -1,
+        -1,
         fields,
     );
 }
@@ -863,6 +903,8 @@ fn parse_standalone(
                 f32::NAN,
                 f32::NAN,
                 intern::NO_UNIT,
+                -1,
+                -1,
                 &fields[9..],
             );
         }
@@ -903,6 +945,8 @@ fn parse_standalone(
                 f32::NAN,
                 f32::NAN,
                 intern::NO_UNIT,
+                -1,
+                -1,
                 fields.get(2..).unwrap_or(&[]),
             );
         }
@@ -954,6 +998,8 @@ fn parse_emote(
         f32::NAN,
         f32::NAN,
         intern::NO_UNIT,
+        -1,
+        -1,
         raw,
     );
 }

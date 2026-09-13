@@ -111,7 +111,12 @@ async function paintPhases(seq: number): Promise<void> {
   }
 
   const { startMs: combatStartMs, endMs: combatEndMs } = ctx.range;
-  const evaluated = evaluatePhases(resolved.config, combatStartMs, combatEndMs);
+  const evaluated = await evaluatePhases(resolved.config, combatStartMs, combatEndMs, {
+    query: ctx.query,
+    spells: ctx.spells,
+    units: ctx.units,
+  });
+  if (seq !== paintSeq) return;
   const counts = await Promise.all(
     evaluated.map(async ({ range }) => {
       if (!range) return null;

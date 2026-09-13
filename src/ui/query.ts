@@ -8,7 +8,9 @@ import { invoke } from "@tauri-apps/api/core";
 // The queryable columns. Mirrors `query::Field` (Rust). `sourceOwner`
 // resolves a player's pet to its owner so pet damage folds into the
 // owning player. `spellId` is the intern-table index, not the WoW id
-// (resolve via the index-aligned log_lists arrays).
+// (resolve via the index-aligned log_lists arrays). `posUnit` is the unit
+// the row's advanced block (position + health) describes -- filter on it
+// to pull one unit's HP time series (src/encounters/evaluate.ts).
 export type QueryField =
   | "time"
   | "kind"
@@ -19,7 +21,8 @@ export type QueryField =
   | "spellId"
   | "hitType"
   | "amount"
-  | "crit";
+  | "crit"
+  | "posUnit";
 
 export type FilterOp = "eq" | "ne" | "in" | "lt" | "lte" | "gt" | "gte";
 

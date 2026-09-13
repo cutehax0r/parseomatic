@@ -52,12 +52,15 @@ authored yet) just means every consumer below falls back to its default:
 
 - **Replay's map**: `mapId` (below) picks `maps/<mapId>.map.json` for the
   playback backdrop instead of the generic deck (`src/views/replay.ts`).
-- **Timeline's phase table**: `phases` renders as a Name/Start/End/Event
-  count table, with each phase's bounds resolved against the selected
-  encounter's actual start/end (`src/encounters/evaluate.ts`,
-  `src/views/timeline.ts`). Only phases whose triggers are `combatStart`
-  / `combatEnd` / `offset` / `ref` resolve today — anything log-event-based
-  (`castStart`, `auraApplied`, ...) has no detector yet and shows as
+- **Timeline's phase table** (and **Kanban**, one flat table across every
+  pull in the log): phases render as a Name/Start/End(/Event count for
+  Timeline) table, with each phase's bounds resolved against the actual
+  pull's start/end (`src/encounters/evaluate.ts`). `combatStart` /
+  `combatEnd` / `offset` / `ref` resolve with pure arithmetic; `castStart`
+  / `castSuccess` resolve by querying the real log for the first matching
+  cast (same `query_events` primitive every other view uses) — the only
+  kinds so far backed by an actual event scan. Everything else
+  (`auraApplied`, `unitSpawn`, ...) has no detector yet and shows as
   unresolved (—), not a wrong number.
 
 Plugin-shipped configs (`plugins/*/encounters/`, mentioned above) aren't
@@ -80,11 +83,11 @@ read by `find_encounter_config` yet — only `<app data dir>/encounters/`.
       "mechanics": ["soakBalls", "adds", "tankSoak", "groupSoak", "redBalls"] },
 
     { "id": "intermission1", "label": "Intermission 1", "kind": "intermission",
-      "start": { "type": "castStart", "spellId": 111111 },
+      "start": { "type": "castStart", "spellIds": [111111] },
       "mechanics": ["rotation"] },
 
     { "id": "phase2", "label": "Phase 2", "kind": "phase",
-      "start": { "type": "castEnd", "spellId": 111111 },
+      "start": { "type": "castSuccess", "spellIds": [111111] },
       "mechanics": ["soakBalls2", "adds2", "tankSoak2", "groupSoak2", "redBalls2"] },
 
     { "id": "enrage", "label": "Enrage", "kind": "enrage",
@@ -93,10 +96,10 @@ read by `find_encounter_config` yet — only `<app data dir>/encounters/`.
 
   "mechanics": {
     "soakBalls": { "label": "Soak Balls", "kind": "orbSoak",
-      "trigger": { "type": "castStart", "spellId": 222222 },
+      "trigger": { "type": "castStart", "spellIds": [222222] },
       "params": { "debuffId": 222333, "orbCount": 6, "explodeAfterSec": 20, "explosionSpellId": 222444 } },
     "soakBalls2": { "label": "Soak Balls", "kind": "orbSoak",
-      "trigger": { "type": "castStart", "spellId": 222222 },
+      "trigger": { "type": "castStart", "spellIds": [222222] },
       "params": { "debuffId": 222333, "orbCount": 6, "explodeAfterSec": 20, "explosionSpellId": 222444 } },
 
     "adds": { "label": "Adds", "kind": "addSpawn",
@@ -107,10 +110,10 @@ read by `find_encounter_config` yet — only `<app data dir>/encounters/`.
       "params": { "expectedCount": 4 } },
 
     "groupSoak": { "label": "Group Soak", "kind": "groupSoak",
-      "trigger": { "type": "castStart", "spellId": 444555 },
+      "trigger": { "type": "castStart", "spellIds": [444555] },
       "params": { "hits": 3, "hitIntervalSec": 2 } },
     "groupSoak2": { "label": "Group Soak", "kind": "groupSoak",
-      "trigger": { "type": "castStart", "spellId": 444555 },
+      "trigger": { "type": "castStart", "spellIds": [444555] },
       "params": { "hits": 3, "hitIntervalSec": 2 } }
   }
 }
@@ -145,11 +148,11 @@ Shared by `phases[].start` and `mechanics[].trigger`:
 |---|---|---|
 | `combatStart` | — | `ENCOUNTER_START` |
 | `combatEnd` | — | `ENCOUNTER_END` |
-| `castStart` / `castEnd` | `spellId`, optional `sourceNpcId` | a matching `SPELL_CAST_SUCCESS` / cast-channel end |
+| `castStart` / `castSuccess` | `spellIds` (any one matches), optional `sourceNpcIds` (any one matches; omitted = any caster) | a matching `SPELL_CAST_START` / `SPELL_CAST_SUCCESS` |
 | `auraApplied` / `auraRemoved` | `spellId` | matching `SPELL_AURA_APPLIED` / `_REMOVED` |
 | `stackCount` | `spellId`, `atLeast` | an aura's stack count crosses a threshold |
 | `unitSpawn` / `unitDied` | `npcIds` | a unit matching one of the ids appears / dies |
-| `healthPct` | `npcId`, `atOrBelow` | running damage total crosses a % of that unit's max HP |
+| `threshold` | `value`, `op` (`above`/`below`/`equal`), `threshold` (both `NumberExpr` -- see below) | `value op threshold` first holds, scanning each referenced unit's real HP/death-count samples |
 | `timer` | `since` (a trigger reference, e.g. `"phase1.start"` or `"soakBalls.end"`), `seconds` | a fixed offset from another named trigger |
 | `offset` | `from` (an inline `Trigger`), `op` (`+`/`-`), `seconds` | a Time Math node's result — `from` offset by `seconds` |
 | `ref` | `id` | points at `EncounterConfig.triggers[id]` — see "Shared triggers" below |
@@ -157,6 +160,35 @@ Shared by `phases[].start` and `mechanics[].trigger`:
 `since` references are dotted paths: `<phaseId>.start`, `<phaseId>.end`,
 or `<mechanicId>.end` (a mechanic kind defines what "end" means for it —
 see below).
+
+### NumberExpr vocabulary
+
+A plain numeric expression, parallel to `Trigger`'s "moment" one -- only
+ever appears nested inside a `threshold` Trigger's `value`/`threshold`,
+not standalone. Not shareable via `EncounterConfig.triggers` (that
+dictionary is keyed for `Trigger`s only) -- a reused number expression is
+just inlined twice.
+
+| type | fields | resolves to |
+|---|---|---|
+| `numberValue` | `value` | a fixed float, e.g. `0.20` for "20%", or `4` for a count |
+| `unitHealthCurrent` / `unitHealthMax` | `npcId` | that unit's current/max HP, as of the instant being evaluated |
+| `unitDeathCount` | optional `npcIds` (omitted/empty = any unit) | a running count of `UNIT_DIED` events matching one of `npcIds`, as of the instant being evaluated |
+| `numberMath` | `a`, `op` (`+`/`-`/`*`/`/`), `b` (both `NumberExpr`) | e.g. `unitHealthCurrent / unitHealthMax` for a 0-1 health fraction |
+
+E.g. "boss enrages at 20% health": `{ "type": "threshold", "op": "below", "value": { "type": "numberMath", "a": { "type": "unitHealthCurrent", "npcId": 12345 }, "op": "/", "b": { "type": "unitHealthMax", "npcId": 12345 } }, "threshold": { "type": "numberValue", "value": 0.20 } }`.
+Since both sides of a `threshold` are full `NumberExpr` trees, "unit A's
+health drops 10% under unit B's" needs no separate mechanism -- `value` is
+A's health fraction, `threshold` is `B's health fraction - 0.10`.
+
+`equal` is what a counting condition wants: "phase 2 starts once 4 adds
+have died" is `{ "type": "threshold", "op": "equal", "value": { "type":
+"unitDeathCount", "npcIds": [333111] }, "threshold": { "type":
+"numberValue", "value": 4 } }`; leaving `npcIds` off counts *any* unit's
+death, for "this many players have died" regardless of which ones. There's
+no equivalent spawn counter yet -- `unitSpawn` (above) has no evaluator
+case, since WoW's combat log has no reliable universal "this unit just
+appeared" event to detect it from.
 
 ### Shared triggers
 
@@ -240,15 +272,19 @@ rewiring things by hand.
 
 **Value contracts** for what a connection resolves to once evaluated
 against a real log live in `src/encounters/runtime.ts`. The evaluator
-itself (`src/encounters/evaluate.ts`) only walks the compiled JSON's
-`combatStart`/`combatEnd`/`offset`/`ref` triggers today (see "Matching a
-log encounter" above) — the graph node types below all compile down to
-those, so anything buildable in the editor already evaluates:
+(`src/encounters/evaluate.ts`) walks the compiled JSON's
+`combatStart`/`combatEnd`/`offset`/`ref` triggers with pure arithmetic,
+`castStart`/`castSuccess` by querying the real log for a matching cast,
+and `threshold` by scanning each referenced unit's real HP samples (see
+"Matching a log encounter" above and the "NumberExpr vocabulary" table) —
+every graph node type below compiles down to one of those, so anything
+buildable in the editor already evaluates:
 
 | slot type | resolves to |
 |---|---|
 | `moment` | `ResolvedMoment` — a single instant, ms since `ENCOUNTER_START` |
 | `interval` | `ResolvedInterval` — a length of time, in ms |
+| `number` | `ResolvedNumber` — a plain float that may change over the encounter (e.g. a unit's health) |
 | `phase` | `TimeRange` — `{ startMs, endMs }`. Node identity (id/label/kind) stays on the Phase node itself, not in this value |
 | `phases` | `PhaseTimeline` — `TimeRange[]`, in slot order. Exactly what a playback scrollbar, timeline, or kanban view needs |
 
@@ -261,9 +297,16 @@ those, so anything buildable in the editor already evaluates:
 - **`encounter/trigger-start`** / **`encounter/trigger-end`** (`trigger.ts`)
   — fixed-value carriers for `{ type: "combatStart" }` /
   `{ type: "combatEnd" }`. A `moment`-typed output that plugs into a Phase
-  node's `start`/`end` input, or a Time Math node's inputs. The rest of
-  the trigger vocabulary (`castStart`, `auraApplied`, `timer`, ...) gets
-  its own node once a phase actually needs one.
+  node's `start`/`end` input, or a Time Math node's inputs.
+- **`encounter/cast-start`** / **`encounter/cast-success`** (`cast-trigger.ts`)
+  — fires on the first `SPELL_CAST_START` / `SPELL_CAST_SUCCESS` matching
+  a comma-separated Spell IDs widget, optionally narrowed by a
+  comma-separated Source NPC IDs widget (blank = any caster). Both take
+  more than one id so one node covers a council fight's "any of these
+  bosses casts any of these spells" phase-change condition, not just a
+  single caster/spell pair. A `moment`-typed output, same slot as the two
+  above. The rest of the trigger vocabulary (`auraApplied`, `timer`, ...)
+  gets its own node once a phase actually needs one.
 - **`encounter/duration`** (`duration.ts`) — a fixed length of time
   authored as Minutes/Seconds widgets (e.g. "5 minutes" for an enrage
   timer). An `interval`-typed output that plugs into a Time Math node.
@@ -288,6 +331,36 @@ those, so anything buildable in the editor already evaluates:
   Phase node, slot order is phase order. Always keeps one trailing empty
   slot open for the next connection. Its `phases` output plugs into
   Encounter Info's `phases` input.
+- **`encounter/unit-health-current`** / **`encounter/unit-health-max`**
+  (`number.ts`) — that unit's current/max HP as of the instant being
+  evaluated, off an NPC ID widget. Two separate single-output nodes
+  rather than one node with two outputs, matching Encounter Start/End's
+  precedent. A `number`-typed output.
+- **`encounter/number-value`** (`number.ts`) — a fixed float authored as
+  a single Value widget, e.g. the "0.20" in "health drops below 20%". A
+  `number`-typed output.
+- **`encounter/number-math`** (`number.ts`) — combines two `number`
+  inputs with a `+`/`-`/`*`/`/` Op widget, e.g. Unit Health (Current) ÷
+  Unit Health (Max) for a 0-1 health fraction. A `number`-typed output.
+- **`encounter/unit-death-count`** (`number.ts`) — a running count of
+  `UNIT_DIED` events off a comma-separated NPC IDs widget (blank = any
+  unit), for counting conditions ("4 adds have died", "2 players have
+  died"). A `number`-typed output.
+- **`encounter/threshold`** (`number.ts`) — the bridge back from `number`
+  to `moment`: two `number` inputs (`value`, `threshold`) and an
+  above/below/equal Op widget, firing at the first instant `value`
+  crosses (or, for `equal`, first matches) `threshold`
+  (`src/encounters/evaluate.ts` scans the referenced unit(s)' real
+  HP/death-count samples for it). A trigger node like Cast Start/Success
+  — its `moment`-typed output plugs into a Phase's `start`/`end` or a
+  Time Math node same as any other trigger.
+- **`encounter/comment`** (`comment.ts`) — a pure annotation: no inputs,
+  no outputs, one free-text widget, no effect on compilation or
+  evaluation. Collected into `EncounterConfig.comments` (every Comment
+  node in the graph, regardless of position — comments aren't reached via
+  a connection like everything else here) so notes survive save/load;
+  a native LiteGraph comment/group decoration wouldn't, since graph
+  layout itself is never persisted (see `LGraph.arrange()` below).
 
 First target, done: a Phase node (`start` → an Encounter Start trigger,
 `end` → a Time Math node computing Encounter Start + a 5-minute Duration)
@@ -296,6 +369,10 @@ round-trips through `graphToConfig`/`configToGraph` — a single-phase
 encounter with a computed enrage boundary, end to end. Next: mechanics.
 
 ## Open items
+
+See also `boss-parsers.md`'s status notes — the doc this schema
+implements, reconciled against what actually shipped (phases done, the
+mechanics half below still entirely unbuilt).
 
 - Difficulty-specific mechanic param overrides still require a full
   duplicate file; revisit if that proves painful in practice (tier with

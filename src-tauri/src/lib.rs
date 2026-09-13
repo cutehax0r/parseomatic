@@ -1154,6 +1154,11 @@ struct RawEventRow {
     target_unit_id: Option<u32>,
     spell_id: Option<u16>,
     position: Option<(f32, f32)>,
+    /// `(currentHp, maxHp)` for whichever unit the row's advanced block
+    /// describes (`EventStore::pos_unit`) -- the encounter-config "health
+    /// threshold" trigger's per-unit HP time series
+    /// (`src/encounters/evaluate.ts`).
+    health: Option<(i64, i64)>,
     details: String,
 }
 
@@ -1188,6 +1193,7 @@ fn raw_event_row(events: &parser::event::EventStore, mmap: &[u8], row: usize) ->
         target_unit_id: (events.dest_unit[row] != NO_UNIT).then_some(events.dest_unit[row]),
         spell_id: (events.spell[row] != NO_SPELL).then_some(events.spell[row]),
         position: (!events.pos_x[row].is_nan()).then_some((events.pos_x[row], events.pos_y[row])),
+        health: (events.current_hp[row] >= 0).then_some((events.current_hp[row], events.max_hp[row])),
         details,
     }
 }

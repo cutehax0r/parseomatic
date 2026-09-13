@@ -4,19 +4,29 @@
 // actually turn a graph into (and back from) the JSON shape in schema.ts.
 //
 // Deliberately narrow: only the node types that exist today (info,
-// trigger-start/end, duration, time-math, phase, phase-list) round-trip.
+// trigger-start/end, cast-start/success, threshold + its number-graph
+// nodes, duration, time-math, phase, phase-list, comment) round-trip.
 // Nothing about mechanics -- no mechanic node types exist yet.
 
 import { LGraph, LGraphNode, LiteGraph } from "@comfyorg/litegraph";
-import type { EncounterConfig, PhaseDef, Trigger } from "./schema";
+import type { EncounterConfig, NumberExpr, PhaseDef, Trigger } from "./schema";
 import {
+  CastStartTriggerNode,
+  CastSuccessTriggerNode,
+  CommentNode,
   DurationNode,
   EncounterEndTriggerNode,
   EncounterInfoNode,
   EncounterStartTriggerNode,
+  NumberMathNode,
+  NumberValueNode,
   PhaseListNode,
   PhaseNode,
+  ThresholdTriggerNode,
   TimeMathNode,
+  UnitDeathCountNode,
+  UnitHealthCurrentNode,
+  UnitHealthMaxNode,
 } from "./nodes";
 
 /** A graph shape the compiler doesn't know how to turn into JSON --
@@ -58,9 +68,62 @@ function makeCompileCtx(): CompileCtx {
   return { triggers, idFor, nextId: () => `moment${++n}` };
 }
 
+/** Compiles a "number"-typed subgraph into a NumberExpr -- the graph-side
+ *  equivalent of `triggerFromNodeUncached`, but for the value side of a
+ *  Threshold node. Not shareable via `ctx` (schema.ts's `NumberExpr` has
+ *  no `ref` case) -- a reused number expression just gets inlined twice. */
+function numberExprFromNode(node: LGraphNode): NumberExpr {
+  if (node instanceof UnitHealthCurrentNode) return { type: "unitHealthCurrent", npcId: node.properties.npcId };
+  if (node instanceof UnitHealthMaxNode) return { type: "unitHealthMax", npcId: node.properties.npcId };
+  if (node instanceof NumberValueNode) return { type: "numberValue", value: node.properties.value };
+  if (node instanceof UnitDeathCountNode) {
+    return {
+      type: "unitDeathCount",
+      ...(node.properties.npcIds.length ? { npcIds: node.properties.npcIds } : {}),
+    };
+  }
+  if (node instanceof NumberMathNode) {
+    const aOrigin = originOfInput(node, "a");
+    const bOrigin = originOfInput(node, "b");
+    if (!aOrigin || !bOrigin) {
+      throw new CompileError('A "Number Math" node is missing an input.');
+    }
+    return {
+      type: "numberMath",
+      a: numberExprFromNode(aOrigin),
+      op: node.properties.op,
+      b: numberExprFromNode(bOrigin),
+    };
+  }
+  throw new CompileError(`Don't know how to compile a "${node.title}" node into a number yet.`);
+}
+
 function triggerFromNodeUncached(node: LGraphNode, ctx: CompileCtx): Trigger {
   if (node instanceof EncounterStartTriggerNode) return { type: "combatStart" };
   if (node instanceof EncounterEndTriggerNode) return { type: "combatEnd" };
+  if (node instanceof CastStartTriggerNode || node instanceof CastSuccessTriggerNode) {
+    if (node.properties.spellIds.length === 0) {
+      throw new CompileError(`A "${node.title}" node needs at least one Spell ID.`);
+    }
+    return {
+      type: node instanceof CastStartTriggerNode ? "castStart" : "castSuccess",
+      spellIds: node.properties.spellIds,
+      ...(node.properties.sourceNpcIds.length ? { sourceNpcIds: node.properties.sourceNpcIds } : {}),
+    };
+  }
+  if (node instanceof ThresholdTriggerNode) {
+    const valueOrigin = originOfInput(node, "value");
+    const thresholdOrigin = originOfInput(node, "threshold");
+    if (!valueOrigin || !thresholdOrigin) {
+      throw new CompileError('A "Threshold" node is missing an input.');
+    }
+    return {
+      type: "threshold",
+      value: numberExprFromNode(valueOrigin),
+      op: node.properties.op,
+      threshold: numberExprFromNode(thresholdOrigin),
+    };
+  }
   if (node instanceof TimeMathNode) {
     const aOrigin = originOfInput(node, "a");
     const bOrigin = originOfInput(node, "b");
@@ -118,6 +181,17 @@ function phaseDefFromNode(node: PhaseNode, ctx: CompileCtx): PhaseDef {
   return def;
 }
 
+/** Every Comment node's text, in whatever order `findNodesByType` walks
+ *  the graph -- unlike everything else compiled here, comments aren't
+ *  reached via a connection (they have none), so this walks the graph's
+ *  full node list directly rather than following links from `info`. */
+function commentsFromGraph(graph: LGraph | null | undefined): string[] {
+  if (!graph) return [];
+  const found: LGraphNode[] = [];
+  graph.findNodesByType("encounter/comment", found);
+  return (found as unknown as CommentNode[]).map((n) => n.properties.text.trim()).filter((t) => t.length > 0);
+}
+
 /** Compiles the graph reachable from `info` into a full EncounterConfig.
  *  Throws CompileError for a graph shape it can't yet turn into JSON. */
 export function graphToConfig(info: EncounterInfoNode): EncounterConfig {
@@ -127,6 +201,7 @@ export function graphToConfig(info: EncounterInfoNode): EncounterConfig {
     phaseListOrigin instanceof PhaseListNode
       ? phaseListOrigin.orderedPhaseNodes().map((n) => phaseDefFromNode(n as PhaseNode, ctx))
       : [];
+  const comments = commentsFromGraph(info.graph);
   return {
     schemaVersion: 1,
     encounterId: info.properties.encounterId,
@@ -137,6 +212,7 @@ export function graphToConfig(info: EncounterInfoNode): EncounterConfig {
     ...(Object.keys(ctx.triggers).length ? { triggers: ctx.triggers } : {}),
     phases,
     mechanics: {},
+    ...(comments.length ? { comments } : {}),
   };
 }
 
@@ -163,9 +239,54 @@ interface LoadCtx {
   built: Map<string, LGraphNode | null>;
 }
 
+/** Reconstructs a "number"-typed subgraph from a NumberExpr -- the
+ *  config->graph equivalent of `numberExprFromNode`. */
+function nodeForNumberExpr(graph: LGraph, expr: NumberExpr): LGraphNode {
+  if (expr.type === "unitHealthCurrent") {
+    const node = addNode<UnitHealthCurrentNode>(graph, "encounter/unit-health-current");
+    node.setValues({ npcId: expr.npcId });
+    return node;
+  }
+  if (expr.type === "unitHealthMax") {
+    const node = addNode<UnitHealthMaxNode>(graph, "encounter/unit-health-max");
+    node.setValues({ npcId: expr.npcId });
+    return node;
+  }
+  if (expr.type === "numberValue") {
+    const node = addNode<NumberValueNode>(graph, "encounter/number-value");
+    node.setValues({ value: expr.value });
+    return node;
+  }
+  if (expr.type === "unitDeathCount") {
+    const node = addNode<UnitDeathCountNode>(graph, "encounter/unit-death-count");
+    node.setValues({ npcIds: expr.npcIds ?? [] });
+    return node;
+  }
+  const node = addNode<NumberMathNode>(graph, "encounter/number-math");
+  node.setValues({ op: expr.op });
+  nodeForNumberExpr(graph, expr.a).connect(0, node, "a");
+  nodeForNumberExpr(graph, expr.b).connect(0, node, "b");
+  return node;
+}
+
 function nodeForTrigger(graph: LGraph, trigger: Trigger, ctx: LoadCtx): LGraphNode | null {
   if (trigger.type === "combatStart") return addNode(graph, "encounter/trigger-start");
   if (trigger.type === "combatEnd") return addNode(graph, "encounter/trigger-end");
+  if (trigger.type === "castStart" || trigger.type === "castSuccess") {
+    const node = addNode<CastStartTriggerNode | CastSuccessTriggerNode>(
+      graph,
+      trigger.type === "castStart" ? "encounter/cast-start" : "encounter/cast-success",
+    );
+    node.setValues({ spellIds: trigger.spellIds, sourceNpcIds: trigger.sourceNpcIds ?? [] });
+    return node;
+  }
+  if (trigger.type === "threshold") {
+    const node = addNode<ThresholdTriggerNode>(graph, "encounter/threshold");
+    node.setValues({ op: trigger.op });
+    nodeForNumberExpr(graph, trigger.value).connect(0, node, "value");
+    nodeForNumberExpr(graph, trigger.threshold).connect(0, node, "threshold");
+    return node;
+  }
   if (trigger.type === "offset") {
     const fromNode = nodeForTrigger(graph, trigger.from, ctx);
     if (!fromNode) return null;
@@ -233,6 +354,10 @@ export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarni
     });
 
     phaseListNode.connect(0, info, "phases");
+  }
+
+  for (const text of config.comments ?? []) {
+    addNode<CommentNode>(graph, "encounter/comment").setValues({ text });
   }
 
   // Freshly-built nodes have no meaningful position of their own -- lay
