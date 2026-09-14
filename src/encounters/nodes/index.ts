@@ -7,6 +7,7 @@ import { LiteGraph } from "@comfyorg/litegraph";
 import { EncounterInfoNode } from "./info";
 import { EncounterStartTriggerNode, EncounterEndTriggerNode } from "./trigger";
 import { CastStartTriggerNode, CastSuccessTriggerNode } from "./cast-trigger";
+import { AuraAppliedTriggerNode, AuraRemovedTriggerNode } from "./aura-trigger";
 import { PhaseNode } from "./phase";
 import { PhaseListNode } from "./phase-list";
 import { DurationNode } from "./duration";
@@ -14,6 +15,8 @@ import { TimeMathNode } from "./time-math";
 import {
   UnitHealthCurrentNode,
   UnitHealthMaxNode,
+  UnitPowerCurrentNode,
+  UnitPowerMaxNode,
   NumberValueNode,
   NumberMathNode,
   UnitDeathCountNode,
@@ -23,7 +26,9 @@ import { CommentNode } from "./comment";
 
 export * from "./info";
 export * from "./trigger";
+export * from "./spell-filter-trigger";
 export * from "./cast-trigger";
+export * from "./aura-trigger";
 export * from "./phase";
 export * from "./phase-list";
 export * from "./duration";
@@ -41,12 +46,16 @@ export function registerEncounterNodeTypes(): void {
   LiteGraph.registerNodeType("encounter/trigger-end", EncounterEndTriggerNode);
   LiteGraph.registerNodeType("encounter/cast-start", CastStartTriggerNode);
   LiteGraph.registerNodeType("encounter/cast-success", CastSuccessTriggerNode);
+  LiteGraph.registerNodeType("encounter/aura-applied", AuraAppliedTriggerNode);
+  LiteGraph.registerNodeType("encounter/aura-removed", AuraRemovedTriggerNode);
   LiteGraph.registerNodeType("encounter/phase", PhaseNode);
   LiteGraph.registerNodeType("encounter/phase-list", PhaseListNode);
   LiteGraph.registerNodeType("encounter/duration", DurationNode);
   LiteGraph.registerNodeType("encounter/time-math", TimeMathNode);
   LiteGraph.registerNodeType("encounter/unit-health-current", UnitHealthCurrentNode);
   LiteGraph.registerNodeType("encounter/unit-health-max", UnitHealthMaxNode);
+  LiteGraph.registerNodeType("encounter/unit-power-current", UnitPowerCurrentNode);
+  LiteGraph.registerNodeType("encounter/unit-power-max", UnitPowerMaxNode);
   LiteGraph.registerNodeType("encounter/number-value", NumberValueNode);
   LiteGraph.registerNodeType("encounter/number-math", NumberMathNode);
   LiteGraph.registerNodeType("encounter/unit-death-count", UnitDeathCountNode);

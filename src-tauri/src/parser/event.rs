@@ -283,8 +283,60 @@ pub struct EventStore {
     /// per row.
     pub current_hp: Vec<i64>,
     pub max_hp: Vec<i64>,
+    /// `pos_unit`'s power (mana/energy/rage/etc, whatever `powerType` this
+    /// unit is currently using), from advanced-params indices 11/12 --
+    /// **unlike `current_hp`/`max_hp`, this region is the one part of the
+    /// 19-field block `docs/combat-log-format.md` §5 flags as unresolved**
+    /// (2 unidentified fields were inserted somewhere in the old 4-field
+    /// power region; `currentPower`/`maxPower` at 11/12 is the doc's best
+    /// current guess, "not 100% certain," not cross-validated against
+    /// another code path the way HP was against `deaths.rs`/`replay.rs`).
+    /// Same `-1` sentinel convention as `current_hp`/`max_hp`. Promoted
+    /// for the same reason: a per-unit time series for the "power
+    /// threshold" case of the encounter-config trigger
+    /// (`src/encounters/evaluate.ts`) -- verify against a real log before
+    /// trusting it in a shipped encounter config.
+    pub current_power: Vec<i64>,
+    pub max_power: Vec<i64>,
+    /// Which power `current_power`/`max_power` describe on this row --
+    /// advanced-block index 8 (`Enum.PowerType`: -2 health, 0 mana, 1
+    /// rage, ... 19 essence -- same table `query::Field::PowerType`
+    /// filters on). A unit with more than one resource (a mage's mana
+    /// *and* arcane charges) reports whichever one is relevant to each
+    /// individual line, not both at once, so a "unit power" trigger has
+    /// to filter to the specific type it cares about rather than reading
+    /// this column blind. `-100` (outside the real `-2..=19` range) when
+    /// there's no advanced block or the field didn't parse.
+    pub power_type: Vec<i64>,
     raw_field_ranges: Vec<(u32, u32)>,
     raw_field_arena: Vec<FieldSpan>,
+}
+
+/// `current_hp`/`max_hp`/`current_power`/`max_power`/`power_type` for one
+/// row, threaded through `EventStore::push` as a single named payload
+/// instead of five positional sentinel-bearing args -- five separate
+/// "no advanced block" sentinels is enough that passing them positionally
+/// at every `push` call site risked a silent transposition (e.g.
+/// current_power/max_power swapped). `NONE` is the "no advanced block, or
+/// a standalone/non-composed line" value shared by every call site that
+/// isn't the one real advanced-block extraction.
+#[derive(Clone, Copy)]
+struct AdvancedVitals {
+    current_hp: i64,
+    max_hp: i64,
+    current_power: i64,
+    max_power: i64,
+    power_type: i64,
+}
+
+impl AdvancedVitals {
+    const NONE: AdvancedVitals = AdvancedVitals {
+        current_hp: -1,
+        max_hp: -1,
+        current_power: -1,
+        max_power: -1,
+        power_type: -100,
+    };
 }
 
 impl EventStore {
@@ -317,8 +369,7 @@ impl EventStore {
         pos_x: f32,
         pos_y: f32,
         pos_unit: u32,
-        current_hp: i64,
-        max_hp: i64,
+        vitals: AdvancedVitals,
         raw_fields: &[FieldSpan],
     ) {
         self.timestamp_ms.push(timestamp_ms);
@@ -333,8 +384,11 @@ impl EventStore {
         self.pos_x.push(pos_x);
         self.pos_y.push(pos_y);
         self.pos_unit.push(pos_unit);
-        self.current_hp.push(current_hp);
-        self.max_hp.push(max_hp);
+        self.current_hp.push(vitals.current_hp);
+        self.max_hp.push(vitals.max_hp);
+        self.current_power.push(vitals.current_power);
+        self.max_power.push(vitals.max_power);
+        self.power_type.push(vitals.power_type);
         let start = self.raw_field_arena.len() as u32;
         self.raw_field_arena.extend_from_slice(raw_fields);
         self.raw_field_ranges.push((start, raw_fields.len() as u32));
@@ -354,8 +408,7 @@ impl EventStore {
             f32::NAN,
             f32::NAN,
             intern::NO_UNIT,
-            -1,
-            -1,
+            AdvancedVitals::NONE,
             &[],
         );
     }
@@ -406,6 +459,9 @@ impl EventStore {
         self.pos_unit.extend(other.pos_unit);
         self.current_hp.extend(other.current_hp);
         self.max_hp.extend(other.max_hp);
+        self.current_power.extend(other.current_power);
+        self.max_power.extend(other.max_power);
+        self.power_type.extend(other.power_type);
         self.amount.extend(other.amount);
         self.flags.extend(other.flags);
         self.raw_field_arena.extend(other.raw_field_arena);
@@ -798,6 +854,30 @@ fn parse_composed(
         (-1, -1)
     };
 
+    // Power: advanced-block indices 11/12 -- the doc's best current guess
+    // for this region (see EventStore::current_power's doc comment for
+    // why it's less trustworthy than current_hp/max_hp's indices 2/3).
+    let (current_power, max_power) = if has_advanced {
+        let adv = &fields[after_prefix..advanced_end];
+        let at = |i: usize| adv.get(i).and_then(|f| f.resolve_str(data).parse::<i64>().ok());
+        match (at(11), at(12)) {
+            (Some(cur), Some(max)) => (cur, max),
+            _ => (-1, -1),
+        }
+    } else {
+        (-1, -1)
+    };
+    // Which power current_power/max_power describe -- advanced-block
+    // index 8, `Enum.PowerType` (see EventStore::power_type's doc comment).
+    let power_type = if has_advanced {
+        let adv = &fields[after_prefix..advanced_end];
+        adv.get(8)
+            .and_then(|f| f.resolve_str(data).parse::<i64>().ok())
+            .unwrap_or(-100)
+    } else {
+        -100
+    };
+
     store.push(
         timestamp_ms,
         line_start as u32,
@@ -811,8 +891,13 @@ fn parse_composed(
         pos_x,
         pos_y,
         pos_unit,
-        current_hp,
-        max_hp,
+        AdvancedVitals {
+            current_hp,
+            max_hp,
+            current_power,
+            max_power,
+            power_type,
+        },
         raw,
     );
 }
@@ -864,8 +949,7 @@ fn push_raw_only(
         f32::NAN,
         f32::NAN,
         intern::NO_UNIT,
-        -1,
-        -1,
+        AdvancedVitals::NONE,
         fields,
     );
 }
@@ -903,8 +987,7 @@ fn parse_standalone(
                 f32::NAN,
                 f32::NAN,
                 intern::NO_UNIT,
-                -1,
-                -1,
+                AdvancedVitals::NONE,
                 &fields[9..],
             );
         }
@@ -945,8 +1028,7 @@ fn parse_standalone(
                 f32::NAN,
                 f32::NAN,
                 intern::NO_UNIT,
-                -1,
-                -1,
+                AdvancedVitals::NONE,
                 fields.get(2..).unwrap_or(&[]),
             );
         }
@@ -998,8 +1080,7 @@ fn parse_emote(
         f32::NAN,
         f32::NAN,
         intern::NO_UNIT,
-        -1,
-        -1,
+        AdvancedVitals::NONE,
         raw,
     );
 }

@@ -97,6 +97,25 @@ export type MechanicKind =
   | "stackingDebuff"
   | "custom";
 
+/** Mixed into every "search the log for the next occurrence" Trigger
+ *  variant (`castStart`, `castSuccess`, `auraApplied`, `auraRemoved`,
+ *  `threshold`) -- one named place for what `after` means, so a future
+ *  search-based trigger kind gets it by intersecting this instead of
+ *  retyping the field. Deliberately *not* mixed into `combatStart`/
+ *  `combatEnd`/`timer`/`offset`/`ref`: those resolve to a fixed instant
+ *  or a pure computation rather than searching, so "start searching after
+ *  X" doesn't apply to them.
+ *
+ *  Resolves another Trigger first and only looks for a match strictly
+ *  later than it -- for a repeating ability, "the *second* time this
+ *  happens" is "the first time this happens `after` the first" (e.g.
+ *  Intermission 2's start = the same cast as Intermission 1's, but
+ *  `after` Intermission 1's own end, so the two identical conditions
+ *  don't both resolve to the fight's very first occurrence). */
+export interface WithAfter {
+  after?: Trigger;
+}
+
 export type Trigger =
   | { type: "combatStart" }
   | { type: "combatEnd" }
@@ -105,11 +124,19 @@ export type Trigger =
    *  `sourceNpcIds` (omitted/empty = any source). Both take more than one
    *  entry so one trigger covers "any of these bosses casts any of these
    *  spells" (a council fight's phase-change condition) as well as the
-   *  single-spell/single-caster case (a one-element list). */
-  | { type: "castStart"; spellIds: number[]; sourceNpcIds?: number[] }
-  | { type: "castSuccess"; spellIds: number[]; sourceNpcIds?: number[] }
-  | { type: "auraApplied"; spellId: number }
-  | { type: "auraRemoved"; spellId: number }
+   *  single-spell/single-caster case (a one-element list). See
+   *  `WithAfter` for the optional ordering constraint. */
+  | ({ type: "castStart"; spellIds: number[]; sourceNpcIds?: number[] } & WithAfter)
+  | ({ type: "castSuccess"; spellIds: number[]; sourceNpcIds?: number[] } & WithAfter)
+  /** Fires on the first SPELL_AURA_APPLIED / SPELL_AURA_REMOVED matching
+   *  any id in `spellIds`, optionally restricted to a caster in
+   *  `sourceNpcIds` (omitted/empty = any source) -- same "any of these"
+   *  semantics as `castStart`/`castSuccess` above. `auraRemoved` is
+   *  useful as an exact alternative to an `offset` guess for a channeled
+   *  ability's real end (a self-buff on the caster for the channel's
+   *  duration, if one exists, ends exactly when the channel does). */
+  | ({ type: "auraApplied"; spellIds: number[]; sourceNpcIds?: number[] } & WithAfter)
+  | ({ type: "auraRemoved"; spellIds: number[]; sourceNpcIds?: number[] } & WithAfter)
   | { type: "stackCount"; spellId: number; atLeast: number }
   | { type: "unitSpawn"; npcIds: number[] }
   | { type: "unitDied"; npcIds: number[] }
@@ -122,7 +149,12 @@ export type Trigger =
    *  `numberValue` on the other covers that case, plus unit-vs-unit
    *  comparisons ("boss A drops 10% under boss B") a fixed-field trigger
    *  couldn't. */
-  | { type: "threshold"; value: NumberExpr; op: "above" | "below" | "equal"; threshold: NumberExpr }
+  | ({
+      type: "threshold";
+      value: NumberExpr;
+      op: "above" | "below" | "equal";
+      threshold: NumberExpr;
+    } & WithAfter)
   | { type: "timer"; since: string; seconds: number }
   /** A Time Math node's result (src/encounters/nodes/time-math.ts): `from`
    *  offset by `seconds`. Inlines the base trigger directly rather than
@@ -151,6 +183,19 @@ export type NumberExpr =
    *  two outputs, matching Encounter Start/End's precedent. */
   | { type: "unitHealthCurrent"; npcId: number }
   | { type: "unitHealthMax"; npcId: number }
+  /** The current/max power of the unit matching `npcId`, restricted to
+   *  one resource (`powerType`, `Enum.PowerType` --
+   *  src/encounters/power-type.ts) -- a unit can have more than one (a
+   *  mage's mana *and* arcane charges), each reported only on whichever
+   *  log lines are about it, so this has to pick which one it means, not
+   *  just read "the" power. Same "last known value" semantics as health.
+   *  For boss abilities gated on reaching a specific power level. Less
+   *  trustworthy than health -- the combat log's power-info region is the
+   *  one part of the advanced block `docs/combat-log-format.md` §5 flags
+   *  as not fully pinned down; verify against a real log before relying
+   *  on it in a shipped encounter config. */
+  | { type: "unitPowerCurrent"; npcId: number; powerType: number }
+  | { type: "unitPowerMax"; npcId: number; powerType: number }
   /** A running count of UNIT_DIED events for a unit matching one of
    *  `npcIds` -- omitted/empty means any unit's death counts (e.g. "this
    *  many players have died"). Paired with a `threshold` trigger's

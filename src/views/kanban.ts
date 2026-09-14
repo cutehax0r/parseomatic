@@ -38,25 +38,33 @@ async function paint(): Promise<void> {
   if (!ctx || !mount) return;
   const seq = ++paintSeq;
 
-  const rows: PhaseRow[] = [];
-  for (const encounter of ctx.encounters) {
-    if (encounter.isTrash) continue;
-    const found = await findEncounterConfig(encounter.encounterId, encounter.difficultyId);
-    if (seq !== paintSeq) return; // a newer log/paint landed while this was in flight
-    if (!found || found.config.phases.length === 0) continue;
-    const evaluated = await evaluatePhases(found.config, encounter.startMs, encounter.endMs, {
-      query: ctx.query,
-      spells: ctx.spells,
-      units: ctx.units,
-    });
-    if (seq !== paintSeq) return;
-    for (const { phase, range } of evaluated) {
-      rows.push({ encounter, phase, startMs: range?.startMs ?? null, endMs: range?.endMs ?? null });
-    }
-  }
-  if (seq !== paintSeq) return;
+  // Each pull's config lookup + phase evaluation is independent of every
+  // other pull's, so run them all concurrently rather than one at a time;
+  // staleness (a newer log/paint landing mid-flight) only needs checking
+  // once, after everything settles, since a stale `seq` here means the
+  // whole result set gets thrown away regardless of which pull changed.
+  const perEncounter = await Promise.all(
+    ctx.encounters
+      .filter((encounter) => !encounter.isTrash)
+      .map(async (encounter): Promise<PhaseRow[]> => {
+        const found = await findEncounterConfig(encounter.encounterId, encounter.difficultyId);
+        if (!found || found.config.phases.length === 0) return [];
+        const evaluated = await evaluatePhases(found.config, encounter.startMs, encounter.endMs, {
+          query: ctx!.query,
+          spells: ctx!.spells,
+          units: ctx!.units,
+        });
+        return evaluated.map(({ phase, range }) => ({
+          encounter,
+          phase,
+          startMs: range?.startMs ?? null,
+          endMs: range?.endMs ?? null,
+        }));
+      }),
+  );
+  if (seq !== paintSeq) return; // a newer log/paint landed while this was in flight
 
-  render(mount, rows);
+  render(mount, perEncounter.flat());
 }
 
 function render(mount: HTMLElement, rows: PhaseRow[]): void {

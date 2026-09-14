@@ -11,6 +11,8 @@
 import { LGraph, LGraphNode, LiteGraph } from "@comfyorg/litegraph";
 import type { EncounterConfig, NumberExpr, PhaseDef, Trigger } from "./schema";
 import {
+  AuraAppliedTriggerNode,
+  AuraRemovedTriggerNode,
   CastStartTriggerNode,
   CastSuccessTriggerNode,
   CommentNode,
@@ -22,11 +24,14 @@ import {
   NumberValueNode,
   PhaseListNode,
   PhaseNode,
+  SpellFilterTriggerNode,
   ThresholdTriggerNode,
   TimeMathNode,
   UnitDeathCountNode,
   UnitHealthCurrentNode,
   UnitHealthMaxNode,
+  UnitPowerCurrentNode,
+  UnitPowerMaxNode,
 } from "./nodes";
 
 /** A graph shape the compiler doesn't know how to turn into JSON --
@@ -34,6 +39,26 @@ import {
  *  graph" rather than a generic error. */
 export class CompileError extends Error {}
 
+/** A node whose outputs may be pure pass-throughs of its own inputs --
+ *  e.g. Phase's "start"/"end" outputs (phase.ts). Duck-typed rather than
+ *  an interface every node implements, so `originOfInput` below can check
+ *  for the capability generically instead of hardcoding a class name;
+ *  any future pass-through node type just implements this method. */
+interface PassThroughNode {
+  passThroughInputFor(outputName: string): string | null;
+}
+
+function hasPassThrough(node: LGraphNode): node is LGraphNode & PassThroughNode {
+  return typeof (node as Partial<PassThroughNode>).passThroughInputFor === "function";
+}
+
+/** The node feeding `node`'s `inputName` input, unwrapping a pass-through
+ *  output transparently: if the origin declares (via `PassThroughNode`)
+ *  that the output slot the link arrived on just re-exposes one of its
+ *  own inputs, follow that input instead -- so "Phase 1 end -> Phase 2
+ *  start" (or "-> some Threshold's `after`") resolves straight through to
+ *  Phase 1's actual end trigger, recursing if that in turn came from
+ *  another pass-through node's output. */
 function originOfInput(node: LGraphNode, inputName: string): LGraphNode | null {
   const graph = node.graph;
   if (!graph) return null;
@@ -42,7 +67,15 @@ function originOfInput(node: LGraphNode, inputName: string): LGraphNode | null {
   const input = node.inputs?.[idx];
   if (!input || input.link == null) return null;
   const link = graph.links.get(input.link);
-  return link ? graph.getNodeById(link.origin_id) : null;
+  if (!link) return null;
+  const origin = graph.getNodeById(link.origin_id);
+  if (!origin) return null;
+  if (hasPassThrough(origin)) {
+    const outputName = origin.outputs?.[link.origin_slot]?.name;
+    const passThroughInput = outputName ? origin.passThroughInputFor(outputName) : null;
+    if (passThroughInput) return originOfInput(origin, passThroughInput);
+  }
+  return origin;
 }
 
 // ---------------------------------------------------------------- graph -> config
@@ -75,6 +108,12 @@ function makeCompileCtx(): CompileCtx {
 function numberExprFromNode(node: LGraphNode): NumberExpr {
   if (node instanceof UnitHealthCurrentNode) return { type: "unitHealthCurrent", npcId: node.properties.npcId };
   if (node instanceof UnitHealthMaxNode) return { type: "unitHealthMax", npcId: node.properties.npcId };
+  if (node instanceof UnitPowerCurrentNode) {
+    return { type: "unitPowerCurrent", npcId: node.properties.npcId, powerType: node.properties.powerType };
+  }
+  if (node instanceof UnitPowerMaxNode) {
+    return { type: "unitPowerMax", npcId: node.properties.npcId, powerType: node.properties.powerType };
+  }
   if (node instanceof NumberValueNode) return { type: "numberValue", value: node.properties.value };
   if (node instanceof UnitDeathCountNode) {
     return {
@@ -98,17 +137,32 @@ function numberExprFromNode(node: LGraphNode): NumberExpr {
   throw new CompileError(`Don't know how to compile a "${node.title}" node into a number yet.`);
 }
 
+/** Which schema `Trigger.type` each spell-filter node class compiles to --
+ *  a lookup instead of re-testing the same four classes twice (once to
+ *  enter the branch below, once to pick the type string). */
+const SPELL_FILTER_TRIGGER_TYPES: ReadonlyArray<
+  [class_: new () => SpellFilterTriggerNode, type: "castStart" | "castSuccess" | "auraApplied" | "auraRemoved"]
+> = [
+  [CastStartTriggerNode, "castStart"],
+  [CastSuccessTriggerNode, "castSuccess"],
+  [AuraAppliedTriggerNode, "auraApplied"],
+  [AuraRemovedTriggerNode, "auraRemoved"],
+];
+
 function triggerFromNodeUncached(node: LGraphNode, ctx: CompileCtx): Trigger {
   if (node instanceof EncounterStartTriggerNode) return { type: "combatStart" };
   if (node instanceof EncounterEndTriggerNode) return { type: "combatEnd" };
-  if (node instanceof CastStartTriggerNode || node instanceof CastSuccessTriggerNode) {
+  const spellFilterType = SPELL_FILTER_TRIGGER_TYPES.find(([cls]) => node instanceof cls)?.[1];
+  if (spellFilterType && node instanceof SpellFilterTriggerNode) {
     if (node.properties.spellIds.length === 0) {
       throw new CompileError(`A "${node.title}" node needs at least one Spell ID.`);
     }
+    const afterOrigin = originOfInput(node, "after");
     return {
-      type: node instanceof CastStartTriggerNode ? "castStart" : "castSuccess",
+      type: spellFilterType,
       spellIds: node.properties.spellIds,
       ...(node.properties.sourceNpcIds.length ? { sourceNpcIds: node.properties.sourceNpcIds } : {}),
+      ...(afterOrigin ? { after: triggerFromNode(afterOrigin, ctx) } : {}),
     };
   }
   if (node instanceof ThresholdTriggerNode) {
@@ -117,11 +171,13 @@ function triggerFromNodeUncached(node: LGraphNode, ctx: CompileCtx): Trigger {
     if (!valueOrigin || !thresholdOrigin) {
       throw new CompileError('A "Threshold" node is missing an input.');
     }
+    const afterOrigin = originOfInput(node, "after");
     return {
       type: "threshold",
       value: numberExprFromNode(valueOrigin),
       op: node.properties.op,
       threshold: numberExprFromNode(thresholdOrigin),
+      ...(afterOrigin ? { after: triggerFromNode(afterOrigin, ctx) } : {}),
     };
   }
   if (node instanceof TimeMathNode) {
@@ -252,6 +308,16 @@ function nodeForNumberExpr(graph: LGraph, expr: NumberExpr): LGraphNode {
     node.setValues({ npcId: expr.npcId });
     return node;
   }
+  if (expr.type === "unitPowerCurrent") {
+    const node = addNode<UnitPowerCurrentNode>(graph, "encounter/unit-power-current");
+    node.setValues({ npcId: expr.npcId, powerType: expr.powerType });
+    return node;
+  }
+  if (expr.type === "unitPowerMax") {
+    const node = addNode<UnitPowerMaxNode>(graph, "encounter/unit-power-max");
+    node.setValues({ npcId: expr.npcId, powerType: expr.powerType });
+    return node;
+  }
   if (expr.type === "numberValue") {
     const node = addNode<NumberValueNode>(graph, "encounter/number-value");
     node.setValues({ value: expr.value });
@@ -269,22 +335,48 @@ function nodeForNumberExpr(graph: LGraph, expr: NumberExpr): LGraphNode {
   return node;
 }
 
+/** Builds and wires one of the four spell-filter trigger node types
+ *  (Cast Start/Success, Aura Applied/Removed) -- shared by `nodeForTrigger`
+ *  since the four are identical apart from the node type string, matching
+ *  `SPELL_FILTER_TRIGGER_TYPES`'s reverse lookup on the compile side. */
+function spellFilterNode(
+  graph: LGraph,
+  nodeType: string,
+  trigger: { spellIds: number[]; sourceNpcIds?: number[]; after?: Trigger },
+  ctx: LoadCtx,
+): SpellFilterTriggerNode {
+  const node = addNode<SpellFilterTriggerNode>(graph, nodeType);
+  node.setValues({ spellIds: trigger.spellIds, sourceNpcIds: trigger.sourceNpcIds ?? [] });
+  if (trigger.after) {
+    const afterNode = nodeForTrigger(graph, trigger.after, ctx);
+    if (afterNode) afterNode.connect(0, node, "after");
+  }
+  return node;
+}
+
 function nodeForTrigger(graph: LGraph, trigger: Trigger, ctx: LoadCtx): LGraphNode | null {
   if (trigger.type === "combatStart") return addNode(graph, "encounter/trigger-start");
   if (trigger.type === "combatEnd") return addNode(graph, "encounter/trigger-end");
   if (trigger.type === "castStart" || trigger.type === "castSuccess") {
-    const node = addNode<CastStartTriggerNode | CastSuccessTriggerNode>(
+    return spellFilterNode(graph, trigger.type === "castStart" ? "encounter/cast-start" : "encounter/cast-success", trigger, ctx);
+  }
+  if (trigger.type === "auraApplied" || trigger.type === "auraRemoved") {
+    return spellFilterNode(
       graph,
-      trigger.type === "castStart" ? "encounter/cast-start" : "encounter/cast-success",
+      trigger.type === "auraApplied" ? "encounter/aura-applied" : "encounter/aura-removed",
+      trigger,
+      ctx,
     );
-    node.setValues({ spellIds: trigger.spellIds, sourceNpcIds: trigger.sourceNpcIds ?? [] });
-    return node;
   }
   if (trigger.type === "threshold") {
     const node = addNode<ThresholdTriggerNode>(graph, "encounter/threshold");
     node.setValues({ op: trigger.op });
     nodeForNumberExpr(graph, trigger.value).connect(0, node, "value");
     nodeForNumberExpr(graph, trigger.threshold).connect(0, node, "threshold");
+    if (trigger.after) {
+      const afterNode = nodeForTrigger(graph, trigger.after, ctx);
+      if (afterNode) afterNode.connect(0, node, "after");
+    }
     return node;
   }
   if (trigger.type === "offset") {

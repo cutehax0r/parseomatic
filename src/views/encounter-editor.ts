@@ -11,9 +11,10 @@ import { LGraph, LGraphCanvas } from "@comfyorg/litegraph";
 import "@comfyorg/litegraph/style.css";
 import hljs from "highlight.js/lib/core";
 import jsonLang from "highlight.js/lib/languages/json";
-import type { EncounterConfig } from "../encounters/schema";
+import { DIFFICULTY_ID, type EncounterConfig } from "../encounters/schema";
 import { CompileError, configToGraph, graphToConfig } from "../encounters/compile";
 import { findInfoNode, registerEncounterNodeTypes, resetGraphWithInfoNode } from "../encounters/nodes";
+import { invalidateEncounterConfig } from "../encounters/lookup";
 
 hljs.registerLanguage("json", jsonLang);
 
@@ -241,6 +242,7 @@ export function renderEncounterEditor(): void {
         currentPath = path;
         setJsonText(jsonCode, text);
         setStatus(status, fileNameOf(path));
+        invalidateEncounterConfig(config.encounterId, DIFFICULTY_ID[config.difficulty]);
       } catch (err) {
         await message(String(err), { title: "Save Encounter", kind: "error" });
       }

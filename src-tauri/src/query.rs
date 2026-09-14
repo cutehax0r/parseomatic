@@ -56,9 +56,14 @@ impl QuerySpec {
 /// bosses/adds) -- the player-side vs enemy-side split. `SpellId` is the
 /// intern-table index, not the WoW spell id (frontend maps via the
 /// index-aligned `log_lists`). `PosUnit` is the unit the row's advanced
-/// block (position + health, `EventStore::pos_unit`) describes -- filter
-/// on it to pull one unit's HP time series (the encounter-config "health
-/// threshold" trigger, `src/encounters/evaluate.ts`).
+/// block (position + health/power, `EventStore::pos_unit`) describes --
+/// filter on it to pull one unit's HP/power time series (the
+/// encounter-config "health"/"power threshold" triggers,
+/// `src/encounters/evaluate.ts`). `PowerType` is which resource
+/// `current_power`/`max_power` describe on that same row (`Enum.PowerType`
+/// -- a unit with more than one resource, e.g. a mage's mana and arcane
+/// charges, reports whichever one a given line is about, so a power
+/// trigger has to filter to one type, not just `posUnit`).
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum Field {
@@ -73,6 +78,7 @@ pub enum Field {
     Amount,
     Crit,
     PosUnit,
+    PowerType,
 }
 
 impl Field {
@@ -87,6 +93,7 @@ impl Field {
             Field::SpellId => "spellId",
             Field::HitType => "hitType",
             Field::PosUnit => "posUnit",
+            Field::PowerType => "powerType",
             Field::Amount => "amount",
             Field::Crit => "crit",
         }
@@ -215,6 +222,7 @@ fn row_value(field: Field, row: usize, events: &EventStore, tables: &InternTable
         Field::Amount => Val::Int(events.amount[row]),
         Field::Crit => Val::Int((events.flags[row] & FLAG_CRIT != 0) as i64),
         Field::PosUnit => Val::Int(unit_id(events.pos_unit[row])),
+        Field::PowerType => Val::Int(events.power_type[row]),
     }
 }
 

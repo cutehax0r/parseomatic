@@ -9,8 +9,8 @@
 import { LGraphNode } from "@comfyorg/litegraph";
 import type { NodeProperty } from "@comfyorg/litegraph/dist/LGraphNode";
 import { formatIdList, parseIdList } from "./id-list";
-
-const NPC_ID = 0;
+import { POWER_TYPES, powerTypeId, powerTypeLabel } from "../power-type";
+import { syncWidgets } from "./widgets";
 
 interface UnitHealthValues {
   npcId: number;
@@ -38,8 +38,7 @@ abstract class UnitHealthNode extends LGraphNode {
 
   setValues(values: UnitHealthValues): void {
     this.properties = { ...values };
-    const widgets = this.widgets ?? [];
-    if (widgets[NPC_ID]) widgets[NPC_ID].value = values.npcId;
+    syncWidgets(this, [values.npcId]);
   }
 }
 
@@ -57,7 +56,64 @@ export class UnitHealthMaxNode extends UnitHealthNode {
   }
 }
 
-const VALUE = 0;
+interface UnitPowerValues {
+  npcId: number;
+  powerType: number;
+  [key: string]: NodeProperty | undefined;
+}
+
+/** Like Unit Health, but restricted to one resource (a unit can have more
+ *  than one -- a mage's mana *and* arcane charges) via a Power Type
+ *  widget. Less trustworthy than health -- see NumberExpr's
+ *  `unitPowerCurrent`/`unitPowerMax` doc comment (schema.ts). */
+abstract class UnitPowerNode extends LGraphNode {
+  declare properties: UnitPowerValues;
+
+  constructor(title: string) {
+    super(title);
+    this.properties = { npcId: 0, powerType: 0 };
+    this.addOutput("number", "number");
+    this.addWidget(
+      "number",
+      "NPC ID",
+      0,
+      (v: number) => {
+        this.properties.npcId = Math.trunc(v);
+      },
+      { min: 0, precision: 0, step2: 1 },
+    );
+    this.addWidget(
+      "combo",
+      "Power Type",
+      powerTypeLabel(0),
+      (v: string) => {
+        const id = powerTypeId(v);
+        if (id !== null) this.properties.powerType = id;
+      },
+      { values: POWER_TYPES.map((p) => p.label) },
+    );
+    this.size = [200, 70];
+  }
+
+  setValues(values: UnitPowerValues): void {
+    this.properties = { ...values };
+    syncWidgets(this, [values.npcId, powerTypeLabel(values.powerType)]);
+  }
+}
+
+export class UnitPowerCurrentNode extends UnitPowerNode {
+  static override title = "Unit Power (Current)";
+  constructor() {
+    super("Unit Power (Current)");
+  }
+}
+
+export class UnitPowerMaxNode extends UnitPowerNode {
+  static override title = "Unit Power (Max)";
+  constructor() {
+    super("Unit Power (Max)");
+  }
+}
 
 /** A fixed float -- e.g. the "0.20" in "health drops below 20%", or the
  *  "0.10" in "unit A's health drops 10% under unit B's". */
@@ -89,12 +145,9 @@ export class NumberValueNode extends LGraphNode {
 
   setValues(values: NumberValueValues): void {
     this.properties = { ...values };
-    const widgets = this.widgets ?? [];
-    if (widgets[VALUE]) widgets[VALUE].value = values.value;
+    syncWidgets(this, [values.value]);
   }
 }
-
-const DEATH_COUNT_NPC_IDS = 0;
 
 interface UnitDeathCountValues {
   /** Empty = count any unit's death. */
@@ -122,15 +175,12 @@ export class UnitDeathCountNode extends LGraphNode {
 
   setValues(values: UnitDeathCountValues): void {
     this.properties = { npcIds: values.npcIds };
-    const widgets = this.widgets ?? [];
-    if (widgets[DEATH_COUNT_NPC_IDS]) widgets[DEATH_COUNT_NPC_IDS].value = formatIdList(values.npcIds);
+    syncWidgets(this, [formatIdList(values.npcIds)]);
   }
 }
 
 export const NUMBER_MATH_OPS = ["+", "-", "*", "/"] as const;
 export type NumberMathOp = (typeof NUMBER_MATH_OPS)[number];
-
-const NUMBER_MATH_OP = 0;
 
 interface NumberMathValues {
   op: NumberMathOp;
@@ -164,15 +214,12 @@ export class NumberMathNode extends LGraphNode {
 
   setValues(values: NumberMathValues): void {
     this.properties = { ...values };
-    const widgets = this.widgets ?? [];
-    if (widgets[NUMBER_MATH_OP]) widgets[NUMBER_MATH_OP].value = values.op;
+    syncWidgets(this, [values.op]);
   }
 }
 
 export const THRESHOLD_OPS = ["above", "below", "equal"] as const;
 export type ThresholdOp = (typeof THRESHOLD_OPS)[number];
-
-const THRESHOLD_OP = 0;
 
 interface ThresholdValues {
   op: ThresholdOp;
@@ -184,7 +231,10 @@ interface ThresholdValues {
  *  counting condition wants ("4 adds have spawned", "2 players have
  *  died": a Unit Death Count node compared to a fixed Number). A trigger
  *  node like Cast Start/Success -- its "moment" output plugs into a
- *  Phase's start/end or a Time Math node, same as any other trigger. */
+ *  Phase's start/end or a Time Math node, same as any other trigger. The
+ *  optional "after" input constrains the search to strictly after
+ *  another trigger resolves -- see spell-filter-trigger.ts's doc comment
+ *  for why (an identical condition reused for a later, repeated phase). */
 export class ThresholdTriggerNode extends LGraphNode {
   static override title = "Threshold";
 
@@ -195,6 +245,7 @@ export class ThresholdTriggerNode extends LGraphNode {
     this.properties = { op: "below" };
     this.addInput("value", "number");
     this.addInput("threshold", "number");
+    this.addInput("after", "moment");
     this.addOutput("moment", "moment");
     this.addWidget(
       "combo",
@@ -210,7 +261,6 @@ export class ThresholdTriggerNode extends LGraphNode {
 
   setValues(values: ThresholdValues): void {
     this.properties = { ...values };
-    const widgets = this.widgets ?? [];
-    if (widgets[THRESHOLD_OP]) widgets[THRESHOLD_OP].value = values.op;
+    syncWidgets(this, [values.op]);
   }
 }

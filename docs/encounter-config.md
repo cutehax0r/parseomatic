@@ -57,11 +57,12 @@ authored yet) just means every consumer below falls back to its default:
   Timeline) table, with each phase's bounds resolved against the actual
   pull's start/end (`src/encounters/evaluate.ts`). `combatStart` /
   `combatEnd` / `offset` / `ref` resolve with pure arithmetic; `castStart`
-  / `castSuccess` resolve by querying the real log for the first matching
-  cast (same `query_events` primitive every other view uses) — the only
-  kinds so far backed by an actual event scan. Everything else
-  (`auraApplied`, `unitSpawn`, ...) has no detector yet and shows as
-  unresolved (—), not a wrong number.
+  / `castSuccess` / `auraApplied` / `auraRemoved` resolve by querying the
+  real log for the first matching event (same `query_events` primitive
+  every other view uses) — the only kinds so far backed by an actual
+  event scan, alongside `threshold`. Everything else (`unitSpawn`,
+  `stackCount`, ...) has no detector yet and shows as unresolved (—), not
+  a wrong number.
 
 Plugin-shipped configs (`plugins/*/encounters/`, mentioned above) aren't
 read by `find_encounter_config` yet — only `<app data dir>/encounters/`.
@@ -149,7 +150,7 @@ Shared by `phases[].start` and `mechanics[].trigger`:
 | `combatStart` | — | `ENCOUNTER_START` |
 | `combatEnd` | — | `ENCOUNTER_END` |
 | `castStart` / `castSuccess` | `spellIds` (any one matches), optional `sourceNpcIds` (any one matches; omitted = any caster) | a matching `SPELL_CAST_START` / `SPELL_CAST_SUCCESS` |
-| `auraApplied` / `auraRemoved` | `spellId` | matching `SPELL_AURA_APPLIED` / `_REMOVED` |
+| `auraApplied` / `auraRemoved` | `spellIds` (any one matches), optional `sourceNpcIds` (any one matches; omitted = any caster) | a matching `SPELL_AURA_APPLIED` / `SPELL_AURA_REMOVED`. `auraRemoved` is a good exact alternative to an `offset` guess for a channeled ability's real end, when the caster carries a self-buff for the channel's duration |
 | `stackCount` | `spellId`, `atLeast` | an aura's stack count crosses a threshold |
 | `unitSpawn` / `unitDied` | `npcIds` | a unit matching one of the ids appears / dies |
 | `threshold` | `value`, `op` (`above`/`below`/`equal`), `threshold` (both `NumberExpr` -- see below) | `value op threshold` first holds, scanning each referenced unit's real HP/death-count samples |
@@ -160,6 +161,32 @@ Shared by `phases[].start` and `mechanics[].trigger`:
 `since` references are dotted paths: `<phaseId>.start`, `<phaseId>.end`,
 or `<mechanicId>.end` (a mechanic kind defines what "end" means for it —
 see below).
+
+### Repeated conditions: `after` and phase chaining
+
+`castStart`, `castSuccess`, `auraApplied`, `auraRemoved`, and `threshold`
+all take an optional `after: Trigger` — resolve `after` first, then only
+look for a match strictly later than it, rather than scanning from the
+encounter's own start. Without it, the *same* condition reused for a
+repeating mechanic (a council fight's second intermission triggered by
+the same cast as the first, a boss buff that hits 100 power twice) would
+resolve to the fight's very first occurrence every time it's evaluated,
+regardless of which phase is asking — `after` is what lets "the second
+time this happens" mean something different from "the first."
+
+Phase nodes make this easy to wire without extra bookkeeping: a Phase
+node's `start`/`end` **outputs** re-expose whatever's wired into that
+same node's `start`/`end` **inputs** (`phase.ts`) — pure pass-throughs,
+not new values. So "Phase 1 ends" can feed both Phase 1 itself and,
+directly, "Phase 2 starts" or a Threshold/Cast/Aura node's `after` input
+elsewhere, without duplicating the trigger definition or routing it
+through `EncounterConfig.triggers`/`ref` at all. Chained this way, a
+repeating fight structure (phase — intermission — phase, twice or more)
+becomes: wire each phase's `end` into the next one's `start`, and for any
+condition that repeats verbatim (the same cast starting each
+intermission, the same buff ending each of them), wire the previous
+occurrence's own resolved moment into that condition's `after` input so
+each repetition finds the next real occurrence instead of the first.
 
 ### NumberExpr vocabulary
 
@@ -173,6 +200,7 @@ just inlined twice.
 |---|---|---|
 | `numberValue` | `value` | a fixed float, e.g. `0.20` for "20%", or `4` for a count |
 | `unitHealthCurrent` / `unitHealthMax` | `npcId` | that unit's current/max HP, as of the instant being evaluated |
+| `unitPowerCurrent` / `unitPowerMax` | `npcId`, `powerType` (`Enum.PowerType` -- see below) | that unit's current/max power *of that type*, as of the instant being evaluated. Less trustworthy than health -- see below |
 | `unitDeathCount` | optional `npcIds` (omitted/empty = any unit) | a running count of `UNIT_DIED` events matching one of `npcIds`, as of the instant being evaluated |
 | `numberMath` | `a`, `op` (`+`/`-`/`*`/`/`), `b` (both `NumberExpr`) | e.g. `unitHealthCurrent / unitHealthMax` for a 0-1 health fraction |
 
@@ -189,6 +217,24 @@ death, for "this many players have died" regardless of which ones. There's
 no equivalent spawn counter yet -- `unitSpawn` (above) has no evaluator
 case, since WoW's combat log has no reliable universal "this unit just
 appeared" event to detect it from.
+
+`powerType` (`unitPowerCurrent`/`unitPowerMax`) is `Enum.PowerType`
+(https://wowwiki-archive.fandom.com/wiki/API_COMBAT_LOG_EVENT's "Power
+Type" table -- `src/encounters/power-type.ts`'s `POWER_TYPES`): `-2`
+health, `0` mana, `1` rage, `2` focus, `3` energy, `4` combo points, `5`
+runes, `6` runic power, `7` soul shards, `8` lunar power, `9` holy power,
+`10` alternate power, `11` maelstrom, `12` chi, `13` insanity, `16` arcane
+charges, `17` fury, `18` pain, `19` essence. Required, not optional --
+unlike health, a unit can have more than one power resource (a mage's
+mana *and* arcane charges), each reported only on whichever log lines are
+about it, so there's no single "the" power to read without picking one.
+**Less trustworthy than health**: the combat log's power-info region is
+the one part of the 19-field advanced block
+(`docs/combat-log-format.md` §5) not fully pinned down -- 2 unidentified
+fields were inserted somewhere in the old 4-field power region, and
+`currentPower`/`maxPower`'s exact position is the doc's best current
+guess, not confirmed the way health's position is. Verify against a real
+log before relying on a power threshold in a shipped encounter config.
 
 ### Shared triggers
 
@@ -299,13 +345,20 @@ buildable in the editor already evaluates:
   `{ type: "combatEnd" }`. A `moment`-typed output that plugs into a Phase
   node's `start`/`end` input, or a Time Math node's inputs.
 - **`encounter/cast-start`** / **`encounter/cast-success`** (`cast-trigger.ts`)
-  — fires on the first `SPELL_CAST_START` / `SPELL_CAST_SUCCESS` matching
-  a comma-separated Spell IDs widget, optionally narrowed by a
-  comma-separated Source NPC IDs widget (blank = any caster). Both take
-  more than one id so one node covers a council fight's "any of these
-  bosses casts any of these spells" phase-change condition, not just a
-  single caster/spell pair. A `moment`-typed output, same slot as the two
-  above. The rest of the trigger vocabulary (`auraApplied`, `timer`, ...)
+  and **`encounter/aura-applied`** / **`encounter/aura-removed`**
+  (`aura-trigger.ts`) — fire on the first `SPELL_CAST_START` /
+  `SPELL_CAST_SUCCESS` / `SPELL_AURA_APPLIED` / `SPELL_AURA_REMOVED`
+  matching a comma-separated Spell IDs widget, optionally narrowed by a
+  comma-separated Source NPC IDs widget (blank = any caster) — all four
+  share one base (`spell-filter-trigger.ts`), differing only in which
+  event kind the evaluator scans for. Both id lists take more than one
+  entry so one node covers a council fight's "any of these bosses casts
+  any of these spells" phase-change condition, not just a single
+  caster/spell pair. A `moment`-typed output, same slot as the two
+  Encounter Start/End nodes above. All four (and Threshold, below) also
+  carry an optional `after` moment **input** -- see "Repeated conditions"
+  above -- unconnected by default (search from the encounter's own
+  start). The rest of the trigger vocabulary (`stackCount`, `timer`, ...)
   gets its own node once a phase actually needs one.
 - **`encounter/duration`** (`duration.ts`) — a fixed length of time
   authored as Minutes/Seconds widgets (e.g. "5 minutes" for an enrage
@@ -322,10 +375,15 @@ buildable in the editor already evaluates:
   evaluator should reject it). No static type-checking for this exists,
   only at evaluation time.
 - **`encounter/phase`** (`phase.ts`) — one phase occurrence: `id`, `label`,
-  `kind` widgets, `start`/`end` moment inputs, a `phase`-typed output.
-  Matches "every phase gets its own mechanic entries" above — repeated
-  phases are separate nodes, not one reused. No `mechanics` input yet
-  (no mechanic node types exist).
+  `kind` widgets, `start`/`end` moment inputs, a `phase`-typed output, and
+  **`start`/`end` moment outputs that re-expose those same two inputs**
+  (pure pass-throughs, not new values) — see "Repeated conditions" above
+  for why: it's what lets "Phase 1 ends" feed both Phase 1 itself and,
+  directly, "Phase 2 starts" or another trigger's `after` input, with no
+  `EncounterConfig.triggers`/`ref` indirection needed for a simple
+  chained fight structure. Matches "every phase gets its own mechanic
+  entries" above — repeated phases are separate nodes, not one reused. No
+  `mechanics` input yet (no mechanic node types exist).
 - **`encounter/phase-list`** (`phase-list.ts`) — the ordered collection a
   phase graph is built into: each numbered `phase`-typed input holds one
   Phase node, slot order is phase order. Always keeps one trailing empty
@@ -336,6 +394,13 @@ buildable in the editor already evaluates:
   evaluated, off an NPC ID widget. Two separate single-output nodes
   rather than one node with two outputs, matching Encounter Start/End's
   precedent. A `number`-typed output.
+- **`encounter/unit-power-current`** / **`encounter/unit-power-max`**
+  (`number.ts`) — like Unit Health, but with an added Power Type widget
+  (a labeled dropdown over `Enum.PowerType`, since a unit can have more
+  than one resource) — an NPC ID widget alone isn't enough to say which
+  power. A `number`-typed output. See `NumberExpr`'s `unitPowerCurrent`/
+  `unitPowerMax` doc comment (schema.ts) for the "less trustworthy than
+  health" caveat.
 - **`encounter/number-value`** (`number.ts`) — a fixed float authored as
   a single Value widget, e.g. the "0.20" in "health drops below 20%". A
   `number`-typed output.
@@ -347,13 +412,14 @@ buildable in the editor already evaluates:
   unit), for counting conditions ("4 adds have died", "2 players have
   died"). A `number`-typed output.
 - **`encounter/threshold`** (`number.ts`) — the bridge back from `number`
-  to `moment`: two `number` inputs (`value`, `threshold`) and an
-  above/below/equal Op widget, firing at the first instant `value`
-  crosses (or, for `equal`, first matches) `threshold`
-  (`src/encounters/evaluate.ts` scans the referenced unit(s)' real
-  HP/death-count samples for it). A trigger node like Cast Start/Success
-  — its `moment`-typed output plugs into a Phase's `start`/`end` or a
-  Time Math node same as any other trigger.
+  to `moment`: two `number` inputs (`value`, `threshold`), an optional
+  `after` moment input (same as the cast/aura nodes -- "Repeated
+  conditions" above), and an above/below/equal Op widget, firing at the
+  first instant `value` crosses (or, for `equal`, first matches)
+  `threshold` (`src/encounters/evaluate.ts` scans the referenced unit(s)'
+  real HP/death-count samples for it). A trigger node like Cast
+  Start/Success — its `moment`-typed output plugs into a Phase's
+  `start`/`end` or a Time Math node same as any other trigger.
 - **`encounter/comment`** (`comment.ts`) — a pure annotation: no inputs,
   no outputs, one free-text widget, no effect on compilation or
   evaluation. Collected into `EncounterConfig.comments` (every Comment

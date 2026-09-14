@@ -2,17 +2,28 @@
 // (or intermission/enrage) occurrence; docs/encounter-config.md's "every
 // phase gets its own mechanic entries" applies here too, so a repeated
 // phase (Phase 1 and Phase 3 of the same fight) is two separate nodes, not
-// one reused. "start"/"end" each accept anything "moment"-typed: a Trigger
-// node's output directly, or a Time Math node's computed result (e.g.
-// "Encounter Start + 5 minutes"). "mechanics" input isn't built yet --
-// mechanic node types don't exist.
+// one reused. "start"/"end" inputs each accept anything "moment"-typed: a
+// Trigger node's output directly, or a Time Math node's computed result
+// (e.g. "Encounter Start + 5 minutes"). "mechanics" input isn't built yet
+// -- mechanic node types don't exist.
+//
+// The "start"/"end" *outputs* re-expose whatever's wired into this same
+// node's "start"/"end" inputs -- so "Phase 1 ends" can feed both Phase 1
+// itself and, directly, "Phase 2 starts" (or a Threshold/Cast/Aura
+// node's "after" input elsewhere), without duplicating the trigger
+// definition or routing it through `EncounterConfig.triggers`/`ref`. Pure
+// pass-through, declared via `passThroughInputFor` (any node type can
+// implement this -- compile.ts's `originOfInput` checks for it generically
+// rather than special-casing this class by name) so a link arriving via
+// one of these two outputs is followed straight back to whatever feeds
+// the corresponding input on *this* node, recursing if that's another
+// Phase's output.
 //
 // Once evaluated against a real log, the "phase" output resolves to a
 // TimeRange (src/encounters/runtime.ts) derived from the start/end
 // moments -- just { startMs, endMs }, not id/label/kind. Those stay on
 // this node's own properties; a consumer that needs the label reads the
-// node, not the resolved value. No evaluator exists yet, this is the
-// value contract it will produce.
+// node, not the resolved value.
 
 import { LGraphNode } from "@comfyorg/litegraph";
 import type { PhaseKind } from "../schema";
@@ -34,6 +45,8 @@ export class PhaseNode extends LGraphNode {
     this.addInput("start", "moment");
     this.addInput("end", "moment");
     this.addOutput("phase", "phase");
+    this.addOutput("start", "moment");
+    this.addOutput("end", "moment");
     this.addWidget("text", "Id", "", (v: string) => {
       this.properties.id = v;
     });
@@ -49,7 +62,7 @@ export class PhaseNode extends LGraphNode {
       },
       { values: PHASE_KINDS },
     );
-    this.size = [200, 120];
+    this.size = [200, 140];
   }
 
   setValues(values: { id: string; label: string; kind: PhaseKind }): void {
@@ -58,5 +71,14 @@ export class PhaseNode extends LGraphNode {
     if (widgets[ID]) widgets[ID].value = values.id;
     if (widgets[LABEL]) widgets[LABEL].value = values.label;
     if (widgets[KIND]) widgets[KIND].value = values.kind;
+  }
+
+  /** This node's "start"/"end" outputs are pure pass-throughs of its own
+   *  "start"/"end" inputs -- see the module comment above. Any node type
+   *  can opt into this same behavior for its own outputs by implementing
+   *  this method (`compile.ts`'s `originOfInput` checks for it via duck
+   *  typing, not an `instanceof` check on this specific class). */
+  passThroughInputFor(outputName: string): string | null {
+    return outputName === "start" || outputName === "end" ? outputName : null;
   }
 }

@@ -1159,6 +1159,10 @@ struct RawEventRow {
     /// threshold" trigger's per-unit HP time series
     /// (`src/encounters/evaluate.ts`).
     health: Option<(i64, i64)>,
+    /// `(currentPower, maxPower)`, same idea as `health` but for the
+    /// encounter-config "power threshold" trigger. Less trustworthy than
+    /// `health` -- see `EventStore::current_power`'s doc comment.
+    power: Option<(i64, i64)>,
     details: String,
 }
 
@@ -1194,6 +1198,7 @@ fn raw_event_row(events: &parser::event::EventStore, mmap: &[u8], row: usize) ->
         spell_id: (events.spell[row] != NO_SPELL).then_some(events.spell[row]),
         position: (!events.pos_x[row].is_nan()).then_some((events.pos_x[row], events.pos_y[row])),
         health: (events.current_hp[row] >= 0).then_some((events.current_hp[row], events.max_hp[row])),
+        power: (events.current_power[row] >= 0).then_some((events.current_power[row], events.max_power[row])),
         details,
     }
 }

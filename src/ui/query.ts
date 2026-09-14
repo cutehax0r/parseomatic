@@ -9,8 +9,12 @@ import { invoke } from "@tauri-apps/api/core";
 // resolves a player's pet to its owner so pet damage folds into the
 // owning player. `spellId` is the intern-table index, not the WoW id
 // (resolve via the index-aligned log_lists arrays). `posUnit` is the unit
-// the row's advanced block (position + health) describes -- filter on it
-// to pull one unit's HP time series (src/encounters/evaluate.ts).
+// the row's advanced block (position + health/power) describes -- filter
+// on it to pull one unit's HP/power time series (src/encounters/evaluate.ts).
+// `powerType` is which resource current/max power describe on that row
+// (Enum.PowerType, src/encounters/power-type.ts) -- a unit with more than
+// one resource reports whichever one a given line is about, so a power
+// series has to filter to one type, not just `posUnit`.
 export type QueryField =
   | "time"
   | "kind"
@@ -22,7 +26,8 @@ export type QueryField =
   | "hitType"
   | "amount"
   | "crit"
-  | "posUnit";
+  | "posUnit"
+  | "powerType";
 
 export type FilterOp = "eq" | "ne" | "in" | "lt" | "lte" | "gt" | "gte";
 

@@ -9,13 +9,12 @@
 
 import { LGraphNode } from "@comfyorg/litegraph";
 import type { NodeProperty } from "@comfyorg/litegraph/dist/LGraphNode";
+import { syncWidgets } from "./widgets";
 
 export interface CommentValues {
   text: string;
   [key: string]: NodeProperty | undefined;
 }
-
-const TEXT = 0;
 
 export class CommentNode extends LGraphNode {
   static override title = "Comment";
@@ -34,7 +33,6 @@ export class CommentNode extends LGraphNode {
 
   setValues(values: CommentValues): void {
     this.properties = { ...values };
-    const widgets = this.widgets ?? [];
-    if (widgets[TEXT]) widgets[TEXT].value = values.text;
+    syncWidgets(this, [values.text]);
   }
 }

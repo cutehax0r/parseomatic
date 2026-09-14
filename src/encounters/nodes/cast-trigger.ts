@@ -7,49 +7,12 @@
 // phase-change condition, not just a single caster/spell pair
 // (docs/encounter-config.md's Trigger vocabulary). Once evaluated,
 // resolves via src/encounters/evaluate.ts against the real log's
-// SPELL_CAST_START/SUCCESS events -- the only trigger kinds so far that
-// need an actual log scan rather than pure arithmetic on the encounter's
-// own start/end.
+// SPELL_CAST_START/SUCCESS events. See aura-trigger.ts for the
+// AURA_APPLIED/REMOVED sibling -- both share spell-filter-trigger.ts's base.
 
-import { LGraphNode } from "@comfyorg/litegraph";
-import type { NodeProperty } from "@comfyorg/litegraph/dist/LGraphNode";
-import { formatIdList, parseIdList } from "./id-list";
+import { SpellFilterTriggerNode } from "./spell-filter-trigger";
 
-export interface CastTriggerValues {
-  spellIds: number[];
-  /** Empty = any source. */
-  sourceNpcIds: number[];
-  [key: string]: NodeProperty | undefined;
-}
-
-const SPELL_IDS = 0;
-const SOURCE_NPC_IDS = 1;
-
-abstract class CastTriggerNode extends LGraphNode {
-  declare properties: CastTriggerValues;
-
-  constructor(title: string) {
-    super(title);
-    this.properties = { spellIds: [], sourceNpcIds: [] };
-    this.addOutput("moment", "moment");
-    this.addWidget("text", "Spell IDs", "", (v: string) => {
-      this.properties.spellIds = parseIdList(v);
-    });
-    this.addWidget("text", "Source NPC IDs", "", (v: string) => {
-      this.properties.sourceNpcIds = parseIdList(v);
-    });
-    this.size = [220, 80];
-  }
-
-  setValues(values: CastTriggerValues): void {
-    this.properties = { spellIds: values.spellIds, sourceNpcIds: values.sourceNpcIds };
-    const widgets = this.widgets ?? [];
-    if (widgets[SPELL_IDS]) widgets[SPELL_IDS].value = formatIdList(values.spellIds);
-    if (widgets[SOURCE_NPC_IDS]) widgets[SOURCE_NPC_IDS].value = formatIdList(values.sourceNpcIds);
-  }
-}
-
-export class CastStartTriggerNode extends CastTriggerNode {
+export class CastStartTriggerNode extends SpellFilterTriggerNode {
   static override title = "Spell Cast Start";
 
   constructor() {
@@ -57,7 +20,7 @@ export class CastStartTriggerNode extends CastTriggerNode {
   }
 }
 
-export class CastSuccessTriggerNode extends CastTriggerNode {
+export class CastSuccessTriggerNode extends SpellFilterTriggerNode {
   static override title = "Spell Cast Success";
 
   constructor() {
