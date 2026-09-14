@@ -384,6 +384,74 @@ fn build_one(
     EncounterStats { players }
 }
 
+/// Carries raw intern ids (`unitId`) like `RawEventRow` -- the frontend
+/// already holds the unit table from `log_lists` and resolves names +
+/// class/spec itself.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlayerStatsRow {
+    unit_id: u32,
+    damage_own: i64,
+    damage_pet: i64,
+    heal_own: i64,
+    heal_pet: i64,
+    damage_taken: i64,
+    deaths: u32,
+    alive_ms: i64,
+    active_ms: i64,
+    /// The encounter/window duration, so the frontend gets `active%` /
+    /// `alive%` without also fetching the encounter row.
+    encounter_ms: i64,
+    distance: f64,
+    movement_ms: i64,
+    /// Per-decile (1/10 of the encounter) fractions for row sparklines:
+    /// `activeBins` = share active, `deadBins` = share dead, `movementBins`
+    /// = distance travelled. Each has `stats::DECILES` (10) entries.
+    active_bins: Vec<f64>,
+    dead_bins: Vec<f64>,
+    movement_bins: Vec<f64>,
+}
+
+/// Per-player derived stats for one encounter (`docs/activity-and-movement.md`)
+/// -- damage/healing (own vs pet), damage taken, deaths, alive + active
+/// time, movement. Computed once per log on the first call (parallel scan
+/// of the encounter windows), cached after. `None` if parsing isn't done
+/// or `encounter_index` is out of range.
+#[tauri::command]
+pub(crate) fn encounter_stats(
+    window: tauri::WebviewWindow,
+    encounter_index: usize,
+) -> Option<Vec<PlayerStatsRow>> {
+    let log = crate::window::current_log(&window)?;
+    let data = log.data()?;
+    let encounter = data.reports.encounters.get(encounter_index)?;
+    let encounter_ms = encounter.end_ms - encounter.start_ms;
+    let stats = data.encounter_stats().get(encounter_index)?;
+    Some(
+        stats
+            .players
+            .iter()
+            .map(|p| PlayerStatsRow {
+                unit_id: p.unit_id,
+                damage_own: p.damage_own,
+                damage_pet: p.damage_pet,
+                heal_own: p.heal_own,
+                heal_pet: p.heal_pet,
+                damage_taken: p.damage_taken,
+                deaths: p.deaths,
+                alive_ms: p.alive_ms,
+                active_ms: p.active_ms,
+                encounter_ms,
+                distance: p.distance,
+                movement_ms: p.movement_ms,
+                active_bins: p.active_bins.to_vec(),
+                dead_bins: p.dead_bins.to_vec(),
+                movement_bins: p.movement_bins.to_vec(),
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

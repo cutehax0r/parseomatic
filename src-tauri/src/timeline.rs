@@ -250,6 +250,112 @@ pub fn series(
     out
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TimelineInstantRow {
+    t_ms: i64,
+    /// `dmgOut` | `dmgIn` | `healOut` | `healIn`.
+    kind: &'static str,
+    /// `None` for a melee swing.
+    spell_id: Option<u16>,
+    amount: i64,
+    /// Target for `*Out`, source for `*In`; `None` if unset.
+    other_unit: Option<u32>,
+    /// `SPELL_PERIODIC_*` -- a DoT / HoT tick rather than a direct hit.
+    periodic: bool,
+    /// The player's own position at that moment; `None` when the row
+    /// carried someone else's coords / none.
+    x: Option<f32>,
+    y: Option<f32>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AuraSpanRow {
+    spell_id: Option<u16>,
+    start_ms: i64,
+    /// `null` = still active at the window's end.
+    end_ms: Option<i64>,
+    is_debuff: bool,
+    source_unit: Option<u32>,
+    /// Peak stack count over the span; 1 for a non-stacking aura.
+    max_stacks: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TimelineSeriesRow {
+    start_ms: i64,
+    end_ms: i64,
+    instants: Vec<TimelineInstantRow>,
+    auras: Vec<AuraSpanRow>,
+    /// The player's death intervals within the window (rules across every
+    /// lane).
+    deaths: Vec<crate::movement::MovementDeathSpanRow>,
+    /// The player's own position fixes -- feeds the view's Movement lane
+    /// so it needs no separate `movement_series` call.
+    samples: Vec<crate::movement::MovementSampleRow>,
+}
+
+/// Per-player activity streams for `unit_id` over `[start_ms, end_ms]` --
+/// backs the Timeline view (`src/views/timeline.ts`). One windowed scan;
+/// `None` before parsing has finished. See `src/timeline.rs`.
+#[tauri::command]
+pub(crate) fn timeline_series(
+    window: tauri::WebviewWindow,
+    unit_id: u32,
+    start_ms: i64,
+    end_ms: i64,
+) -> Option<TimelineSeriesRow> {
+    use crate::movement::{MovementDeathSpanRow, MovementSampleRow};
+    use crate::parser::intern::NO_SPELL;
+
+    let log = crate::window::current_log(&window)?;
+    let data = log.data()?;
+    let s = series(&data.events, log.mmap_bytes(), unit_id, start_ms, end_ms);
+    let finite = |v: f32| v.is_finite().then_some(v);
+    Some(TimelineSeriesRow {
+        start_ms: s.start_ms,
+        end_ms: s.end_ms,
+        instants: s
+            .instants
+            .into_iter()
+            .map(|i| TimelineInstantRow {
+                t_ms: i.t_ms,
+                kind: i.kind.as_str(),
+                spell_id: (i.spell_id != NO_SPELL).then_some(i.spell_id),
+                amount: i.amount,
+                other_unit: (i.other_unit != NO_UNIT).then_some(i.other_unit),
+                periodic: i.periodic,
+                x: finite(i.x),
+                y: finite(i.y),
+            })
+            .collect(),
+        auras: s
+            .auras
+            .into_iter()
+            .map(|a| AuraSpanRow {
+                spell_id: (a.spell_id != NO_SPELL).then_some(a.spell_id),
+                start_ms: a.start_ms,
+                end_ms: a.end_ms,
+                is_debuff: a.is_debuff,
+                source_unit: (a.source_unit != NO_UNIT).then_some(a.source_unit),
+                max_stacks: a.max_stacks,
+            })
+            .collect(),
+        deaths: s
+            .deaths
+            .into_iter()
+            .map(|d| MovementDeathSpanRow { start_ms: d.start_ms, end_ms: d.end_ms })
+            .collect(),
+        samples: s
+            .samples
+            .into_iter()
+            .map(|p| MovementSampleRow { t_ms: p.t_ms, x: p.x, y: p.y })
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

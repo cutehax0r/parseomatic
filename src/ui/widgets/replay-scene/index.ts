@@ -9,33 +9,35 @@
 // death / facing animations land in phases C-D; the per-unit tracks are
 // already stashed on each mesh's `userData` for them. The camera opens
 // at a fixed overhead 3/4 and is otherwise a free orbit / pan / zoom.
+//
+// This file is the render/update driver -- the scene, camera, playback
+// loop, and the per-frame orchestration across units / cast lines /
+// particles / markers / selection. The concerns that split cleanly into
+// pure functions (no scene-graph ownership) live alongside it in this
+// folder: types.ts (shared shapes), math.ts (generic helpers), unit-
+// poses.ts (spawn/death animation), unit-visuals.ts (mesh factories +
+// overlap de-conflict), status-bar.ts (selection HUD), cast-lines.ts
+// (attack/heal beam math), markers.ts (world marker shapes), sky.ts
+// (skybox texture).
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import { getSelectedPlayer, subscribeSelectedPlayer } from "../context";
-import { registerWidget } from "../registry";
-import type { Widget } from "../spec";
-import { formatCompact } from "../../format";
-import { roleIcon, roleIconClass } from "./role-icon";
+import { getSelectedPlayer, subscribeSelectedPlayer } from "../../context";
+import { registerWidget } from "../../registry";
+import type { Widget } from "../../spec";
 import type {
   ReplayCastLine,
-  ReplayCastSpan,
-  ReplayDeathSpan,
-  ReplayFaceHint,
-  ReplayHpSample,
   ReplayPeriodicHit,
-  ReplaySample,
   ReplayWorldMarker,
   SpellRow,
-} from "../../types";
+} from "../../../types";
 import {
   CELL,
   MIN_SPAN,
   PILLAR_DEPTH,
   FLOOR_LIFT,
   PLAYER_H,
-  cssValue,
   cssColor,
   gridTexture,
   framingOf,
@@ -44,70 +46,69 @@ import {
   mapDocToWorld,
   devMapWorldBox,
   buildDevMap,
-} from "../../map/extrude";
-import type { Framing, Box, DevMapDoc } from "../../map/extrude";
+} from "../../../map/extrude";
+import type { Framing, Box, DevMapDoc } from "../../../map/extrude";
 
-export type ReplayTeam = "player" | "enemy" | "other";
-export type ReplayShape = "cube" | "sphere";
+import type { ReplaySceneProps, ReplaySceneUnitInput } from "./types";
+import { clamp01, fmtClock, hash01, posAt, setMeshOpacity } from "./math";
+import { HOVER, deathPoseAt, despawnPoseAt, spawnAt } from "./unit-poses";
+import { Placement, cubeMesh, deconflictOverlaps, dimOverlapping, sphereMesh } from "./unit-visuals";
+import {
+  CastBarState,
+  UnitCardParts,
+  RECENT_COUNT,
+  buildRecentRow,
+  buildTicksBySource,
+  buildUnitCard,
+  computeCastBar,
+  isTargetGone,
+  latestCastTarget,
+  recentCastSpans,
+  refreshCardHp,
+} from "./status-bar";
+import {
+  CAST_BALL_R_ENEMY,
+  CAST_BALL_R_PLAYER,
+  CAST_ENEMY_COLOR,
+  CAST_HALFW_ENEMY,
+  CAST_HALFW_PLAYER,
+  CAST_HEAL_COLOR,
+  CAST_HEAL_OPACITY,
+  CAST_LINE_OPACITY,
+  CAST_PEAK_ENEMY,
+  CAST_PEAK_ENEMY_RAND,
+  CAST_PEAK_PLAYER,
+  CAST_PEAK_PLAYER_RAND,
+  CAST_POOL,
+  CAST_SECONDARY_DIM,
+  CAST_SEGMENTS,
+  CAST_SPREAD,
+  castLineState,
+  quadBezier,
+} from "./cast-lines";
+import {
+  MARKER_COL_H,
+  MARKER_COL_OPACITY,
+  MARKER_COL_R,
+  MARKER_DEFS,
+  MARKER_FADE_MS,
+  MARKER_ICON,
+  MARKER_ICON_DEPTH,
+  MARKER_ICON_OPACITY,
+  MARKER_LIGHT_ANGLE,
+  MARKER_LIGHT_INTENSITY,
+  MARKER_LIGHT_MAX,
+  MARKER_LIGHT_PENUMBRA,
+  markerColumnMaterial,
+  markerShape,
+} from "./markers";
+import { skyTexture } from "./sky";
 
-// Resolved by the view (class colour looked up, team + shape + size
-// decided from health) so the widget stays dumb about game data.
-export interface ReplaySceneUnitInput {
-  unitId: number;
-  guid: string; // stack tiebreak when players overlap
-  name: string; // character / creature name -- shown in the selection status bar
-  kind: string;
-  color: string; // "var(--token)" or a literal CSS colour
-  team: ReplayTeam;
-  shape: ReplayShape;
-  size: number; // world yards -- cube side / pyramid height
-  // Vertical stack order for overlapping player cubes (lower = bottom):
-  // tank 0, melee 1, ranged 2, healer 3, unknown 4. Unused for enemies.
-  stackRank: number;
-  // Selection status bar bits (players; 4 / "" / null for creatures).
-  roleRank: number;
-  spec: string; // "Frost Mage" etc.
-  itemLevel: number | null;
-  maxHp: number; // largest advanced-block maxHP; 0 if unknown
-  samples: ReplaySample[];
-  hpSamples: ReplayHpSample[];
-  deathSpans: ReplayDeathSpan[];
-  castSpans: ReplayCastSpan[];
-  faceEvents: ReplayFaceHint[];
-}
-
-export interface ReplaySceneProps {
-  units: ReplaySceneUnitInput[];
-  castLines: ReplayCastLine[];
-  periodicHits: ReplayPeriodicHit[];
-  hostilePeriodicHits: ReplayPeriodicHit[];
-  periodicHeals: ReplayPeriodicHit[];
-  envHits: ReplayPeriodicHit[];
-  worldMarkers: ReplayWorldMarker[];
-  fitBox: [number, number, number, number] | null;
-  startMs: number;
-  endMs: number;
-  // Numeric encounterID (0 = custom range) -- picks the per-encounter
-  // entry in a loaded map's `encounters` block (orientation, …).
-  encounterId?: number;
-  // Index-aligned with the backend intern id (`ReplayCastSpan.spellId`) --
-  // resolves the cast bar's ability name. `ctx.spells`, same lookup the
-  // Timeline / Interrupts views use.
-  spells?: SpellRow[];
-}
+export type { ReplayTeam, ReplayShape, ReplaySceneUnitInput, ReplaySceneProps } from "./types";
 
 // The base layer reads as a bottomless drop, not a floor a few yards
 // down -- 5 player heights below the deck.
 const BASE_DROP = 5 * PLAYER_H;
-const HOVER = 0.35; // yards a shape floats above the floor
-// De-conflicting overlaps (`deconflictOverlaps`). `STACK_DIST` x the
-// mean shape size is the "overlapping" threshold. Player cubes fan up
-// `PLAYER_STEP` x height per tier; an add over a player drops flush to
-// the deck; adds over each other fan up `ADD_STEP` x height per tier
-// (smallest highest).
-const STACK_DIST = 0.85;
-const PLAYER_STEP = 0.1;
-const ADD_STEP = 0.25;
 
 // Background scenery: a scatter of tall, skinny triangular pyramids
 // standing in a wide ring beyond the play area, rooted well below the
@@ -124,392 +125,6 @@ const DECO_H_SPAN = 89.75; // random height added on top
 const DECO_R_MIN = 12; // smallest base radius, yards
 const DECO_R_SPAN = 48; // random width added on top
 const DECO_ROOT_Y = FLOOR_LIFT - 30; // base sits this far down -- below the base layer
-
-const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
-const smoothstep = (k: number): number => k * k * (3 - 2 * k);
-const lerp = (a: number, b: number, k: number): number => a + (b - a) * k;
-
-// Spawn-in: an enemy that isn't active at the window start sits
-// `SPAWN_RISE` yards above its spot at 0 opacity until `SPAWN_LEAD_MS`
-// before its first activity, then slides down + fades to full, arriving
-// on time. "First activity" = its first position fix (`samples[0]`).
-const SPAWN_RISE = 50;
-const SPAWN_LEAD_MS = 1000;
-
-// yards-above-normal + opacity for an enemy whose first activity is
-// `firstMs`, viewed at `t`. Smoothstepped.
-function spawnAt(firstMs: number, t: number): { yOffset: number; opacity: number } {
-  const lead = firstMs - t;
-  if (lead <= 0) return { yOffset: 0, opacity: 1 };
-  if (lead >= SPAWN_LEAD_MS) return { yOffset: SPAWN_RISE, opacity: 0 };
-  const e = smoothstep(lead / SPAWN_LEAD_MS); // 1 -> 0
-  return { yOffset: SPAWN_RISE * e, opacity: 1 - e };
-}
-
-// Death: squish to `DEATH_FLAT` of normal height over `DEATH_SQUISH_MS`,
-// resting a hair (`DEAD_LIFT`) above the deck -- just enough to stop
-// z-fighting. Players then stay a pancake forever (until a
-// `SPELL_RESURRECT` -- `end_ms` -- stretches them back over `REVIVE_MS`).
-// Enemies hold flat for `DEATH_HOLD_MS`, then over `DEATH_FADE_MS` fade
-// to 0 and sink `SPAWN_RISE` under the world (mirror of the spawn-in).
-const DEATH_SQUISH_MS = 300;
-const DEATH_FLAT = 1 / 8;
-const DEAD_LIFT = 0.06;
-const DEATH_HOLD_MS = 10_000;
-const DEATH_FADE_MS = 1000;
-const REVIVE_MS = 350;
-
-interface DeathPose {
-  scaleY: number; // multiplier on the shape's base y scale
-  y: number; // absolute world y for the (squished) centre
-  opacity: number;
-  visible: boolean;
-}
-
-const flatY = (size: number): number => FLOOR_LIFT + DEAD_LIFT + (DEATH_FLAT * size) / 2;
-const normalY = (size: number): number => FLOOR_LIFT + HOVER + size / 2;
-
-// "Flatten then leave the field", starting at `t0`: squish over
-// `DEATH_SQUISH_MS`, hold flat for `hold` ms, then fade to 0 + sink
-// `SPAWN_RISE` under the world over `DEATH_FADE_MS`. `null` before `t0`.
-function leavePose(t0: number, t: number, size: number, hold: number): DeathPose | null {
-  const over = t - t0;
-  if (over < 0) return null;
-  const kdown = smoothstep(clamp01(over / DEATH_SQUISH_MS));
-  const scaleY = lerp(1, DEATH_FLAT, kdown);
-  const fadeStart = DEATH_SQUISH_MS + hold;
-  if (over < fadeStart) {
-    return { scaleY, y: lerp(normalY(size), flatY(size), kdown), opacity: 1, visible: true };
-  }
-  const f = clamp01((over - fadeStart) / DEATH_FADE_MS);
-  if (f >= 1) return { scaleY: DEATH_FLAT, y: flatY(size) - SPAWN_RISE, opacity: 0, visible: false };
-  return {
-    scaleY: DEATH_FLAT,
-    y: lerp(flatY(size), flatY(size) - SPAWN_RISE, f),
-    opacity: 1 - f,
-    visible: true,
-  };
-}
-
-// Death/revive pose for a unit of world height `size` at time `t`, or
-// `null` if it's alive then. `permanent` (enemies) adds the hold -> fade
-// -> sink tail; a player just stays a pancake until resurrected.
-function deathPoseAt(
-  spans: ReplayDeathSpan[],
-  t: number,
-  size: number,
-  permanent: boolean,
-): DeathPose | null {
-  let span: ReplayDeathSpan | null = null;
-  for (const s of spans) {
-    if (s.startMs <= t) span = s;
-    else break;
-  }
-  if (!span) return null;
-
-  // Resurrected and past it -> stretch back up.
-  if (span.endMs != null && t >= span.endMs) {
-    const k = smoothstep(clamp01((t - span.endMs) / REVIVE_MS));
-    if (k >= 1) return null; // fully back
-    return {
-      scaleY: lerp(DEATH_FLAT, 1, k),
-      y: lerp(flatY(size), normalY(size), k),
-      opacity: 1,
-      visible: true,
-    };
-  }
-
-  if (permanent) return leavePose(span.startMs, t, size, DEATH_HOLD_MS);
-
-  // Player: squish and stay flat forever (until the res branch above).
-  const kdown = smoothstep(clamp01((t - span.startMs) / DEATH_SQUISH_MS));
-  return {
-    scaleY: lerp(1, DEATH_FLAT, kdown),
-    y: lerp(normalY(size), flatY(size), kdown),
-    opacity: 1,
-    visible: true,
-  };
-}
-
-// An enemy that stops appearing in the log without ever dying (add-swarm
-// mechanic mobs that just get "dealt with") leaves the field like a
-// death, starting `DESPAWN_GRACE_MS` past its last position fix.
-const DESPAWN_GRACE_MS = 3000;
-function despawnPoseAt(lastMs: number, t: number, size: number): DeathPose | null {
-  return leavePose(lastMs + DESPAWN_GRACE_MS, t, size, DEATH_HOLD_MS);
-}
-
-// ---- Selection status bar: shared name/HP card (player box + target box) --
-
-interface UnitCardParts {
-  card: HTMLElement; // role/ilvl + name/spec
-  hpEl: HTMLElement | null; // null when the unit never carries an HP reading
-  hpFill: HTMLElement | null;
-  hpCur: HTMLElement | null;
-  hpMax: HTMLElement | null;
-  hpPct: HTMLElement | null;
-}
-
-// Builds the Overview-style card (role glyph over item level, class-
-// coloured name, spec) plus a damage-bar-style HP readout, as separate
-// elements -- the caller decides whether they're laid out as siblings
-// (the player box, `hp` stretching to fill the bar) or nested in one
-// flex:none wrapper (the target box).
-function buildUnitCard(u: ReplaySceneUnitInput): UnitCardParts {
-  const card = document.createElement("span");
-  card.className = "rs-card";
-
-  if (u.roleRank < 4 || u.itemLevel != null) {
-    const role = document.createElement("span");
-    role.className = `rs-role pt-role ${roleIconClass(u.roleRank)}`.trim();
-    role.innerHTML = roleIcon(u.roleRank); // static, trusted SVG
-    if (u.itemLevel != null) {
-      const ilvl = document.createElement("span");
-      ilvl.className = "rs-ilvl pt-role-ilvl";
-      ilvl.textContent = String(u.itemLevel);
-      role.appendChild(ilvl);
-    }
-    card.appendChild(role);
-  }
-
-  const who = document.createElement("span");
-  who.className = "rs-who pt-who";
-  const name = document.createElement("span");
-  name.className = "rs-name pt-name";
-  name.textContent = u.name;
-  const col = cssValue(u.color);
-  if (col) name.style.color = col;
-  who.appendChild(name);
-  if (u.spec) {
-    const spec = document.createElement("span");
-    spec.className = "rs-spec pt-spec pt-dim";
-    spec.textContent = u.spec;
-    who.appendChild(spec);
-  }
-  card.appendChild(who);
-
-  if (!(u.maxHp > 0 || u.hpSamples.length > 0)) {
-    return { card, hpEl: null, hpFill: null, hpCur: null, hpMax: null, hpPct: null };
-  }
-
-  const hpEl = document.createElement("span");
-  hpEl.className = "rs-hp pt-metric";
-  const bar = document.createElement("span");
-  bar.className = "pt-bar";
-  const hpFill = document.createElement("span");
-  hpFill.className = "pt-bar-seg rs-hp-fill";
-  bar.appendChild(hpFill);
-  const nums = document.createElement("span");
-  nums.className = "pt-metric-nums";
-  const main = document.createElement("span");
-  main.className = "pt-metric-main";
-  const hpCur = document.createElement("b");
-  const hpMax = document.createElement("span");
-  hpMax.className = "pt-metric-sub";
-  main.append(hpCur, hpMax);
-  const hpPct = document.createElement("span");
-  hpPct.className = "pt-metric-sub pt-metric-aside";
-  nums.append(main, hpPct);
-  hpEl.append(bar, nums);
-  return { card, hpEl, hpFill, hpCur, hpMax, hpPct };
-}
-
-// Refresh a card's HP figures for time `t` -- last reading at/before the
-// playhead, or full HP before the first one.
-function refreshCardHp(parts: UnitCardParts, u: ReplaySceneUnitInput, t: number): void {
-  if (!parts.hpFill || !parts.hpCur || !parts.hpMax || !parts.hpPct) return;
-  const hs = u.hpSamples;
-  let lo = 0;
-  let hi = hs.length;
-  while (lo < hi) {
-    const m = (lo + hi) >> 1;
-    if (hs[m].tMs <= t) lo = m + 1;
-    else hi = m;
-  }
-  const fix = lo > 0 ? hs[lo - 1] : null;
-  const max = (fix && fix.max > 0 ? fix.max : u.maxHp) || 1;
-  const cur = fix ? fix.cur : max; // no reading yet -> assume full
-  const frac = Math.max(0, Math.min(1, cur / max));
-  parts.hpFill.style.width = `${frac * 100}%`;
-  parts.hpCur.textContent = formatCompact(cur);
-  parts.hpMax.textContent = formatCompact(max);
-  parts.hpPct.textContent = `${Math.round(frac * 100)}%`;
-}
-
-// The unit `u` last successfully cast on, or is currently casting at, at
-// or before `t` -- `castSpans` carry the cast's target from CAST_START
-// (so it shows for the whole cast, not just on success). `null` if `u`
-// never had a targeted cast by `t` (or only ever self-cast / AoE'd).
-function latestCastTarget(u: ReplaySceneUnitInput, t: number): number | null {
-  let target: number | null = null;
-  for (const cs of u.castSpans) {
-    if (cs.startMs > t) break;
-    if (cs.targetUnit != null) target = cs.targetUnit;
-  }
-  return target;
-}
-
-// Is `u` no longer a valid target at `t` -- dead and not yet resurrected,
-// or (enemies only) quietly despawned past the same grace period the 3D
-// scene uses to drop it from the field?
-function isTargetGone(u: ReplaySceneUnitInput, t: number): boolean {
-  if (u.samples.length === 0 || t < u.samples[0].tMs) return true;
-  for (const d of u.deathSpans) {
-    if (d.startMs <= t && (d.endMs == null || t < d.endMs)) return true;
-  }
-  if (u.team === "enemy" && t > u.samples[u.samples.length - 1].tMs + DESPAWN_GRACE_MS) return true;
-  return false;
-}
-
-// ---- Cast bar ----------------------------------------------------------
-// The log never carries a spell's cast time (client-side data, and it
-// drifts with haste anyway), so only a hard cast / empower's window is a
-// real, known duration (`realDuration`, resolved by CAST_START ->
-// CAST_SUCCESS / EMPOWER_END). A lone CAST_SUCCESS (instant, or a
-// channel's opening tick) gets a nominal drain instead: a channel
-// (Arcane Missiles, ...) keeps getting topped off by its own periodic
-// ticks, so it reads as full while it's still going; a true instant
-// (Arcane Barrage, ...) never gets a tick and just drains once, over the
-// GCD -- an approximation, not a real GCD tracker (see `docs/replay-view.md`).
-const GCD_MS = 1400; // nominal global cooldown -- the instant-cast drain window
-const CHANNEL_TICK_MS = 750; // nominal per-tick drain window once a channel is confirmed by a real tick
-
-interface CastBarState {
-  progress: number; // 0 (empty) -> 1 (full), independent of fill vs drain
-  spellId: number | null;
-}
-
-// Merge every periodic tick (damage or heal, either direction) into one
-// ascending-by-time list per source unit -- the cast bar's only signal
-// that a lone CAST_SUCCESS was a channel, not a true instant.
-function buildTicksBySource(props: ReplaySceneProps): Map<number, number[]> {
-  const out = new Map<number, number[]>();
-  const all = [
-    ...(props.periodicHits ?? []),
-    ...(props.hostilePeriodicHits ?? []),
-    ...(props.periodicHeals ?? []),
-  ];
-  for (const hit of all) {
-    let arr = out.get(hit.sourceUnit);
-    if (!arr) {
-      arr = [];
-      out.set(hit.sourceUnit, arr);
-    }
-    arr.push(hit.tMs);
-  }
-  for (const arr of out.values()) arr.sort((a, b) => a - b);
-  return out;
-}
-
-// Index of the rightmost value <= `t` in an ascending array, or -1.
-function floorIndex(arr: number[], t: number): number {
-  let lo = 0;
-  let hi = arr.length;
-  while (lo < hi) {
-    const m = (lo + hi) >> 1;
-    if (arr[m] <= t) lo = m + 1;
-    else hi = m;
-  }
-  return lo - 1;
-}
-
-// The selected unit's cast bar state at `t`, or `null` if nothing to show
-// (no cast yet, a resolved hard cast, or a drained-out instant/channel).
-function computeCastBar(
-  u: ReplaySceneUnitInput,
-  t: number,
-  ticksBySource: Map<number, number[]>,
-): CastBarState | null {
-  const spans = u.castSpans; // ascending by startMs
-  let idx = -1;
-  for (let i = 0; i < spans.length; i++) {
-    if (spans[i].startMs > t) break;
-    idx = i;
-  }
-  if (idx < 0) return null;
-  const cs = spans[idx];
-
-  if (cs.realDuration) {
-    if (t > cs.endMs) return null; // resolved -- nothing to show till the next cast
-    const span = Math.max(1, cs.endMs - cs.startMs);
-    return { progress: clamp01((t - cs.startMs) / span), spellId: cs.spellId };
-  }
-
-  // Lone CAST_SUCCESS: drain from the cast, or from the latest tick since
-  // it (while still before the next cast span) -- whichever's later.
-  const nextStart = idx + 1 < spans.length ? spans[idx + 1].startMs : Infinity;
-  const ticks = ticksBySource.get(u.unitId) ?? [];
-  const upper = Math.min(t, nextStart);
-  const i = floorIndex(ticks, upper);
-  let refillAt = cs.startMs;
-  let nominal = GCD_MS;
-  if (i >= 0 && ticks[i] > cs.startMs) {
-    refillAt = ticks[i];
-    nominal = CHANNEL_TICK_MS;
-  }
-  const over = t - refillAt;
-  if (over > nominal) return null; // fully drained, no further tick -- done
-  return { progress: 1 - clamp01(over / nominal), spellId: cs.spellId };
-}
-
-// ---- Recent abilities list ---------------------------------------------
-const RECENT_COUNT = 3;
-
-// The unit's last `limit` resolved casts at/before `t`, newest first.
-// `castSpans` is ascending by startMs, so this is a binary search for the
-// cutoff plus a short walk backward -- cheap even for a long fight.
-function recentCastSpans(u: ReplaySceneUnitInput, t: number, limit: number): ReplayCastSpan[] {
-  const spans = u.castSpans;
-  let lo = 0;
-  let hi = spans.length;
-  while (lo < hi) {
-    const m = (lo + hi) >> 1;
-    if (spans[m].startMs <= t) lo = m + 1;
-    else hi = m;
-  }
-  const out: ReplayCastSpan[] = [];
-  for (let i = lo - 1; i >= 0 && out.length < limit; i--) out.push(spans[i]);
-  return out;
-}
-
-function spellNameFor(spells: SpellRow[], id: number | null): string {
-  return id != null ? (spells[id]?.name ?? `#${id}`) : "?";
-}
-
-// One row: just the ability name. `cs === null` renders an empty
-// placeholder row -- always filling all `RECENT_COUNT` slots keeps the
-// list's height constant as entries fall in and out, instead of the
-// status bar growing/shrinking with it.
-function buildRecentRow(cs: ReplayCastSpan | null, spells: SpellRow[]): HTMLElement {
-  const row = document.createElement("span");
-  row.className = "rs-recent-row";
-  row.textContent = cs ? spellNameFor(spells, cs.spellId) : "";
-  return row;
-}
-
-// ---- Cast lines (hostile -> player attack arcs) ----------------------
-const CAST_SEGMENTS = 24; // bezier samples per line
-const CAST_FADE_MS = 125; // line fade in / out
-const CAST_BALL_MS = 500; // projectile flight time
-// Arc peak: [min, min+rand] yards. Creature attacks lob high; player
-// attacks are much flatter.
-const CAST_PEAK_ENEMY = 10;
-const CAST_PEAK_ENEMY_RAND = 5;
-const CAST_PEAK_PLAYER = 3;
-const CAST_PEAK_PLAYER_RAND = 3;
-const CAST_SPREAD = 8; // yards lateral jitter on the control point
-const CAST_LINE_OPACITY = 0.5; // attack beams peak here
-const CAST_HEAL_OPACITY = 0.05; // heal beams are a barely-there hint
-const CAST_SECONDARY_DIM = 0.2; // splash/cleave lines: 20% brightness of a direct hit
-const CAST_POOL = 96; // max lines drawn at once (both directions)
-// Camera-facing ribbon half-width (yards) and projectile radius. Creature
-// attacks are 3x -- thick and loud.
-const CAST_HALFW_PLAYER = 0.12;
-const CAST_HALFW_ENEMY = 0.36;
-const CAST_BALL_R_PLAYER = 0.35;
-const CAST_BALL_R_ENEMY = 1.05;
-const CAST_ENEMY_COLOR = "#8a1414"; // deep red for the boss's arcs + ball
-const CAST_HEAL_COLOR = "var(--ctp-green)"; // heal beams / teardrops
 
 // Periodic-damage (DoT tick) particle bursts: a handful of points that
 // shoot up off the struck creature's top over a quarter second and fade,
@@ -554,202 +169,12 @@ const DOT_OUT_JITTER = 0.45; // +/- fraction on that distance, per particle
 const DOT_EASE = 2.3; // time^EASE -> bezier param (higher = longer near the caster)
 const DOT_DESYNC = 0.3; // per-particle timing spread so they don't move in lockstep
 
-// ---- Raid world markers (the ground flares) --------------------------
-// A faint tall column at the marker's spot with a minimal extruded icon
-// on top. Both fade in/out over MARKER_FADE_MS on place / remove. Sized
-// off a nominal player unit (views/replay.ts PLAYER_SIZE).
-const MARKER_UNIT = 1.6;
-const MARKER_COL_H = MARKER_UNIT * 5; // column height
-const MARKER_COL_R = MARKER_UNIT; // column radius -> ~2x a player wide
-const MARKER_COL_OPACITY = 0.28; // peak alpha of the additive glow shell
-const MARKER_ICON = MARKER_UNIT; // icon width / height
-const MARKER_ICON_DEPTH = MARKER_UNIT * 0.25; // extrusion depth
-const MARKER_ICON_OPACITY = 0.6;
-const MARKER_FADE_MS = 500;
-// A downward coloured spotlight per visible marker, pooled (only so many
-// live at once) so the light count -- and shader program -- stays fixed.
-const MARKER_LIGHT_MAX = 8;
-const MARKER_LIGHT_INTENSITY = 70;
-const MARKER_LIGHT_ANGLE = Math.PI / 7; // ~26deg cone
-const MARKER_LIGHT_PENUMBRA = 0.85; // very soft pool edge
-
 // ---- click-to-select ring -------------------------------------------
 const SEL_RING_THICKNESS = 0.14; // world yards -- constant, not scaled by unit size
 const SEL_RING_GAP = 0.4; // gap between the unit's footprint and the band's inner edge
 const SEL_RING_SCALE = 1.1; // nudge the whole ring ~10% wider
 const SEL_RING_OPACITY = 0.9;
 const SEL_FILL_OPACITY = 0.3; // tint inside the band
-// Log slot 0-7 -> [colour, shape id]. The log is 0-indexed, so slot N is
-// the in-game raid marker N+1: 1 star, 2 circle, 3 diamond, 4 triangle,
-// 5 moon, 6 square, 7 cross, 8 skull.
-const MARKER_DEFS: ReadonlyArray<readonly [string, string]> = [
-  ["var(--ctp-yellow)", "star"], // 1  star / yellow
-  ["#f0872a", "circle"], // 2  circle / orange
-  ["var(--ctp-mauve)", "diamond"], // 3  diamond / purple
-  ["var(--ctp-green)", "triangle"], // 4  triangle / green
-  ["#c8cdd8", "moon"], // 5  moon / silver
-  ["var(--ctp-blue)", "square"], // 6  square / blue
-  ["var(--ctp-red)", "cross"], // 7  cross (X) / red
-  ["#eef1f7", "skull"], // 8  skull / white
-];
-
-// Deterministic [0,1) from three ints -- a per-line arc height / spread
-// that stays put across frames.
-function hash01(a: number, b: number, c: number): number {
-  let h = (Math.imul(a, 374761393) + Math.imul(b, 668265263) + Math.imul(c | 0, 2246822519)) >>> 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
-// Quadratic bezier point at `u` in [0,1], into `out` (or a fresh vector).
-function quadBezier(
-  a: THREE.Vector3,
-  c: THREE.Vector3,
-  b: THREE.Vector3,
-  u: number,
-  out: THREE.Vector3 = new THREE.Vector3(),
-): THREE.Vector3 {
-  const k = 1 - u;
-  return out.set(
-    k * k * a.x + 2 * k * u * c.x + u * u * b.x,
-    k * k * a.y + 2 * k * u * c.y + u * u * b.y,
-    k * k * a.z + 2 * k * u * c.z + u * u * b.z,
-  );
-}
-
-// Line opacity + ball progress (0..1, or null = no ball) for a cast line
-// at time `t`, or `null` if the line isn't live then. Timeline:
-//   [t0, t0+FADE]        fade in 0 -> CAST_LINE_OPACITY
-//   [t0+FADE, t1]        hold (empty for an instant / swing)
-//   on resolve at t1:
-//     success -> ball flies [bs, bs+BALL] (bs delayed one FADE for
-//                instants so it flies during the visible stretch),
-//                then line fades out [bs+BALL, +FADE]
-//     fail    -> line fades out [t1, t1+FADE], no ball
-function castLineState(cl: ReplayCastLine, t: number): { lineOpacity: number; ball: number | null } | null {
-  if (t < cl.t0) return null;
-  const fadeIn = clamp01((t - cl.t0) / CAST_FADE_MS) * CAST_LINE_OPACITY;
-
-  if (!cl.success) {
-    if (t <= cl.t1) return { lineOpacity: fadeIn, ball: null };
-    const out = clamp01((t - cl.t1) / CAST_FADE_MS);
-    if (out >= 1) return null;
-    return { lineOpacity: CAST_LINE_OPACITY * (1 - out), ball: null };
-  }
-
-  const bs = cl.t1 + (cl.instant ? CAST_FADE_MS : 0);
-  const be = bs + CAST_BALL_MS;
-  if (t < be) {
-    return { lineOpacity: fadeIn, ball: t >= bs ? smoothstep(clamp01((t - bs) / CAST_BALL_MS)) : null };
-  }
-  const out = clamp01((t - be) / CAST_FADE_MS);
-  if (out >= 1) return null;
-  return { lineOpacity: CAST_LINE_OPACITY * (1 - out), ball: null };
-}
-
-function setMeshOpacity(mesh: THREE.Mesh, o: number): void {
-  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-  for (const m of mats) {
-    const wantTransparent = o < 1;
-    if (m.transparent !== wantTransparent) {
-      // three.js won't switch a material to/from the blended path
-      // without a recompile flag.
-      m.transparent = wantTransparent;
-      m.needsUpdate = true;
-    }
-    m.opacity = o;
-  }
-}
-
-// ms -> "m:ss.s"
-function fmtClock(ms: number): string {
-  const s = Math.max(0, ms) / 1000;
-  const m = Math.floor(s / 60);
-  return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
-}
-
-// The unit's position at time `t` -- lerp between the two bracketing
-// fixes, clamped to the ends. Phases C-D lean on this every frame.
-function posAt(samples: ReplaySample[], t: number): { x: number; y: number } | null {
-  if (samples.length === 0) return null;
-  if (t <= samples[0].tMs) return { x: samples[0].x, y: samples[0].y };
-  const last = samples[samples.length - 1];
-  if (t >= last.tMs) return { x: last.x, y: last.y };
-  let lo = 0;
-  let hi = samples.length - 1;
-  while (hi - lo > 1) {
-    const mid = (lo + hi) >> 1;
-    if (samples[mid].tMs <= t) lo = mid;
-    else hi = mid;
-  }
-  const a = samples[lo];
-  const b = samples[hi];
-  const f = b.tMs === a.tMs ? 0 : (t - a.tMs) / (b.tMs - a.tMs);
-  return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
-}
-
-// A dark, minimal line-art panorama drawn to a canvas -- the "lazy
-// skybox", mapped equirectangular. Vertical texture coord: v=1 (top) =
-// zenith, v=0.5 (middle) = the HORIZON, v=0 (bottom) = straight down. So
-// the mountain ridgeline is drawn across the vertical middle (peaks poke
-// just above it), and the lower half is dark distant ground. Fancy
-// per-arena art is later (docs/replay-view.md §4, §10).
-function skyTexture(): THREE.Texture {
-  const w = 2048;
-  const h = 1024;
-  const horizon = h * 0.5;
-  const c = document.createElement("canvas");
-  c.width = w;
-  c.height = h;
-  const g = c.getContext("2d")!;
-
-  const grad = g.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0.0, "#0d0e17"); // zenith
-  grad.addColorStop(0.46, "#161822");
-  grad.addColorStop(0.5, "#1c1f2c"); // faint glow at the horizon
-  grad.addColorStop(0.54, "#131520");
-  grad.addColorStop(1.0, "#090a11"); // nadir
-  g.fillStyle = grad;
-  g.fillRect(0, 0, w, h);
-
-  // Ridges straddling the horizon. Endpoints pinned to `base` so the
-  // 360deg wrap doesn't show a hard seam. Fill runs downward to cover
-  // the lower hemisphere as distant ground.
-  const ridge = (base: number, amp: number, fill: string) => {
-    const steps = 64;
-    g.beginPath();
-    g.moveTo(0, base);
-    for (let i = 1; i < steps; i++) {
-      const x = (w / steps) * i;
-      const edge = Math.min(i, steps - i) / 6; // taper randomness toward the seam
-      const k = Math.min(1, edge);
-      g.lineTo(x, base - Math.random() * amp * k);
-    }
-    g.lineTo(w, base);
-    g.lineTo(w, h);
-    g.lineTo(0, h);
-    g.closePath();
-    g.fillStyle = fill;
-    g.fill();
-  };
-  ridge(horizon - 6, h * 0.09, "#1e212e"); // far range, peaks just above the horizon
-  ridge(horizon + 10, h * 0.06, "#141620"); // nearer, lower, darker
-
-  // Faint cloud strokes a little above the horizon (visible looking out).
-  g.strokeStyle = "rgba(180,190,220,0.09)";
-  g.lineWidth = 2;
-  for (let i = 0; i < 6; i++) {
-    const cy = horizon - h * 0.18 - i * (h * 0.03) - Math.random() * 10;
-    g.beginPath();
-    g.moveTo(60 + Math.random() * 200, cy);
-    g.bezierCurveTo(w * 0.35, cy - 14, w * 0.6, cy + 14, w - 120 - Math.random() * 200, cy);
-    g.stroke();
-  }
-
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
 
 class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   readonly element: HTMLElement;
@@ -1626,7 +1051,7 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
   private updateCastBar(u: ReplaySceneUnitInput, t: number): void {
     const wrap = this.castBarWrapEl;
     if (!wrap) return;
-    const cb = computeCastBar(u, t, this.ticksBySource);
+    const cb: CastBarState | null = computeCastBar(u, t, this.ticksBySource);
     if (!cb) {
       wrap.hidden = true;
       return;
@@ -2315,249 +1740,6 @@ class ReplaySceneWidget implements Widget<ReplaySceneProps> {
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.element.replaceChildren();
-  }
-}
-
-// A player / big-creature cube of side `size`, one flat class colour on
-// every face (matching the Overview's class swatch).
-function cubeMesh(col: THREE.Color, size: number): THREE.Mesh {
-  const mat = new THREE.MeshStandardMaterial({
-    color: col,
-    roughness: 0.55,
-    metalness: 0.05,
-    emissive: col.clone().multiplyScalar(0.18),
-  });
-  const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
-  m.scale.setScalar(size);
-  return m;
-}
-
-interface Placement {
-  mesh: THREE.Mesh;
-  x: number;
-  z: number;
-  team: ReplayTeam;
-  size: number;
-  rank: number;
-  guid: string;
-  settled: boolean; // false while spawning / dead / mid revive -- skipped by de-conflict
-}
-
-const overlaps = (a: Placement, b: Placement): boolean =>
-  Math.hypot(a.x - b.x, a.z - b.z) < ((a.size + b.size) / 2) * STACK_DIST;
-
-// Greedy overlap clusters (O(n^2), n <= ~40) over a subset.
-function overlapClusters(items: Placement[]): Placement[][] {
-  const clusters: Placement[][] = [];
-  for (const p of items) {
-    const near = clusters.find((cl) => cl.some((o) => overlaps(o, p)));
-    if (near) near.push(p);
-    else clusters.push([p]);
-  }
-  return clusters;
-}
-
-// De-conflict shapes sharing a spot (z-fighting):
-//  - overlapping player cubes fan UP into a little stack -- tank ->
-//    melee -> ranged -> healer by `rank`, GUID alphabetical as the
-//    tiebreak, each lifted `PLAYER_STEP x its height` above the previous;
-//  - an enemy overlapping a *player* is pushed DOWN to rest flush on the
-//    deck (the `HOVER` gap dropped);
-//  - enemies overlapping *each other* fan UP, biggest on the bottom,
-//    each smaller one `ADD_STEP x its height` higher.
-// Reused per frame in phase C when positions move.
-function deconflictOverlaps(placed: Placement[]): void {
-  const live = placed.filter((p) => p.settled);
-  for (const cl of overlapClusters(live.filter((p) => p.team === "player"))) {
-    if (cl.length < 2) continue;
-    cl.sort((a, b) => a.rank - b.rank || (a.guid < b.guid ? -1 : a.guid > b.guid ? 1 : 0));
-    cl.forEach((p, i) => {
-      p.mesh.position.y += i * p.size * PLAYER_STEP;
-    });
-  }
-
-  const players = live.filter((p) => p.team === "player");
-  const enemies = live.filter((p) => p.team === "enemy");
-  for (const e of enemies) {
-    if (players.some((p) => overlaps(p, e))) {
-      e.mesh.position.y = FLOOR_LIFT + e.size / 2; // flush on the deck
-    }
-  }
-
-  for (const cl of overlapClusters(enemies)) {
-    if (cl.length < 2) continue;
-    cl.sort((a, b) => b.size - a.size || (a.guid < b.guid ? -1 : a.guid > b.guid ? 1 : 0));
-    cl.forEach((e, i) => {
-      e.mesh.position.y += i * e.size * ADD_STEP;
-    });
-  }
-}
-
-// When one shape's centre is inside another's sphere -- a player soaking
-// a boss orb, an orb swallowing an add -- fade the LARGER of the two to
-// 80% so the thing inside stays visible. O(n^2) over settled shapes,
-// n <= ~120; runs each frame.
-function dimOverlapping(placed: Placement[]): void {
-  const live = placed.filter((p) => p.settled);
-  for (let i = 0; i < live.length; i++) {
-    for (let j = i + 1; j < live.length; j++) {
-      const a = live[i];
-      const b = live[j];
-      if (Math.hypot(a.x - b.x, a.z - b.z) >= Math.max(a.size, b.size) / 2) continue;
-      const big = a.size >= b.size ? a : b;
-      setMeshOpacity(big.mesh, 0.8);
-      big.mesh.castShadow = false;
-    }
-  }
-}
-
-// A sphere of diameter `size` for a smaller creature.
-function sphereMesh(col: THREE.Color, size: number): THREE.Mesh {
-  const mat = new THREE.MeshStandardMaterial({
-    color: col,
-    roughness: 0.6,
-    metalness: 0.05,
-    emissive: col.clone().multiplyScalar(0.15),
-  });
-  return new THREE.Mesh(new THREE.SphereGeometry(size / 2, 24, 16), mat);
-}
-
-// The marker column: an additive, view-angle-softened glow shell. Alpha
-// is high where the surface faces the camera and fades toward the
-// silhouette (soft edges) and toward the top (a fading shaft). `uColor`
-// and `uOpacity` (the marker's fade) are set per frame.
-function markerColumnMaterial(col: THREE.Color): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: col.clone() }, uOpacity: { value: 0 } },
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    side: THREE.DoubleSide,
-    vertexShader: `
-      varying vec3 vN;
-      varying vec3 vView;
-      varying float vY;
-      void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vN = normalMatrix * normal;
-        vView = -mv.xyz;
-        vY = uv.y;
-        gl_Position = projectionMatrix * mv;
-      }`,
-    fragmentShader: `
-      uniform vec3 uColor;
-      uniform float uOpacity;
-      varying vec3 vN;
-      varying vec3 vView;
-      varying float vY;
-      void main() {
-        float facing = abs(dot(normalize(vN), normalize(vView))); // 1 face-on, 0 at rim
-        float soft = pow(facing, 1.6);
-        float shaft = smoothstep(1.0, 0.3, vY) * smoothstep(0.0, 0.06, vY);
-        float a = uOpacity * soft * shaft;
-        gl_FragColor = vec4(uColor * (0.7 + 0.5 * soft), a);
-      }`,
-  });
-}
-
-// One rectangular bar of half-length `len`, thickness `w`, rotated
-// `angle` -- the pieces of the "cross" (X) marker.
-function markerBar(len: number, w: number, angle: number): THREE.Shape {
-  const ca = Math.cos(angle);
-  const sa = Math.sin(angle);
-  const s = new THREE.Shape();
-  const pts: [number, number][] = [
-    [-len / 2, -w / 2],
-    [len / 2, -w / 2],
-    [len / 2, w / 2],
-    [-len / 2, w / 2],
-  ];
-  pts.forEach(([x, y], i) => {
-    const rx = x * ca - y * sa;
-    const ry = x * sa + y * ca;
-    if (i === 0) s.moveTo(rx, ry);
-    else s.lineTo(rx, ry);
-  });
-  s.closePath();
-  return s;
-}
-
-// A minimal marker icon outline in a unit box ([-0.5, 0.5]). Extruded and
-// scaled to size by `markerGeoFor`.
-function markerShape(id: string): THREE.Shape | THREE.Shape[] {
-  const s = new THREE.Shape();
-  switch (id) {
-    case "square":
-      s.moveTo(-0.5, -0.5);
-      s.lineTo(0.5, -0.5);
-      s.lineTo(0.5, 0.5);
-      s.lineTo(-0.5, 0.5);
-      s.closePath();
-      return s;
-    case "diamond":
-      s.moveTo(0, 0.5);
-      s.lineTo(0.5, 0);
-      s.lineTo(0, -0.5);
-      s.lineTo(-0.5, 0);
-      s.closePath();
-      return s;
-    case "triangle": // equilateral-ish, apex DOWN
-      s.moveTo(-0.5, 0.4);
-      s.lineTo(0.5, 0.4);
-      s.lineTo(0, -0.5);
-      s.closePath();
-      return s;
-    case "circle":
-      s.absarc(0, 0, 0.5, 0, Math.PI * 2, false);
-      return s;
-    case "moon": {
-      s.absarc(0, 0, 0.5, 0, Math.PI * 2, false);
-      const bite = new THREE.Path();
-      bite.absarc(0.28, 0.06, 0.44, 0, Math.PI * 2, true);
-      s.holes.push(bite);
-      return s;
-    }
-    case "star": {
-      const R = 0.5;
-      const r = 0.21;
-      for (let i = 0; i < 10; i++) {
-        const a = -Math.PI / 2 + (i * Math.PI) / 5;
-        const rad = i % 2 === 0 ? R : r;
-        const x = Math.cos(a) * rad;
-        const y = Math.sin(a) * rad;
-        if (i === 0) s.moveTo(x, y);
-        else s.lineTo(x, y);
-      }
-      s.closePath();
-      return s;
-    }
-    case "cross": // a saltire: two crossed bars
-      return [markerBar(0.95, 0.26, Math.PI / 4), markerBar(0.95, 0.26, -Math.PI / 4)];
-    case "skull": {
-      s.moveTo(-0.4, 0.05);
-      s.absarc(0, 0.05, 0.4, Math.PI, 0, true); // dome over the top
-      s.lineTo(0.32, -0.16);
-      s.lineTo(0.2, -0.42);
-      s.lineTo(0.1, -0.5);
-      s.lineTo(-0.1, -0.5);
-      s.lineTo(-0.2, -0.42);
-      s.lineTo(-0.32, -0.16);
-      s.closePath();
-      const eyeL = new THREE.Path();
-      eyeL.absarc(-0.17, 0.03, 0.12, 0, Math.PI * 2, true);
-      const eyeR = new THREE.Path();
-      eyeR.absarc(0.17, 0.03, 0.12, 0, Math.PI * 2, true);
-      const nose = new THREE.Path();
-      nose.moveTo(0, -0.08);
-      nose.lineTo(0.07, -0.24);
-      nose.lineTo(-0.07, -0.24);
-      nose.closePath();
-      s.holes.push(eyeL, eyeR, nose);
-      return s;
-    }
-    default:
-      s.absarc(0, 0, 0.5, 0, Math.PI * 2, false);
-      return s;
   }
 }
 

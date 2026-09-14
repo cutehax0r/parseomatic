@@ -1,5 +1,5 @@
 //! Minimal backing for the map editor window (`map-editor.html`,
-//! `src/map-editor.ts`): save a `.map.json` under `<app data>/maps/`, and
+//! `src/map-editor/`): save a `.map.json` under `<app data>/maps/`, and
 //! hand a picked image file back to the webview as raw bytes so it can be
 //! shown as a tracing backdrop. See `docs/encounter-maps.md`.
 

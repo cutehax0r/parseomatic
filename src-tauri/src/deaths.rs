@@ -57,7 +57,7 @@ fn parse_i64(s: Option<&str>) -> i64 {
 
 /// Scans `[death_ms - lookback_ms, death_ms]` for HP samples touching
 /// `unit_id` as the dest unit.
-pub fn death_detail(events: &EventStore, mmap: &[u8], unit_id: u32, death_ms: i64, lookback_ms: i64) -> DeathDetail {
+fn compute_death_detail(events: &EventStore, mmap: &[u8], unit_id: u32, death_ms: i64, lookback_ms: i64) -> DeathDetail {
     let start_ms = death_ms - lookback_ms;
     let (lo, hi) = query::window(events, start_ms, death_ms);
 
@@ -90,6 +90,61 @@ pub fn death_detail(events: &EventStore, mmap: &[u8], unit_id: u32, death_ms: i6
     }
 
     DeathDetail { start_ms, end_ms: death_ms, samples }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HpSampleRow {
+    timestamp_ms: i64,
+    current_hp: i64,
+    max_hp: i64,
+    is_heal: bool,
+    amount: i64,
+    spell_id: Option<u16>,
+    source_unit: u32,
+    kind_label: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeathDetailRow {
+    start_ms: i64,
+    end_ms: i64,
+    samples: Vec<HpSampleRow>,
+}
+
+/// Health trace for the `lookback_ms` leading up to one death -- backs
+/// the Deaths character view (the UI offers 5/10/15/30s, default 10s).
+/// `None` before parsing has finished. See `src/deaths.rs`.
+#[tauri::command]
+pub(crate) fn death_detail(
+    window: tauri::WebviewWindow,
+    unit_id: u32,
+    death_ms: i64,
+    lookback_ms: i64,
+) -> Option<DeathDetailRow> {
+    let log = crate::window::current_log(&window)?;
+    let data = log.data()?;
+    let mmap = log.mmap_bytes();
+    let d = compute_death_detail(&data.events, mmap, unit_id, death_ms, lookback_ms);
+    Some(DeathDetailRow {
+        start_ms: d.start_ms,
+        end_ms: d.end_ms,
+        samples: d
+            .samples
+            .into_iter()
+            .map(|s| HpSampleRow {
+                timestamp_ms: s.timestamp_ms,
+                current_hp: s.current_hp,
+                max_hp: s.max_hp,
+                is_heal: s.is_heal,
+                amount: s.amount,
+                spell_id: s.spell_id,
+                source_unit: s.source_unit,
+                kind_label: s.kind_label,
+            })
+            .collect(),
+    })
 }
 
 #[cfg(test)]
@@ -145,7 +200,7 @@ mod tests {
         let unit_id = tables.guids.get_id(player).expect("player interned");
         let death_ms = store.timestamp_ms[store.timestamp_ms.len() - 1];
 
-        let d = death_detail(&store, &data, unit_id, death_ms, 15_000);
+        let d = compute_death_detail(&store, &data, unit_id, death_ms, 15_000);
 
         assert_eq!(d.start_ms, death_ms - 15_000);
         assert_eq!(d.end_ms, death_ms);
@@ -173,12 +228,12 @@ mod tests {
         let death_ms = store.timestamp_ms[1];
 
         // 5s lookback: only the death-instant event, 10s earlier heal excluded.
-        let narrow = death_detail(&store, &data, unit_id, death_ms, 5_000);
+        let narrow = compute_death_detail(&store, &data, unit_id, death_ms, 5_000);
         assert_eq!(narrow.samples.len(), 1);
         assert!(!narrow.samples[0].is_heal);
 
         // 15s lookback: both events included.
-        let wide = death_detail(&store, &data, unit_id, death_ms, 15_000);
+        let wide = compute_death_detail(&store, &data, unit_id, death_ms, 15_000);
         assert_eq!(wide.samples.len(), 2);
     }
 }

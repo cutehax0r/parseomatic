@@ -18,7 +18,7 @@
 
 use crate::hits::HitScanner;
 use crate::parser::event::{EventStore, LineKind, StandaloneKind, Suffix};
-use crate::parser::intern::{InternTables, UnitKind, NO_UNIT};
+use crate::parser::intern::{InternTables, UnitKind, NO_SPELL, NO_UNIT};
 use crate::query;
 use crate::stats::MOVE_GAP_MS;
 
@@ -258,6 +258,128 @@ pub fn events(events: &EventStore, unit_id: u32, start_ms: i64, end_ms: i64) -> 
         }
     }
     out
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MovementSampleRow {
+    pub(crate) t_ms: i64,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MovementDeathSpanRow {
+    pub(crate) start_ms: i64,
+    /// `null` if still dead at the window's end.
+    pub(crate) end_ms: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MovementSeriesRow {
+    start_ms: i64,
+    end_ms: i64,
+    bucket_ms: i64,
+    buckets: Vec<f64>,
+    total: f64,
+    /// This unit's death intervals within the window.
+    death_spans: Vec<MovementDeathSpanRow>,
+    /// Ordered `(t, x, y)` fixes for the top-down path plot.
+    samples: Vec<MovementSampleRow>,
+    /// `MAP_CHANGE` box `[x0, x1, y0, y1]` (corners unsorted), or `null`.
+    map_box: Option<[f32; 4]>,
+    /// Tight `[minX, maxX, minY, maxY]` over every player's fixes in the
+    /// window -- what the path plot frames on. `null` if none.
+    fit_box: Option<[f32; 4]>,
+}
+
+/// Movement for `unit_id` across `[start_ms, end_ms]` -- distance binned
+/// into `buckets` equal time slices (the line graph), plus the ordered
+/// position fixes and the `MAP_CHANGE` box (the top-down path plot), and
+/// the unit's death timestamps. `None` before parsing has finished. See
+/// `src/movement.rs`.
+#[tauri::command]
+pub(crate) fn movement_series(
+    window: tauri::WebviewWindow,
+    unit_id: u32,
+    start_ms: i64,
+    end_ms: i64,
+    buckets: usize,
+) -> Option<MovementSeriesRow> {
+    let log = crate::window::current_log(&window)?;
+    let data = log.data()?;
+    let m = series(
+        &data.events,
+        &data.tables,
+        log.mmap_bytes(),
+        unit_id,
+        start_ms,
+        end_ms,
+        buckets,
+    );
+    Some(MovementSeriesRow {
+        start_ms: m.start_ms,
+        end_ms: m.end_ms,
+        bucket_ms: m.bucket_ms,
+        buckets: m.buckets,
+        total: m.total,
+        death_spans: m
+            .death_spans
+            .into_iter()
+            .map(|d| MovementDeathSpanRow { start_ms: d.start_ms, end_ms: d.end_ms })
+            .collect(),
+        samples: m
+            .samples
+            .into_iter()
+            .map(|s| MovementSampleRow { t_ms: s.t_ms, x: s.x, y: s.y })
+            .collect(),
+        map_box: m.map_box,
+        fit_box: m.fit_box,
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MovementEventRow {
+    t_ms: i64,
+    /// `cast` | `damageDone` | `damageTaken` | `healDone` | `healTaken`.
+    kind: &'static str,
+    /// `None` for a melee swing.
+    spell_id: Option<u16>,
+    /// 0 for a `cast` row.
+    amount: i64,
+    /// Target for `*Done`/`cast`, source for `*Taken`; `None` if unset.
+    other_unit: Option<u32>,
+}
+
+/// Every cast / damage / heal event involving `unit_id` in
+/// `[start_ms, end_ms]` -- backs the Movement view's per-moment side
+/// table. Fetched once for the window and filtered client-side as the
+/// playhead moves. `None` before parsing has finished. See
+/// `src/movement.rs`.
+#[tauri::command]
+pub(crate) fn movement_events(
+    window: tauri::WebviewWindow,
+    unit_id: u32,
+    start_ms: i64,
+    end_ms: i64,
+) -> Option<Vec<MovementEventRow>> {
+    let log = crate::window::current_log(&window)?;
+    let data = log.data()?;
+    Some(
+        events(&data.events, unit_id, start_ms, end_ms)
+            .into_iter()
+            .map(|e| MovementEventRow {
+                t_ms: e.t_ms,
+                kind: e.kind.as_str(),
+                spell_id: (e.spell_id != NO_SPELL).then_some(e.spell_id),
+                amount: e.amount,
+                other_unit: (e.other_unit != NO_UNIT).then_some(e.other_unit),
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]

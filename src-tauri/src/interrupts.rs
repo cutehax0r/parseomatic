@@ -164,6 +164,80 @@ pub fn series(
     out
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InterruptRow {
+    t_ms: i64,
+    /// The interrupter.
+    source_unit: u32,
+    /// The unit whose cast was interrupted.
+    target_unit: u32,
+    /// The interrupt ability; `None` if unresolved.
+    ability_id: Option<u16>,
+    /// The spell that was being cast; `None` if the `extraSpellId` never interned.
+    interrupted_id: Option<u16>,
+    /// `interrupt ts - CAST_START ts`, when a matching open cast was seen.
+    elapsed_ms: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FailedCastRow {
+    t_ms: i64,
+    source_unit: u32,
+    ability_id: Option<u16>,
+    reason: String,
+    /// Adjacent identical failures collapsed; `1` for a lone one.
+    count: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InterruptReportRow {
+    interrupts: Vec<InterruptRow>,
+    failed_casts: Vec<FailedCastRow>,
+}
+
+/// Raid-level interrupt list over `[start_ms, end_ms]` -- backs the
+/// Interrupts view (`src/views/interrupts.ts`). Every `SPELL_INTERRUPT`
+/// plus notable player `SPELL_CAST_FAILED`s. `None` before parsing has
+/// finished. See `src/interrupts.rs`.
+#[tauri::command]
+pub(crate) fn interrupts(
+    window: tauri::WebviewWindow,
+    start_ms: i64,
+    end_ms: i64,
+) -> Option<InterruptReportRow> {
+    let log = crate::window::current_log(&window)?;
+    let data = log.data()?;
+    let r = series(&data.events, &data.tables, log.mmap_bytes(), start_ms, end_ms);
+    Some(InterruptReportRow {
+        interrupts: r
+            .interrupts
+            .into_iter()
+            .map(|i| InterruptRow {
+                t_ms: i.t_ms,
+                source_unit: i.source_unit,
+                target_unit: i.target_unit,
+                ability_id: (i.ability_id != NO_SPELL).then_some(i.ability_id),
+                interrupted_id: (i.interrupted_id != NO_SPELL).then_some(i.interrupted_id),
+                elapsed_ms: i.elapsed_ms,
+            })
+            .collect(),
+        failed_casts: r
+            .failed_casts
+            .into_iter()
+            .map(|f| FailedCastRow {
+                t_ms: f.t_ms,
+                source_unit: f.source_unit,
+                ability_id: (f.ability_id != NO_SPELL).then_some(f.ability_id),
+                reason: f.reason,
+                count: f.count,
+            })
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

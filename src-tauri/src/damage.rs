@@ -193,6 +193,107 @@ pub fn breakdown(
     SpellBreakdown { start_ms, end_ms, bucket_ms: width, total, spells }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HitDistRow {
+    count: usize,
+    sum: i64,
+    min: i64,
+    max: i64,
+    mean: f64,
+    median: f64,
+    stddev: f64,
+}
+
+impl From<&HitDist> for HitDistRow {
+    fn from(d: &HitDist) -> Self {
+        HitDistRow {
+            count: d.count,
+            sum: d.sum,
+            min: d.min,
+            max: d.max,
+            mean: d.mean,
+            median: d.median,
+            stddev: d.stddev,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SpellStatRow {
+    /// Intern-table spell index (resolve name/school via `log_lists.spells`),
+    /// or null for melee (`SWING_DAMAGE`).
+    spell_id: Option<u16>,
+    /// `log_lists.units` index of the acting unit -- the player or a pet.
+    source_unit: u32,
+    is_pet: bool,
+    total: i64,
+    hits: usize,
+    buckets: Vec<i64>,
+    normal: HitDistRow,
+    crit: HitDistRow,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SpellBreakdownRow {
+    start_ms: i64,
+    end_ms: i64,
+    bucket_ms: i64,
+    total: i64,
+    spells: Vec<SpellStatRow>,
+}
+
+fn spell_breakdown_row(b: &SpellBreakdown) -> SpellBreakdownRow {
+    SpellBreakdownRow {
+        start_ms: b.start_ms,
+        end_ms: b.end_ms,
+        bucket_ms: b.bucket_ms,
+        total: b.total,
+        spells: b
+            .spells
+            .iter()
+            .map(|s| SpellStatRow {
+                spell_id: s.spell_id,
+                source_unit: s.source_unit,
+                is_pet: s.is_pet,
+                total: s.total,
+                hits: s.hits,
+                buckets: s.buckets.clone(),
+                normal: (&s.normal).into(),
+                crit: (&s.crit).into(),
+            })
+            .collect(),
+    }
+}
+
+/// Per-spell damage, healing, **or** damage-taken breakdown for `unit_id`
+/// over `[start_ms, end_ms]`, split into `buckets` time slices -- backs the
+/// Damage, Healing, and Damage Taken character views. `metric` is
+/// `"damage"` (default, player + pets), `"healing"` (player + pets), or
+/// `"damageTaken"` (the player only, grouped by attacker). `None` before
+/// parsing has finished. See `src/damage.rs`.
+#[tauri::command]
+pub(crate) fn spell_breakdown(
+    window: tauri::WebviewWindow,
+    unit_id: u32,
+    start_ms: i64,
+    end_ms: i64,
+    buckets: usize,
+    metric: Option<String>,
+) -> Option<SpellBreakdownRow> {
+    let log = crate::window::current_log(&window)?;
+    let data = log.data()?;
+    let metric = match metric.as_deref() {
+        Some("healing") => Metric::Healing,
+        Some("damageTaken") => Metric::DamageTaken,
+        _ => Metric::Damage,
+    };
+    let b = breakdown(&data.events, &data.tables, unit_id, start_ms, end_ms, buckets, metric);
+    Some(spell_breakdown_row(&b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

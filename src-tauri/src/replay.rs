@@ -985,6 +985,264 @@ fn nearest_sample(track: &[Sample], t: i64) -> Option<&Sample> {
         .min_by_key(|s| (s.t_ms - t).abs())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplaySampleRow {
+    t_ms: i64,
+    x: f32,
+    y: f32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayDeathSpanRow {
+    start_ms: i64,
+    /// `null` if still dead at the window's end.
+    end_ms: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayCastSpanRow {
+    start_ms: i64,
+    end_ms: i64,
+    /// `null` for a swing / an unresolved spell.
+    spell_id: Option<u16>,
+    /// `null` for a self-cast / ground-targeted / unknown target.
+    target_unit: Option<u32>,
+    /// `true` if `end_ms` is a real observed resolve time (hard cast /
+    /// empower); `false` if it's just a fixed spin-animation guess off a
+    /// lone `CAST_SUCCESS` (instant, or a channel's opening tick).
+    real_duration: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayFaceRow {
+    t_ms: i64,
+    x: f32,
+    y: f32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayHpSampleRow {
+    t_ms: i64,
+    cur: i64,
+    max: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayUnitRow {
+    unit_id: u32,
+    guid: String,
+    /// "Player" | "Pet" | "Creature" | ...
+    kind: &'static str,
+    /// Largest advanced-block `maxHP` seen for this unit; 0 if unknown.
+    max_hp: i64,
+    /// The unit's self-reported `level` (advanced-block last field); 0 if
+    /// unknown. A skull / `??` boss logs `maxPlayerLevel + 3`.
+    level: i32,
+    samples: Vec<ReplaySampleRow>,
+    /// `(t, current, max)` HP readings, time-ordered.
+    hp_samples: Vec<ReplayHpSampleRow>,
+    death_spans: Vec<ReplayDeathSpanRow>,
+    cast_spans: Vec<ReplayCastSpanRow>,
+    face_events: Vec<ReplayFaceRow>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayCastLineRow {
+    source_unit: u32,
+    target_unit: u32,
+    t0: i64,
+    t1: i64,
+    instant: bool,
+    success: bool,
+    /// Player-side source (vs a hostile creature).
+    from_player: bool,
+    /// A same-side heal rather than an attack.
+    heal: bool,
+    /// A splash/cleave hit -- the cast's primary target was someone else.
+    secondary: bool,
+    /// `null` for a melee swing.
+    spell_id: Option<u16>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayPeriodicHitRow {
+    source_unit: u32,
+    target_unit: u32,
+    t_ms: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayWorldMarkerRow {
+    /// Log slot 0-7 (0 star .. 7 skull).
+    marker: u8,
+    x: f32,
+    y: f32,
+    placed_ms: i64,
+    /// `null` = still up at the window's end.
+    removed_ms: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplaySeriesRow {
+    start_ms: i64,
+    end_ms: i64,
+    units: Vec<ReplayUnitRow>,
+    /// Hostile-creature-attacks-player lines, ascending by `t0`.
+    cast_lines: Vec<ReplayCastLineRow>,
+    /// Player DoT ticks on hostile creatures, ascending by `t_ms`.
+    periodic_hits: Vec<ReplayPeriodicHitRow>,
+    /// Hostile-creature DoT ticks on players, ascending by `t_ms`.
+    hostile_periodic_hits: Vec<ReplayPeriodicHitRow>,
+    /// Player HoT ticks on players, ascending by `t_ms`.
+    periodic_heals: Vec<ReplayPeriodicHitRow>,
+    /// Environmental damage on players, ascending by `t_ms`.
+    env_hits: Vec<ReplayPeriodicHitRow>,
+    /// Raid world markers active in the window, ascending by `placed_ms`.
+    world_markers: Vec<ReplayWorldMarkerRow>,
+    /// Tight `[minX, maxX, minY, maxY]` over every unit's fixes -- the
+    /// scene's framing box. `null` if nothing carried a position.
+    fit_box: Option<[f32; 4]>,
+    /// `MAP_CHANGE` box `[x0, x1, y0, y1]` (corners unsorted), or `null`.
+    map_box: Option<[f32; 4]>,
+}
+
+/// Raid-wide position replay for `[start_ms, end_ms]` -- every unit that
+/// carried a position, with its `(t, x, y)` track plus death / cast spans
+/// and cast-target face hints for the Replay view's 3D scene. One fetch
+/// per encounter, scrubbed client-side. `None` before parsing finishes.
+/// See `src/replay.rs` and `docs/replay-view.md`.
+#[tauri::command]
+pub(crate) fn replay_series(
+    window: tauri::WebviewWindow,
+    start_ms: i64,
+    end_ms: i64,
+) -> Option<ReplaySeriesRow> {
+    let log = crate::window::current_log(&window)?;
+    let data = log.data()?;
+    let s = series(&data.events, &data.tables, log.mmap_bytes(), start_ms, end_ms);
+    Some(ReplaySeriesRow {
+        start_ms: s.start_ms,
+        end_ms: s.end_ms,
+        fit_box: s.fit_box,
+        map_box: s.map_box,
+        cast_lines: s
+            .cast_lines
+            .into_iter()
+            .map(|c| ReplayCastLineRow {
+                source_unit: c.source_unit,
+                target_unit: c.target_unit,
+                t0: c.t0,
+                t1: c.t1,
+                instant: c.instant,
+                success: c.success,
+                from_player: c.from_player,
+                heal: c.heal,
+                secondary: c.secondary,
+                spell_id: (c.spell_id != NO_SPELL).then_some(c.spell_id),
+            })
+            .collect(),
+        periodic_hits: s
+            .periodic_hits
+            .into_iter()
+            .map(|h| ReplayPeriodicHitRow {
+                source_unit: h.source_unit,
+                target_unit: h.target_unit,
+                t_ms: h.t_ms,
+            })
+            .collect(),
+        hostile_periodic_hits: s
+            .hostile_periodic_hits
+            .into_iter()
+            .map(|h| ReplayPeriodicHitRow {
+                source_unit: h.source_unit,
+                target_unit: h.target_unit,
+                t_ms: h.t_ms,
+            })
+            .collect(),
+        periodic_heals: s
+            .periodic_heals
+            .into_iter()
+            .map(|h| ReplayPeriodicHitRow {
+                source_unit: h.source_unit,
+                target_unit: h.target_unit,
+                t_ms: h.t_ms,
+            })
+            .collect(),
+        env_hits: s
+            .env_hits
+            .into_iter()
+            .map(|h| ReplayPeriodicHitRow {
+                source_unit: h.source_unit,
+                target_unit: h.target_unit,
+                t_ms: h.t_ms,
+            })
+            .collect(),
+        world_markers: s
+            .world_markers
+            .into_iter()
+            .map(|m| ReplayWorldMarkerRow {
+                marker: m.marker,
+                x: m.x,
+                y: m.y,
+                placed_ms: m.placed_ms,
+                removed_ms: m.removed_ms,
+            })
+            .collect(),
+        units: s
+            .units
+            .into_iter()
+            .map(|u| ReplayUnitRow {
+                unit_id: u.unit_id,
+                guid: u.guid,
+                kind: u.kind,
+                max_hp: u.max_hp,
+                level: u.level,
+                samples: u
+                    .samples
+                    .into_iter()
+                    .map(|p| ReplaySampleRow { t_ms: p.t_ms, x: p.x, y: p.y })
+                    .collect(),
+                hp_samples: u
+                    .hp_samples
+                    .into_iter()
+                    .map(|h| ReplayHpSampleRow { t_ms: h.t_ms, cur: h.cur, max: h.max })
+                    .collect(),
+                death_spans: u
+                    .death_spans
+                    .into_iter()
+                    .map(|d| ReplayDeathSpanRow { start_ms: d.start_ms, end_ms: d.end_ms })
+                    .collect(),
+                cast_spans: u
+                    .cast_spans
+                    .into_iter()
+                    .map(|c| ReplayCastSpanRow {
+                        start_ms: c.start_ms,
+                        end_ms: c.end_ms,
+                        spell_id: (c.spell_id != NO_SPELL).then_some(c.spell_id),
+                        target_unit: (c.target_unit != NO_UNIT).then_some(c.target_unit),
+                        real_duration: c.real_duration,
+                    })
+                    .collect(),
+                face_events: u
+                    .face_events
+                    .into_iter()
+                    .map(|f| ReplayFaceRow { t_ms: f.t_ms, x: f.x, y: f.y })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

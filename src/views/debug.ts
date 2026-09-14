@@ -1,0 +1,401 @@
+// Debug + Raw views -- Debug is a tabbed set of small tables (players,
+// pets, creatures, units, spells, zones, encounters, deaths, gear) built
+// straight from `log_lists`; Raw is the full, unresolved event stream
+// (potentially millions of rows) fetched a page at a time via
+// `raw_events`. They share this file because Raw resolves its
+// source/target/spell columns against the same `units`/`spells` arrays
+// Debug's `log_lists` fetch populates (see `unitsById`/`spellsById`
+// below) -- not because they're one view; #debug-view and #raw-view are
+// separate toolbar destinations with their own hidden state in main.ts.
+//
+// main.ts owns the writers for the summary-line state (`setLineCount`,
+// `setCounts`) since that's driven by `window_info`/`log_lists`, which it
+// fetches; this module owns rendering and the debug-tab DOM.
+
+import { invoke } from "@tauri-apps/api/core";
+import { VirtualList } from "../virtual-list";
+import type { UnitRow, SpellRow, EncounterRow, DeathRow, CombatantRow } from "../types";
+import { formatEncounterResult, formatUnitName } from "../format";
+
+interface ZoneRow {
+  mapId: number;
+  name: string;
+}
+
+export interface LogListsPayload {
+  units: UnitRow[];
+  spells: SpellRow[];
+  zones: ZoneRow[];
+  encounters: EncounterRow[];
+  deaths: DeathRow[];
+  combatants: CombatantRow[];
+}
+
+interface RawEventRow {
+  row: number;
+  timestampMs: number;
+  kind: string;
+  sourceUnitId: number | null;
+  targetUnitId: number | null;
+  spellId: number | null;
+  position: [number, number] | null;
+  details: string;
+}
+
+interface DebugCounts {
+  players: number;
+  pets: number;
+  creatures: number;
+  units: number;
+  spells: number;
+  zones: number;
+  encounters: number;
+  deaths: number;
+  gear: number;
+}
+
+// [singular, plural] noun per tab, keyed by the tab buttons' data-tab value.
+const TAB_LABELS: Record<keyof DebugCounts, [string, string]> = {
+  players: ["player", "players"],
+  pets: ["pet", "pets"],
+  creatures: ["creature", "creatures"],
+  units: ["unit", "units"],
+  spells: ["spell", "spells"],
+  zones: ["zone", "zones"],
+  encounters: ["encounter", "encounters"],
+  deaths: ["death", "deaths"],
+  gear: ["gear snapshot", "gear snapshots"],
+};
+
+const lineFormatter = new Intl.NumberFormat();
+
+// Set by main.ts's refreshStatus whenever data loads (setLineCount /
+// setCounts), read by updateSummaryText whenever the active tab changes --
+// keeps the status line's trailing "X <noun>" in sync with whichever tab
+// is currently showing without needing a fresh backend round-trip on
+// every tab click.
+let lastLineCount: number | null = null;
+let lastCounts: DebugCounts | null = null;
+
+export function setLineCount(n: number | null): void {
+  lastLineCount = n;
+}
+
+export function setCounts(c: DebugCounts | null): void {
+  lastCounts = c;
+}
+
+// Backend intern ids (`GuidTable`/`SpellTable`) are dense and 0-indexed,
+// so `units[id]`/`spells[id]` is an O(1) lookup -- the raw view sends ids
+// (see RawEventRow) instead of resolved strings and resolves them
+// against these, set alongside lastCounts whenever log_lists is
+// fetched. Avoids re-cloning the same handful of player/pet names on
+// every scroll tick, including rows already scrolled past.
+let unitsById: UnitRow[] = [];
+let spellsById: SpellRow[] = [];
+
+// The player picker labels roster entries by unit -- expose read access
+// rather than duplicating this array.
+export function getUnitsById(): UnitRow[] {
+  return unitsById;
+}
+
+const RAW_ROW_HEIGHT = 24;
+
+const DATA_ROW_HEIGHT = 24;
+
+// One VirtualList<string[]> per debug tab, keyed by tab id (e.g.
+// "players"). Every tab's data is small enough to hold entirely in
+// memory (unlike the raw view's 1.8M rows), so `fetchRange` just slices
+// `rows` -- the same recycling-row machinery still avoids the ~6k real
+// DOM rows that made these tables the raw view's next-worst offender
+// (see docs/performance-concerns.md #1).
+const debugTables = new Map<string, { list: VirtualList<string[]>; rows: string[][] }>();
+
+function getOrCreateDebugTable(tabKey: string, gridColumns: string): { list: VirtualList<string[]>; rows: string[][] } {
+  const existing = debugTables.get(tabKey);
+  if (existing) return existing;
+
+  const container = document.querySelector<HTMLElement>(`#${tabKey}-scroll`);
+  const spacer = document.querySelector<HTMLElement>(`#${tabKey}-spacer`);
+  const rowsContainer = document.querySelector<HTMLElement>(`#${tabKey}-rows`);
+  const header = document.querySelector<HTMLElement>(`#${tabKey}-header`);
+  if (!container || !spacer || !rowsContainer) throw new Error(`debug table DOM missing for "${tabKey}"`);
+
+  container.style.setProperty("--cols", gridColumns);
+  header?.style.setProperty("--cols", gridColumns);
+
+  const state = { rows: [] as string[][], list: null as unknown as VirtualList<string[]> };
+  state.list = new VirtualList<string[]>({
+    container,
+    spacer,
+    rowsContainer,
+    rowHeight: DATA_ROW_HEIGHT,
+    createRow: () => {
+      const div = document.createElement("div");
+      div.className = "data-row";
+      return div;
+    },
+    renderRow: (cells, el) => {
+      // VirtualList already positioned `el` (anchored to the live scroll
+      // position, possibly scale-compressed for a huge total) -- setting
+      // `top` again here from the raw logical `index` would silently
+      // clobber that with the wrong, uncompressed value.
+      if (el.children.length !== cells.length) {
+        el.replaceChildren(
+          ...cells.map(() => {
+            const span = document.createElement("span");
+            span.className = "data-col";
+            return span;
+          }),
+        );
+      }
+      cells.forEach((text, i) => {
+        (el.children[i] as HTMLElement).textContent = text;
+      });
+    },
+    fetchRange: (start, count) => state.rows.slice(start, start + count),
+  });
+
+  debugTables.set(tabKey, state);
+  return state;
+}
+
+function renderTable(tabKey: string, gridColumns: string, rows: string[][], emptyMessage: string) {
+  const table = getOrCreateDebugTable(tabKey, gridColumns);
+  table.rows = rows;
+
+  const emptyEl = document.querySelector<HTMLElement>(`#${tabKey}-empty`);
+  const scrollEl = document.querySelector<HTMLElement>(`#${tabKey}-scroll`);
+  const isEmpty = rows.length === 0;
+  if (emptyEl) {
+    emptyEl.hidden = !isEmpty;
+    emptyEl.textContent = emptyMessage;
+  }
+  if (scrollEl) scrollEl.hidden = isEmpty;
+
+  table.list.setTotal(rows.length);
+}
+
+export function renderDebugLists(lists: LogListsPayload): DebugCounts {
+  unitsById = lists.units;
+  spellsById = lists.spells;
+
+  renderTable(
+    "units",
+    "1fr 100px 220px 220px",
+    lists.units.map((u) => [formatUnitName(u), u.kind, u.owner ?? "", u.guid]),
+    "No units found in this log.",
+  );
+  renderTable(
+    "spells",
+    "1fr 120px 100px",
+    lists.spells.map((s) => [s.name, String(s.spellId), "0x" + s.school.toString(16)]),
+    "No spells found in this log.",
+  );
+  renderTable(
+    "zones",
+    "1fr 120px",
+    lists.zones.map((z) => [z.name, String(z.mapId)]),
+    "No zones found in this log.",
+  );
+
+  // Players, pets, and creatures are pure filters over the units list, not
+  // separate backend data. Pets is specifically *player-owned* units only
+  // (covers Pet-GUID minions and owned totems/guardians alike, via a
+  // lookup on the owner's own kind) -- something owned by a creature
+  // rather than a player belongs in Creatures instead, not Pets.
+  const kindByGuid = new Map(lists.units.map((u) => [u.guid, u.kind]));
+  const isPlayerOwned = (u: UnitRow) => u.owner !== null && kindByGuid.get(u.owner) === "Player";
+
+  const players = lists.units.filter((u) => u.kind === "Player");
+  const pets = lists.units.filter(isPlayerOwned);
+  const creatures = lists.units.filter((u) => u.kind === "Creature" && !isPlayerOwned(u));
+
+  renderTable(
+    "players",
+    "1fr 160px 320px",
+    players.map((u) => [u.name, u.server ?? "", u.guid]),
+    "No players found in this log.",
+  );
+  renderTable(
+    "pets",
+    "1fr 100px 220px 220px",
+    pets.map((u) => [formatUnitName(u), u.kind, u.owner ?? "", u.guid]),
+    "No player-owned pets found in this log.",
+  );
+  renderTable(
+    "creatures",
+    "1fr 100px 220px 220px",
+    creatures.map((u) => [formatUnitName(u), u.kind, u.owner ?? "", u.guid]),
+    "No creatures found in this log.",
+  );
+
+  renderTable(
+    "encounters",
+    "1fr 100px 100px 140px 140px 100px",
+    lists.encounters.map((e) => [
+      e.isTrash ? "Trash" : e.name,
+      formatEncounterResult(e),
+      String(e.encounterId),
+      new Date(e.startMs).toLocaleTimeString(),
+      new Date(e.endMs).toLocaleTimeString(),
+      String(e.difficultyId),
+    ]),
+    "No encounters found in this log.",
+  );
+  renderTable(
+    "deaths",
+    "1fr 1fr 140px",
+    lists.deaths.map((d) => [d.playerName, d.encounterName, new Date(d.timestampMs).toLocaleTimeString()]),
+    "No player deaths found in this log.",
+  );
+  renderTable(
+    "gear",
+    "1fr 1fr 100px 140px 100px",
+    lists.combatants.map((c) => [
+      c.playerName,
+      c.encounterName,
+      String(c.specId),
+      c.avgItemLevel !== null ? c.avgItemLevel.toFixed(1) : "",
+      String(c.itemCount),
+    ]),
+    "No COMBATANT_INFO lines found in this log -- spec/gear snapshots aren't available for this capture.",
+  );
+
+  return {
+    players: players.length,
+    pets: pets.length,
+    creatures: creatures.length,
+    units: lists.units.length,
+    spells: lists.spells.length,
+    zones: lists.zones.length,
+    encounters: lists.encounters.filter((e) => !e.isTrash).length,
+    deaths: lists.deaths.length,
+    gear: lists.combatants.length,
+  };
+}
+
+function activeTabKey(): keyof DebugCounts {
+  const tab = document.querySelector<HTMLButtonElement>(".tab-btn.active")?.dataset.tab;
+  return tab && tab in TAB_LABELS ? (tab as keyof DebugCounts) : "players";
+}
+
+// The active tab's scroll container had clientHeight 0 while the whole
+// debug view was hidden (e.g. we were showing Raw) -- force a re-measure
+// now that it's visible again.
+export function refreshActiveDebugTable(): void {
+  debugTables.get(activeTabKey())?.list.refresh();
+}
+
+export function updateSummaryText() {
+  const statusEl = document.querySelector<HTMLElement>("#log-status");
+  if (!statusEl || lastLineCount === null) return;
+  if (!lastCounts) {
+    statusEl.textContent = `${lineFormatter.format(lastLineCount)} lines`;
+    return;
+  }
+  const tab = activeTabKey();
+  const count = lastCounts[tab];
+  const [singular, plural] = TAB_LABELS[tab];
+  const noun = count === 1 ? singular : plural;
+  statusEl.textContent = `${lineFormatter.format(lastLineCount)} lines — ${lineFormatter.format(count)} ${noun}`;
+}
+
+function formatRawTimestamp(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number, len = 2) => String(n).padStart(len, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+function createRawRowElement(): HTMLDivElement {
+  const div = document.createElement("div");
+  div.className = "raw-row";
+  const columns = ["raw-col-time", "raw-col-kind", "raw-col-source", "raw-col-target", "raw-col-spell", "raw-col-details"];
+  for (const cls of columns) {
+    const span = document.createElement("span");
+    span.className = `raw-col ${cls}`;
+    div.appendChild(span);
+  }
+  return div;
+}
+
+function setRawCell(el: HTMLElement, text: string, clickable: boolean, tooltip?: string) {
+  el.textContent = text;
+  el.classList.toggle("raw-clickable", clickable);
+  if (tooltip) {
+    el.title = tooltip;
+  } else {
+    el.removeAttribute("title");
+  }
+}
+
+// Row content is updated in place on an already-appended, recycled
+// element (see VirtualList) rather than rebuilt from scratch every
+// time. VirtualList already positioned `el` before calling this --
+// don't touch `top` here (see the debug-table renderRow for why that
+// used to silently break the raw view specifically: VirtualList
+// anchors to the live, possibly scale-compressed scroll position for a
+// huge total, which a naive `index * rowHeight` here would clobber).
+function renderRawRow(r: RawEventRow, el: HTMLElement) {
+  const [time, kind, source, target, spell, details] = Array.from(el.children) as HTMLElement[];
+  const sourceUnit = r.sourceUnitId !== null ? unitsById[r.sourceUnitId] : undefined;
+  const targetUnit = r.targetUnitId !== null ? unitsById[r.targetUnitId] : undefined;
+  const spellRow = r.spellId !== null ? spellsById[r.spellId] : undefined;
+  setRawCell(time, formatRawTimestamp(r.timestampMs), false);
+  setRawCell(kind, r.kind, false);
+  setRawCell(source, sourceUnit ? formatUnitName(sourceUnit) : "", sourceUnit !== undefined, sourceUnit?.guid);
+  setRawCell(target, targetUnit ? formatUnitName(targetUnit) : "", targetUnit !== undefined, targetUnit?.guid);
+  setRawCell(spell, spellRow?.name ?? "", spellRow !== undefined);
+  const position = r.position ? `[${r.position[0].toFixed(1)}, ${r.position[1].toFixed(1)}] ` : "";
+  setRawCell(details, position + r.details, false, position + r.details);
+}
+
+let rawList: VirtualList<RawEventRow> | null = null;
+
+function getRawList(): VirtualList<RawEventRow> | null {
+  if (rawList) return rawList;
+  const container = document.querySelector<HTMLElement>("#raw-scroll");
+  const spacer = document.querySelector<HTMLElement>("#raw-spacer");
+  const rowsContainer = document.querySelector<HTMLElement>("#raw-rows");
+  if (!container || !spacer || !rowsContainer) return null;
+  rawList = new VirtualList<RawEventRow>({
+    container,
+    spacer,
+    rowsContainer,
+    rowHeight: RAW_ROW_HEIGHT,
+    overscan: 15,
+    createRow: createRawRowElement,
+    renderRow: renderRawRow,
+    fetchRange: (start, count) =>
+      invoke<RawEventRow[] | null>("raw_events", { start, count }).then((rows) => rows ?? []),
+  });
+  return rawList;
+}
+
+// Called whenever the raw view becomes the active one (or the log
+// changes while it's active) -- sizes the virtual-scroll spacer and
+// forces a fresh render regardless of scroll position, since the
+// previous render (if any) was for a different log.
+export async function loadRawView() {
+  const total = (await invoke<number | null>("raw_event_count")) ?? 0;
+  getRawList()?.setTotal(total);
+}
+
+export function setupTabs() {
+  const buttons = document.querySelectorAll<HTMLButtonElement>(".tab-btn");
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      buttons.forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.querySelectorAll<HTMLElement>(".tab-panel").forEach((panel) => {
+        panel.hidden = panel.dataset.panel !== btn.dataset.tab;
+      });
+      // The now-visible panel's scroll container had clientHeight 0 while
+      // hidden, so whatever VirtualList last computed from that is stale --
+      // force it to re-measure against its real height now.
+      if (btn.dataset.tab) debugTables.get(btn.dataset.tab)?.list.refresh();
+      updateSummaryText();
+    });
+  });
+}
