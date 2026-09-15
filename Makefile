@@ -1,4 +1,4 @@
-.PHONY: help install run dev build test clean uninstall release
+.PHONY: help install run dev build test test-backend test-frontend back backend front frontend clean uninstall release
 
 # Default target
 .DEFAULT_GOAL := help
@@ -14,7 +14,9 @@ help:
 	@echo "  make run [FILE]               Run the app locally with hot reload"
 	@echo "  make dev [FILE]               Alias for 'make run'"
 	@echo "  make build                    Produce a native app bundle for this platform"
-	@echo "  make test                     Run Rust tests (cargo test)"
+	@echo "  make test                     Run the full test suite (backend + frontend)"
+	@echo "  make test back                Run backend tests only (cargo test)"
+	@echo "  make test front               Run frontend tests only (bun test)"
 	@echo "  make clean                    Remove build artifacts (dist/, src-tauri/target)"
 	@echo "  make uninstall                Unregister the built .app from macOS Launch Services"
 	@echo ""
@@ -41,7 +43,14 @@ install:
 # root: `tauri dev` runs the binary via `cargo run`, whose cwd is
 # `src-tauri/`, so a bare relative path would otherwise be looked up one
 # level too deep and fail with "cannot open file".
-RUN_ARGS := $(abspath $(filter-out run dev build test clean install uninstall help release,$(MAKECMDGOALS)))
+RUN_ARGS := $(abspath $(filter-out run dev build test test-backend test-frontend back backend front frontend clean install uninstall help release,$(MAKECMDGOALS)))
+
+# `make test back`/`make test front` -- the extra word selects a suite,
+# same "extra words after the target" convention RUN_ARGS uses for `run`'s
+# FILE argument. Unknown to Make on its own (caught harmlessly by the `%:`
+# catch-all at the bottom), so `back`/`front`/etc. never error as "no rule
+# to make target".
+TEST_SUITE := $(filter back backend front frontend,$(MAKECMDGOALS))
 
 run: install
 	@# Free the Vite dev port (vite.config.ts: port 1420, strictPort) in
@@ -69,7 +78,17 @@ build: install
 	fi
 
 test:
+	@case "$(TEST_SUITE)" in \
+		back|backend) $(MAKE) test-backend ;; \
+		front|frontend) $(MAKE) test-frontend ;; \
+		*) $(MAKE) test-backend && $(MAKE) test-frontend ;; \
+	esac
+
+test-backend:
 	cd src-tauri && cargo test
+
+test-frontend: install
+	bun test
 
 clean:
 	rm -rf dist
