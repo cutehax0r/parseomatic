@@ -59,6 +59,7 @@ function ensureGraph(canvasEl: HTMLCanvasElement): LGraph {
   registerEncounterNodeTypes();
   graph = new LGraph();
   graphCanvas = new LGraphCanvas(canvasEl, graph);
+  graphCanvas.show_info = false; // hides the built-in T/I/N/V/FPS debug overlay
   graphCanvas.startRendering();
   return graph;
 }

@@ -117,18 +117,30 @@ else wrote is the same as running any other program you chose to install,
 not worse, as long as someone with the ability to read code actually looked
 at it first.
 
-**Cheap mitigation available regardless of the trust model:** tighten the
-webview's Content-Security-Policy (`connect-src` in `tauri.conf.json`) to
-block or allowlist outbound network requests. Reduces the "widget silently
-phones data home" risk without touching the code-execution trust question
-at all. Not yet done.
+**Cheap mitigation, done:** `src-tauri/tauri.conf.json`'s
+`app.security.csp` already scopes `connect-src` to
+`'self' ipc: http://ipc.localhost` — no wildcard, no external host. A
+widget/custom-view module cannot `fetch`/`XMLHttpRequest`/`WebSocket` out
+to an arbitrary network endpoint; the webview-level CSP blocks it
+regardless of what the widget's own code tries. Applies to every window
+(there's no per-window CSP override in `src-tauri/src/*.rs`), so this
+covers encounter-config v2's "write TypeScript" view escape hatch
+(`encounter-config-v2.md` §12) for free, not just widget packs. Reduces
+the "widget silently phones data home" risk without touching the
+code-execution trust question at all — filesystem/IPC access is still
+whatever the shared webview's Tauri capabilities allow (unchanged, see
+above).
+
+**Real isolation (separate webview/iframe/worker per widget/view, or a
+constrained scripting layer like Lua via `mlua`) is explicitly deferred,
+not designed.** The CSP tightening above is judged sufficient for the
+current, reviewed-distribution trust model — don't reopen this until the
+**revisit trigger** below actually fires.
 
 **Revisit trigger:** if distribution ever moves to "anyone uploads
 anything, unreviewed" — a fully open community marketplace with no review
-step — that's the point real isolation (separate webview/iframe/worker per
-widget, or a constrained scripting layer instead of raw JS, e.g. Lua via
-`mlua` on the Rust side as a sandboxed "logic" escape hatch) becomes worth
-the engineering cost. Not before; don't build it speculatively.
+step — that's the point real isolation becomes worth the engineering cost.
+Not before; don't build it speculatively.
 
 ## Explicit non-goals for now
 

@@ -22,6 +22,7 @@ export type QueryField =
   | "sourceOwner"
   | "sourceOwnerKind" // "Player" (incl. player-owned pets) / "Creature" / …
   | "targetUnit"
+  | "targetOwnerKind" // same owner-fold as sourceOwnerKind, applied to targetUnit
   | "spellId"
   | "hitType"
   | "amount"
@@ -29,7 +30,8 @@ export type QueryField =
   | "posUnit"
   | "powerType";
 
-export type FilterOp = "eq" | "ne" | "in" | "lt" | "lte" | "gt" | "gte";
+// "inRange"/"outOfRange": value is [lo, hi], inclusive both ends, numeric fields only.
+export type FilterOp = "eq" | "ne" | "in" | "lt" | "lte" | "gt" | "gte" | "inRange" | "outOfRange";
 
 export interface FilterClause {
   field: QueryField;

@@ -244,7 +244,7 @@ function phaseDefFromNode(node: PhaseNode, ctx: CompileCtx): PhaseDef {
 function commentsFromGraph(graph: LGraph | null | undefined): string[] {
   if (!graph) return [];
   const found: LGraphNode[] = [];
-  graph.findNodesByType("encounter/comment", found);
+  graph.findNodesByType("V1/comment", found);
   return (found as unknown as CommentNode[]).map((n) => n.properties.text.trim()).filter((t) => t.length > 0);
 }
 
@@ -299,36 +299,36 @@ interface LoadCtx {
  *  config->graph equivalent of `numberExprFromNode`. */
 function nodeForNumberExpr(graph: LGraph, expr: NumberExpr): LGraphNode {
   if (expr.type === "unitHealthCurrent") {
-    const node = addNode<UnitHealthCurrentNode>(graph, "encounter/unit-health-current");
+    const node = addNode<UnitHealthCurrentNode>(graph, "V1/unit-health-current");
     node.setValues({ npcId: expr.npcId });
     return node;
   }
   if (expr.type === "unitHealthMax") {
-    const node = addNode<UnitHealthMaxNode>(graph, "encounter/unit-health-max");
+    const node = addNode<UnitHealthMaxNode>(graph, "V1/unit-health-max");
     node.setValues({ npcId: expr.npcId });
     return node;
   }
   if (expr.type === "unitPowerCurrent") {
-    const node = addNode<UnitPowerCurrentNode>(graph, "encounter/unit-power-current");
+    const node = addNode<UnitPowerCurrentNode>(graph, "V1/unit-power-current");
     node.setValues({ npcId: expr.npcId, powerType: expr.powerType });
     return node;
   }
   if (expr.type === "unitPowerMax") {
-    const node = addNode<UnitPowerMaxNode>(graph, "encounter/unit-power-max");
+    const node = addNode<UnitPowerMaxNode>(graph, "V1/unit-power-max");
     node.setValues({ npcId: expr.npcId, powerType: expr.powerType });
     return node;
   }
   if (expr.type === "numberValue") {
-    const node = addNode<NumberValueNode>(graph, "encounter/number-value");
+    const node = addNode<NumberValueNode>(graph, "V1/number-value");
     node.setValues({ value: expr.value });
     return node;
   }
   if (expr.type === "unitDeathCount") {
-    const node = addNode<UnitDeathCountNode>(graph, "encounter/unit-death-count");
+    const node = addNode<UnitDeathCountNode>(graph, "V1/unit-death-count");
     node.setValues({ npcIds: expr.npcIds ?? [] });
     return node;
   }
-  const node = addNode<NumberMathNode>(graph, "encounter/number-math");
+  const node = addNode<NumberMathNode>(graph, "V1/number-math");
   node.setValues({ op: expr.op });
   nodeForNumberExpr(graph, expr.a).connect(0, node, "a");
   nodeForNumberExpr(graph, expr.b).connect(0, node, "b");
@@ -355,21 +355,21 @@ function spellFilterNode(
 }
 
 function nodeForTrigger(graph: LGraph, trigger: Trigger, ctx: LoadCtx): LGraphNode | null {
-  if (trigger.type === "combatStart") return addNode(graph, "encounter/trigger-start");
-  if (trigger.type === "combatEnd") return addNode(graph, "encounter/trigger-end");
+  if (trigger.type === "combatStart") return addNode(graph, "V1/trigger-start");
+  if (trigger.type === "combatEnd") return addNode(graph, "V1/trigger-end");
   if (trigger.type === "castStart" || trigger.type === "castSuccess") {
-    return spellFilterNode(graph, trigger.type === "castStart" ? "encounter/cast-start" : "encounter/cast-success", trigger, ctx);
+    return spellFilterNode(graph, trigger.type === "castStart" ? "V1/cast-start" : "V1/cast-success", trigger, ctx);
   }
   if (trigger.type === "auraApplied" || trigger.type === "auraRemoved") {
     return spellFilterNode(
       graph,
-      trigger.type === "auraApplied" ? "encounter/aura-applied" : "encounter/aura-removed",
+      trigger.type === "auraApplied" ? "V1/aura-applied" : "V1/aura-removed",
       trigger,
       ctx,
     );
   }
   if (trigger.type === "threshold") {
-    const node = addNode<ThresholdTriggerNode>(graph, "encounter/threshold");
+    const node = addNode<ThresholdTriggerNode>(graph, "V1/threshold");
     node.setValues({ op: trigger.op });
     nodeForNumberExpr(graph, trigger.value).connect(0, node, "value");
     nodeForNumberExpr(graph, trigger.threshold).connect(0, node, "threshold");
@@ -382,12 +382,12 @@ function nodeForTrigger(graph: LGraph, trigger: Trigger, ctx: LoadCtx): LGraphNo
   if (trigger.type === "offset") {
     const fromNode = nodeForTrigger(graph, trigger.from, ctx);
     if (!fromNode) return null;
-    const durationNode = addNode<DurationNode>(graph, "encounter/duration");
+    const durationNode = addNode<DurationNode>(graph, "V1/duration");
     durationNode.setValues({
       minutes: Math.floor(trigger.seconds / 60),
       seconds: trigger.seconds % 60,
     });
-    const mathNode = addNode<TimeMathNode>(graph, "encounter/time-math");
+    const mathNode = addNode<TimeMathNode>(graph, "V1/time-math");
     mathNode.setValues({ op: trigger.op });
     fromNode.connect(0, mathNode, "a");
     durationNode.connect(0, mathNode, "b");
@@ -418,7 +418,7 @@ export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarni
   const ctx: LoadCtx = { config, warnings: [], built: new Map() };
   graph.clear();
 
-  const info = addNode<EncounterInfoNode>(graph, "encounter/info");
+  const info = addNode<EncounterInfoNode>(graph, "V1/info");
   info.setValues({
     encounterId: config.encounterId ?? 0,
     id: config.id,
@@ -428,10 +428,10 @@ export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarni
   });
 
   if (config.phases.length) {
-    const phaseListNode = addNode<PhaseListNode>(graph, "encounter/phase-list");
+    const phaseListNode = addNode<PhaseListNode>(graph, "V1/phase-list");
 
     config.phases.forEach((phaseDef) => {
-      const phaseNode = addNode<PhaseNode>(graph, "encounter/phase");
+      const phaseNode = addNode<PhaseNode>(graph, "V1/phase");
       phaseNode.setValues({ id: phaseDef.id, label: phaseDef.label, kind: phaseDef.kind });
 
       const startNode = nodeForTrigger(graph, phaseDef.start, ctx);
@@ -449,7 +449,7 @@ export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarni
   }
 
   for (const text of config.comments ?? []) {
-    addNode<CommentNode>(graph, "encounter/comment").setValues({ text });
+    addNode<CommentNode>(graph, "V1/comment").setValues({ text });
   }
 
   // Freshly-built nodes have no meaningful position of their own -- lay

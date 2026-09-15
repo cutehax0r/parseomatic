@@ -53,7 +53,12 @@ impl QuerySpec {
 /// folds into the owning player -- see `docs/ui-widgets.md`,
 /// "Per-encounter player rows". `SourceOwnerKind` is that resolved unit's
 /// kind (`"Player"` for players and player-owned pets, `"Creature"` for
-/// bosses/adds) -- the player-side vs enemy-side split. `SpellId` is the
+/// bosses/adds) -- the player-side vs enemy-side split. `TargetOwnerKind`
+/// is the same owner-folded kind resolution, applied to `TargetUnit`
+/// instead -- needed because `UNIT_DIED` interns the victim as the
+/// *target*, not the source, so splitting a Deaths query into "players"
+/// vs. "creatures" needs this, not `SourceOwnerKind`
+/// (`docs/encounter-config-v2.md`, section 6). `SpellId` is the
 /// intern-table index, not the WoW spell id (frontend maps via the
 /// index-aligned `log_lists`). `PosUnit` is the unit the row's advanced
 /// block (position + health/power, `EventStore::pos_unit`) describes --
@@ -73,6 +78,7 @@ pub enum Field {
     SourceOwner,
     SourceOwnerKind,
     TargetUnit,
+    TargetOwnerKind,
     SpellId,
     HitType,
     Amount,
@@ -90,6 +96,7 @@ impl Field {
             Field::SourceOwner => "sourceOwner",
             Field::SourceOwnerKind => "sourceOwnerKind",
             Field::TargetUnit => "targetUnit",
+            Field::TargetOwnerKind => "targetOwnerKind",
             Field::SpellId => "spellId",
             Field::HitType => "hitType",
             Field::PosUnit => "posUnit",
@@ -110,6 +117,10 @@ pub enum Op {
     Lte,
     Gt,
     Gte,
+    /// `value` is `[lo, hi]`, inclusive both ends. Numeric fields only --
+    /// a string-valued field never matches.
+    InRange,
+    OutOfRange,
 }
 
 #[derive(Deserialize)]
@@ -209,12 +220,13 @@ fn row_value(field: Field, row: usize, events: &EventStore, tables: &InternTable
         Field::Kind => Val::Str(events.kind[row].label()),
         Field::SourceUnit => Val::Int(unit_id(events.source_unit[row])),
         Field::SourceOwner => Val::Int(
-            effective_source(events.source_unit[row], tables)
+            effective_owner(events.source_unit[row], tables)
                 .map(|id| id as i64)
                 .unwrap_or(-1),
         ),
         Field::SourceOwnerKind => Val::Str(effective_source_kind(row, events, tables).as_str().to_string()),
         Field::TargetUnit => Val::Int(unit_id(events.dest_unit[row])),
+        Field::TargetOwnerKind => Val::Str(effective_target_kind(row, events, tables).as_str().to_string()),
         Field::SpellId => Val::Int(events.spell[row] as i64),
         Field::HitType => Val::Str(
             if events.flags[row] & FLAG_AOE != 0 { "AOE" } else { "ST" }.to_string(),
@@ -234,18 +246,27 @@ fn unit_id(id: u32) -> i64 {
     }
 }
 
-/// A source unit resolved to its owner (`unwrap_or(self)`), or `None` for
-/// `NO_UNIT` -- so a player's pet folds into the player.
-fn effective_source(src: u32, tables: &InternTables) -> Option<u32> {
-    if src == NO_UNIT {
+/// A unit resolved to its owner (`unwrap_or(self)`), or `None` for
+/// `NO_UNIT` -- so a player's pet folds into the player. Shared by both
+/// `SourceOwner(Kind)` (on `source_unit`) and `TargetOwnerKind` (on
+/// `dest_unit`) -- same fold, applied to whichever column is asked for.
+fn effective_owner(unit: u32, tables: &InternTables) -> Option<u32> {
+    if unit == NO_UNIT {
         None
     } else {
-        Some(tables.guids.get(src).owner_id.unwrap_or(src))
+        Some(tables.guids.get(unit).owner_id.unwrap_or(unit))
     }
 }
 
 fn effective_source_kind(row: usize, events: &EventStore, tables: &InternTables) -> UnitKind {
-    match effective_source(events.source_unit[row], tables) {
+    match effective_owner(events.source_unit[row], tables) {
+        Some(id) => tables.guids.get(id).kind,
+        None => UnitKind::None,
+    }
+}
+
+fn effective_target_kind(row: usize, events: &EventStore, tables: &InternTables) -> UnitKind {
+    match effective_owner(events.dest_unit[row], tables) {
         Some(id) => tables.guids.get(id).kind,
         None => UnitKind::None,
     }
@@ -265,6 +286,20 @@ fn passes(clause: &FilterClause, row: usize, events: &EventStore, tables: &Inter
         Op::Lte => cmp(&v, &clause.value).map(|o| o.is_le()).unwrap_or(false),
         Op::Gt => cmp(&v, &clause.value).map(|o| o.is_gt()).unwrap_or(false),
         Op::Gte => cmp(&v, &clause.value).map(|o| o.is_ge()).unwrap_or(false),
+        Op::InRange => in_range(&v, &clause.value),
+        Op::OutOfRange => !in_range(&v, &clause.value),
+    }
+}
+
+/// `j` as `[lo, hi]` (inclusive) -- `false` for a non-numeric `v`, a
+/// malformed bound, or a missing bound, same "no match" fallback as
+/// `cmp`'s `unwrap_or(false)` above.
+fn in_range(v: &Val, j: &Value) -> bool {
+    let Val::Int(n) = v else { return false };
+    let Some(bounds) = j.as_array() else { return false };
+    match (bounds.first().and_then(Value::as_i64), bounds.get(1).and_then(Value::as_i64)) {
+        (Some(lo), Some(hi)) => *n >= lo && *n <= hi,
+        _ => false,
     }
 }
 
@@ -282,15 +317,16 @@ fn cmp(v: &Val, j: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
-/// A `where` clause pre-processed for the scan. `Field::Kind` and
-/// `Field::SourceOwnerKind` with `eq`/`in` are the hot cases -- their
-/// string value(s) are resolved to enums once here, so the per-row check
-/// is a slice compare with no allocation or string parsing (see
-/// `performance-concerns.md` #9). Everything else stays on the generic
-/// `passes` path.
+/// A `where` clause pre-processed for the scan. `Field::Kind`,
+/// `Field::SourceOwnerKind`, and `Field::TargetOwnerKind` with `eq`/`in`
+/// are the hot cases -- their string value(s) are resolved to enums once
+/// here, so the per-row check is a slice compare with no allocation or
+/// string parsing (see `performance-concerns.md` #9). Everything else
+/// stays on the generic `passes` path.
 enum Compiled<'a> {
     KindIn(Vec<LineKind>),
     SourceKindIn(Vec<UnitKind>),
+    TargetKindIn(Vec<UnitKind>),
     Generic(&'a FilterClause),
 }
 
@@ -316,6 +352,13 @@ fn compile(clauses: &[FilterClause]) -> Vec<Compiled<'_>> {
             (Field::SourceOwnerKind, Op::In) => {
                 Compiled::SourceKindIn(as_str_list(&c.value, UnitKind::from_str))
             }
+            (Field::TargetOwnerKind, Op::Eq) => match c.value.as_str().and_then(UnitKind::from_str) {
+                Some(k) => Compiled::TargetKindIn(vec![k]),
+                None => Compiled::Generic(c),
+            },
+            (Field::TargetOwnerKind, Op::In) => {
+                Compiled::TargetKindIn(as_str_list(&c.value, UnitKind::from_str))
+            }
             _ => Compiled::Generic(c),
         })
         .collect()
@@ -330,6 +373,7 @@ fn compiled_all(
     filters.iter().all(|c| match c {
         Compiled::KindIn(ks) => ks.contains(&events.kind[row]),
         Compiled::SourceKindIn(ks) => ks.contains(&effective_source_kind(row, events, tables)),
+        Compiled::TargetKindIn(ks) => ks.contains(&effective_target_kind(row, events, tables)),
         Compiled::Generic(fc) => passes(fc, row, events, tables),
     })
 }
