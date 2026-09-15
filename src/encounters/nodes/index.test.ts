@@ -95,3 +95,34 @@ describe("registerEncounterNodeTypes -- pruned context menu items", () => {
     expect(canvasMenuContents).toContain("Align");
   });
 });
+
+describe("registerEncounterNodeTypes -- per-instance node color", () => {
+  test("a newly-created node gets its category's color, not undefined", () => {
+    // Regression test: `LGraphNode` declares bare `color;`/`bgcolor;`
+    // class fields with no initializer, which (under this project's
+    // `useDefineForClassFields`) define an own `undefined` on every
+    // instance at construction, shadowing anything set on the
+    // prototype -- so this only passes if colors are applied via
+    // `LiteGraph.createNode`, not `cls.prototype.color`.
+    registerEncounterNodeTypes();
+    const graph = new LGraph();
+    const node = LiteGraph.createNode("filter/actor")!;
+    graph.add(node);
+    expect(node.color).toBe(LGraphCanvas.node_colors.purple.color);
+    expect(node.bgcolor).toBe(LGraphCanvas.node_colors.purple.bgcolor);
+  });
+});
+
+describe("registerEncounterNodeTypes -- title double-click collapses a node", () => {
+  test("onNodeTitleDblClick toggles the node's collapsed flag", () => {
+    registerEncounterNodeTypes();
+    const graph = new LGraph();
+    const node = LiteGraph.createNode("structure/info")!;
+    graph.add(node);
+    expect(node.collapsed).toBe(false);
+    node.onNodeTitleDblClick?.({} as never, [0, 0], {} as never);
+    expect(node.collapsed).toBe(true);
+    node.onNodeTitleDblClick?.({} as never, [0, 0], {} as never);
+    expect(node.collapsed).toBe(false);
+  });
+});

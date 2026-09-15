@@ -3,7 +3,7 @@
 // compile to -- that compilation step isn't built yet, this is just the
 // graph vocabulary itself.
 
-import { LGraphCanvas, LiteGraph } from "@comfyorg/litegraph";
+import { LGraphCanvas, LGraphNode, LiteGraph } from "@comfyorg/litegraph";
 import { EncounterInfoNode } from "./info";
 import { EncounterStartTriggerNode, EncounterEndTriggerNode } from "./trigger";
 import { PhaseNode } from "./phase";
@@ -61,21 +61,50 @@ const CATEGORY_COLORS: Record<string, keyof (typeof LGraphCanvas)["node_colors"]
   comment: "yellow",
 };
 
-/** Applies `CATEGORY_COLORS` to every currently-registered node type's
- *  class -- set on the prototype (not per instance) so it's the default
- *  every new node of that type picks up; an author can still override an
+function colorNameForType(type: string): keyof (typeof LGraphCanvas)["node_colors"] | undefined {
+  const category = type.includes("/") ? type.slice(0, type.indexOf("/")) : type;
+  return CATEGORY_COLORS[category];
+}
+
+/** Wraps `LiteGraph.createNode` so every newly-created node of a
+ *  registered category gets its `color`/`bgcolor` set at construction.
+ *  **Not** settable via `cls.prototype.color` -- `LGraphNode`'s own class
+ *  declares bare `color;`/`bgcolor;` fields with no initializer, which
+ *  under this project's `useDefineForClassFields` semantics means every
+ *  instance gets its own `color = undefined` own-property defined during
+ *  construction, silently shadowing anything set on the prototype. Since
+ *  `configToGraph`'s node-reconstruction (`compile.ts`'s `addNode`) also
+ *  goes through `LiteGraph.createNode`, this covers both the Add Node
+ *  menu and file loads with one patch. An author can still override an
  *  individual node's color from the canvas's own right-click "Colors"
- *  menu without affecting the type's default. */
+ *  menu -- that sets the instance's own color after creation, same as
+ *  this does, so the later one just wins normally. */
 function applyCategoryColors(): void {
-  for (const type in LiteGraph.registered_node_types) {
-    const cls = LiteGraph.registered_node_types[type];
-    const category = type.includes("/") ? type.slice(0, type.indexOf("/")) : type;
-    const colorName = CATEGORY_COLORS[category];
-    if (!colorName) continue;
-    const preset = LGraphCanvas.node_colors[colorName];
-    cls.prototype.color = preset.color;
-    cls.prototype.bgcolor = preset.bgcolor;
-  }
+  const originalCreateNode = LiteGraph.createNode.bind(LiteGraph);
+  LiteGraph.createNode = (type, title, options) => {
+    const node = originalCreateNode(type, title, options);
+    if (node) {
+      const colorName = colorNameForType(type);
+      if (colorName) {
+        const preset = LGraphCanvas.node_colors[colorName];
+        node.color = preset.color;
+        node.bgcolor = preset.bgcolor;
+      }
+    }
+    return node;
+  };
+}
+
+/** Toggles collapse on double-clicking a node's title bar -- LiteGraph
+ *  already calls `node.onNodeTitleDblClick?.(e, pos, canvas)` for this
+ *  exact gesture (`LGraphCanvas`'s pointer-down handling, title-bar hit
+ *  test), it just has no default implementation for any node to opt into.
+ *  Patched once on the shared `LGraphNode` prototype rather than per node
+ *  type, since the gesture is identical for every node. */
+function enableTitleDoubleClickCollapse(): void {
+  LGraphNode.prototype.onNodeTitleDblClick = function (): void {
+    this.collapse();
+  };
 }
 
 /** Menu entries to drop from LiteGraph's default right-click menus --
@@ -172,4 +201,5 @@ export function registerEncounterNodeTypes(): void {
   LiteGraph.registerNodeType("calculation/aggregate", NumberListAggregateNode);
   applyCategoryColors();
   pruneBrokenMenuItems();
+  enableTitleDoubleClickCollapse();
 }
