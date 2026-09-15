@@ -122,14 +122,14 @@ export class EncounterInfoNode extends LGraphNode {
 /** The graph's single Encounter Info node, if one has been added. */
 export function findInfoNode(graph: LGraph): EncounterInfoNode | null {
   const found: LGraphNode[] = [];
-  graph.findNodesByType("V1/info", found);
+  graph.findNodesByType("structure/info", found);
   return (found[0] as unknown as EncounterInfoNode | undefined) ?? null;
 }
 
 /** Clears the graph and adds a fresh Encounter Info node with the given values. */
 export function resetGraphWithInfoNode(graph: LGraph, values: EncounterInfoValues): EncounterInfoNode {
   graph.clear();
-  const node = LiteGraph.createNode("V1/info") as unknown as EncounterInfoNode;
+  const node = LiteGraph.createNode("structure/info") as unknown as EncounterInfoNode;
   node.pos = [40, 40];
   graph.add(node as unknown as LGraphNode);
   node.setValues(values);

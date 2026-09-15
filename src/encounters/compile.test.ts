@@ -19,26 +19,26 @@ describe("compile.ts -- query trigger (Source -> Filter -> First Event)", () => 
     registerEncounterNodeTypes();
     const graph = new LGraph();
 
-    const info = node<any>(graph, "V1/info");
+    const info = node<any>(graph, "structure/info");
     info.setValues({ encounterId: 1, id: "boss", name: "Boss", difficulty: "mythic", mapId: 0 });
 
-    const phaseList = node<any>(graph, "V1/phase-list");
+    const phaseList = node<any>(graph, "structure/phase-list");
     phaseList.connect(0, info, "phases");
 
-    const phase1 = node<any>(graph, "V1/phase");
+    const phase1 = node<any>(graph, "structure/phase");
     phase1.setValues({ id: "phase1", label: "Phase 1", kind: "phase" });
-    const start1 = node<any>(graph, "V1/trigger-start");
+    const start1 = node<any>(graph, "events/encounter-start");
     start1.connect(0, phase1, "start");
     phase1.connect(0, phaseList, 0);
 
-    const phase2 = node<any>(graph, "V1/phase");
+    const phase2 = node<any>(graph, "structure/phase");
     phase2.setValues({ id: "phase2", label: "Phase 2", kind: "phase" });
-    const casts = node<any>(graph, "V2/casts");
+    const casts = node<any>(graph, "events/casts");
     casts.setValues({ mode: "start" });
-    const filterActor = node<any>(graph, "V2/filter-actor");
+    const filterActor = node<any>(graph, "filter/actor");
     filterActor.setValues({ ids: [500] });
     casts.connect(0, filterActor, "event-stream");
-    const firstEvent = node<any>(graph, "V2/first-event");
+    const firstEvent = node<any>(graph, "events/first-event");
     filterActor.connect(0, firstEvent, "event-stream");
     firstEvent.connect(0, phase2, "start");
     // Second phase-list slot -- PhaseListNode grows a trailing empty slot
@@ -60,18 +60,18 @@ describe("compile.ts -- query trigger (Source -> Filter -> First Event)", () => 
   test("configToGraph -> graphToConfig round-trips the compiled config unchanged", () => {
     registerEncounterNodeTypes();
     const graph = new LGraph();
-    const info = node<any>(graph, "V1/info");
+    const info = node<any>(graph, "structure/info");
     info.setValues({ encounterId: 1, id: "boss", name: "Boss", difficulty: "mythic", mapId: 0 });
-    const phaseList = node<any>(graph, "V1/phase-list");
+    const phaseList = node<any>(graph, "structure/phase-list");
     phaseList.connect(0, info, "phases");
-    const phase = node<any>(graph, "V1/phase");
+    const phase = node<any>(graph, "structure/phase");
     phase.setValues({ id: "p1", label: "P1", kind: "phase" });
-    const casts = node<any>(graph, "V2/casts");
+    const casts = node<any>(graph, "events/casts");
     casts.setValues({ mode: "success" });
-    const filterSpell = node<any>(graph, "V2/filter-spell");
+    const filterSpell = node<any>(graph, "filter/spell");
     filterSpell.setValues({ ids: [111111] });
     casts.connect(0, filterSpell, "event-stream");
-    const firstEvent = node<any>(graph, "V2/first-event");
+    const firstEvent = node<any>(graph, "events/first-event");
     filterSpell.connect(0, firstEvent, "event-stream");
     firstEvent.connect(0, phase, "start");
     phase.connect(0, phaseList, 0);
@@ -94,22 +94,22 @@ describe("compile.ts -- Source window input scopes a query to a Phase", () => {
   test("wiring a Phase's `phase` output into a Source's `window` input compiles to `window: { phaseId }`", () => {
     registerEncounterNodeTypes();
     const graph = new LGraph();
-    const info = node<any>(graph, "V1/info");
+    const info = node<any>(graph, "structure/info");
     info.setValues({ encounterId: 1, id: "boss", name: "Boss", difficulty: "mythic", mapId: 0 });
-    const phaseList = node<any>(graph, "V1/phase-list");
+    const phaseList = node<any>(graph, "structure/phase-list");
     phaseList.connect(0, info, "phases");
 
-    const phase1 = node<any>(graph, "V1/phase");
+    const phase1 = node<any>(graph, "structure/phase");
     phase1.setValues({ id: "phase1", label: "Phase 1", kind: "phase" });
-    const start1 = node<any>(graph, "V1/trigger-start");
+    const start1 = node<any>(graph, "events/encounter-start");
     start1.connect(0, phase1, "start");
     phase1.connect(0, phaseList, 0);
 
-    const phase2 = node<any>(graph, "V1/phase");
+    const phase2 = node<any>(graph, "structure/phase");
     phase2.setValues({ id: "phase2", label: "Phase 2", kind: "phase" });
-    const interrupts = node<any>(graph, "V2/interrupts");
+    const interrupts = node<any>(graph, "events/interrupts");
     phase1.connect(0, interrupts, "window"); // Phase node's "phase" output -> Source's "window" input
-    const firstEvent = node<any>(graph, "V2/first-event");
+    const firstEvent = node<any>(graph, "events/first-event");
     interrupts.connect(0, firstEvent, "event-stream");
     firstEvent.connect(0, phase2, "start");
     phase2.connect(0, phaseList, 1);

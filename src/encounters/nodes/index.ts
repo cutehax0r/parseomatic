@@ -48,35 +48,43 @@ let registered = false;
 export function registerEncounterNodeTypes(): void {
   if (registered) return;
   registered = true;
-  LiteGraph.registerNodeType("V1/info", EncounterInfoNode);
-  LiteGraph.registerNodeType("V1/trigger-start", EncounterStartTriggerNode);
-  LiteGraph.registerNodeType("V1/trigger-end", EncounterEndTriggerNode);
-  LiteGraph.registerNodeType("V1/phase", PhaseNode);
-  LiteGraph.registerNodeType("V1/phase-list", PhaseListNode);
-  LiteGraph.registerNodeType("V1/duration", DurationNode);
-  LiteGraph.registerNodeType("V1/time-math", TimeMathNode);
-  LiteGraph.registerNodeType("V1/unit-health-current", UnitHealthCurrentNode);
-  LiteGraph.registerNodeType("V1/unit-health-max", UnitHealthMaxNode);
-  LiteGraph.registerNodeType("V1/unit-power-current", UnitPowerCurrentNode);
-  LiteGraph.registerNodeType("V1/unit-power-max", UnitPowerMaxNode);
-  LiteGraph.registerNodeType("V1/number-value", NumberValueNode);
-  LiteGraph.registerNodeType("V1/number-math", NumberMathNode);
-  LiteGraph.registerNodeType("V1/unit-death-count", UnitDeathCountNode);
-  LiteGraph.registerNodeType("V1/threshold", ThresholdTriggerNode);
-  LiteGraph.registerNodeType("V1/comment", CommentNode);
-  LiteGraph.registerNodeType("V2/casts", CastsSourceNode);
-  LiteGraph.registerNodeType("V2/auras", AurasSourceNode);
-  LiteGraph.registerNodeType("V2/deaths", DeathsSourceNode);
-  LiteGraph.registerNodeType("V2/interrupts", InterruptsSourceNode);
-  LiteGraph.registerNodeType("V2/first-event", EventStreamFirstNode);
-  LiteGraph.registerNodeType("V2/filter-actor", FilterByActorNode);
-  LiteGraph.registerNodeType("V2/filter-spell", FilterBySpellNode);
-  LiteGraph.registerNodeType("V2/filter-aura-state", FilterByAuraStateNode);
-  LiteGraph.registerNodeType("V2/filter-position", FilterByPositionNode);
-  LiteGraph.registerNodeType("V2/filter-role", FilterByRoleNode);
-  LiteGraph.registerNodeType("V2/spell-id-list", SpellIdListNode);
-  LiteGraph.registerNodeType("V2/actor-id-list", ActorIdListNode);
-  LiteGraph.registerNodeType("V2/id-list-combine", IdListCombineNode);
-  LiteGraph.registerNodeType("V2/name-match", NameMatchNode);
-  LiteGraph.registerNodeType("V2/number-list-aggregate", NumberListAggregateNode);
+  LiteGraph.registerNodeType("structure/info", EncounterInfoNode);
+  LiteGraph.registerNodeType("events/encounter-start", EncounterStartTriggerNode);
+  LiteGraph.registerNodeType("events/encounter-end", EncounterEndTriggerNode);
+  LiteGraph.registerNodeType("structure/phase", PhaseNode);
+  LiteGraph.registerNodeType("structure/phase-list", PhaseListNode);
+  LiteGraph.registerNodeType("constants/duration", DurationNode);
+  LiteGraph.registerNodeType("calculation/time-math", TimeMathNode);
+  LiteGraph.registerNodeType("states/unit-health-current", UnitHealthCurrentNode);
+  LiteGraph.registerNodeType("states/unit-health-max", UnitHealthMaxNode);
+  LiteGraph.registerNodeType("states/unit-power-current", UnitPowerCurrentNode);
+  LiteGraph.registerNodeType("states/unit-power-max", UnitPowerMaxNode);
+  LiteGraph.registerNodeType("constants/number", NumberValueNode);
+  LiteGraph.registerNodeType("calculation/number-math", NumberMathNode);
+  LiteGraph.registerNodeType("states/unit-death-count", UnitDeathCountNode);
+  LiteGraph.registerNodeType("calculation/threshold", ThresholdTriggerNode);
+  LiteGraph.registerNodeType("comment", CommentNode);
+  // `registerNodeType` always assigns `category` a string (even "" for a
+  // no-slash type like this one) -- but LiteGraph's Add Node menu only
+  // treats a node as truly top-level (not nested under an empty-named
+  // submenu) when `category` is `null`/`undefined`
+  // (`getNodeTypesInCategory`'s `type.category == null` check). Comment
+  // is common/annotation-only enough to want one click away, not nested,
+  // so this overrides what `registerNodeType` set.
+  delete (CommentNode as { category?: string }).category;
+  LiteGraph.registerNodeType("events/casts", CastsSourceNode);
+  LiteGraph.registerNodeType("events/auras", AurasSourceNode);
+  LiteGraph.registerNodeType("events/deaths", DeathsSourceNode);
+  LiteGraph.registerNodeType("events/interrupts", InterruptsSourceNode);
+  LiteGraph.registerNodeType("events/first-event", EventStreamFirstNode);
+  LiteGraph.registerNodeType("filter/actor", FilterByActorNode);
+  LiteGraph.registerNodeType("filter/spell", FilterBySpellNode);
+  LiteGraph.registerNodeType("filter/aura-state", FilterByAuraStateNode);
+  LiteGraph.registerNodeType("filter/position", FilterByPositionNode);
+  LiteGraph.registerNodeType("filter/role", FilterByRoleNode);
+  LiteGraph.registerNodeType("constants/spell-ids", SpellIdListNode);
+  LiteGraph.registerNodeType("constants/actor-ids", ActorIdListNode);
+  LiteGraph.registerNodeType("calculation/combine", IdListCombineNode);
+  LiteGraph.registerNodeType("filter/name-match", NameMatchNode);
+  LiteGraph.registerNodeType("calculation/aggregate", NumberListAggregateNode);
 }

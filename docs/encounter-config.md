@@ -369,6 +369,25 @@ displayed duration) — e.g. `addSpawn` ends when its adds are all dead,
 
 ## Graph node types
 
+Each node's registered type string (`nodes/index.ts`'s
+`registerEncounterNodeTypes`) is `<category>/<name>`, and LiteGraph derives
+the Add Node menu's submenus directly from that prefix (everything before
+the last `/` — `LiteGraph.registerNodeType`'s `base_class.category =
+type.substring(0, type.lastIndexOf("/"))`) -- so the category below isn't
+just documentation, it's literally which submenu a node shows up under:
+
+- **Structure** — Encounter Info, Phase, Phase List
+- **Constants** — Duration, Number, Spell IDs, Actor IDs
+- **Filter** — Filter by Actor/Spell/Aura State/Position/Role, Match by Name
+- **Calculation** — Time Math, Number Math, Threshold, Combine, Aggregate
+- **Events** — Encounter Start/End, Casts, Auras, Deaths, Interrupts, First Event
+- **States** — Unit Health/Power (Current/Max), Unit Death Count
+
+**Comment** (`comment.ts`) is registered with no category prefix at all
+(bare type string `"comment"`) so it shows up directly in the top-level
+Add Node list instead of nested in a submenu — it's common/annotation-only
+enough to want one click away, not two.
+
 The encounter editor's node graph (LiteGraph, `src/views/encounter-editor.ts`)
 is how this JSON gets authored. `src/encounters/compile.ts` compiles the
 graph reachable from Encounter Info into this JSON shape (`graphToConfig`,
@@ -408,19 +427,19 @@ evaluates:
 | `spell-id-list` / `actor-id-list` | `ResolvedCollection` (`number[]`) — the domain tag is a graph-slot distinction only, both resolve the same way |
 | `mechanic` | nothing yet — the slot type exists (Phase/Encounter Info's growable "mechanics" input lists) so a future Mechanic node type can plug in without reshaping those nodes, but nothing produces it today |
 
-- **`encounter/info`** (`info.ts`) — the encounter's identity: encounter id
+- **`structure/info`** (`info.ts`) — the encounter's identity: encounter id
   (the log's real WoW encounter id, stored as `encounterId` — together
   with difficulty, this *is* the file's name), display name, difficulty,
   map id (stored as `mapId` — matches a `<mapId>.map.json` file), and a
   `phases` input that takes a Phase List's output — this is what attaches
   the phase graph to the encounter. One per graph.
-- **`encounter/trigger-start`** / **`encounter/trigger-end`** (`trigger.ts`)
+- **`events/encounter-start`** / **`events/encounter-end`** (`trigger.ts`)
   — fixed-value carriers for `{ type: "combatStart" }` /
   `{ type: "combatEnd" }`. A `moment`-typed output that plugs into a Phase
   node's `start`/`end` input, or a Time Math node's inputs.
-- **Sources** (`sources.ts`) — **`encounter/casts`** (Mode: start/success),
-  **`encounter/auras`** (Mode: applied/removed), **`encounter/deaths`**
-  (Mode: died/destroyed/dissipates), **`encounter/interrupts`** — each an
+- **Sources** (`sources.ts`) — **`events/casts`** (Mode: start/success),
+  **`events/auras`** (Mode: applied/removed), **`events/deaths`**
+  (Mode: died/destroyed/dissipates), **`events/interrupts`** — each an
   `event-stream`-typed output, an optional `after` moment **input** (same
   "Repeated conditions" semantics as v1's cast/aura nodes), and an
   optional `window` input typed `phase`: wiring a Phase node's `phase`
@@ -432,12 +451,12 @@ evaluates:
   shaped feature built around packaging a canvas selection into a
   reusable block, not a lightweight container primitive) in favor of this
   explicit wire.
-- **Filters** (`filters.ts`) — **`encounter/filter-actor`** /
-  **`encounter/filter-spell`** (an `actor-id-list`/`spell-id-list` input,
+- **Filters** (`filters.ts`) — **`filter/actor`** /
+  **`filter/spell`** (an `actor-id-list`/`spell-id-list` input,
   auto-wrapping a comma-separated-ids fallback widget — the "auto-wrap a
-  scalar" convenience carried over from v1), **`encounter/filter-aura-state`**
-  (a `spell-id-list` input + Has/Lacks toggle), **`encounter/filter-position`**
-  (X/Y/Radius widgets), **`encounter/filter-role`** (tank/healer/ranged
+  scalar" convenience carried over from v1), **`filter/aura-state`**
+  (a `spell-id-list` input + Has/Lacks toggle), **`filter/position`**
+  (X/Y/Radius widgets), **`filter/role`** (tank/healer/ranged
   checkboxes — currently a documented no-op, see the Trigger vocabulary's
   `FilterSpec` table). Each: one `event-stream` input, one `event-stream`
   output — chainable, Source → Filter → Filter → ... A council fight's
@@ -445,27 +464,27 @@ evaluates:
   is now a Casts Source → one Filter by Actor (multiple ids) → one Filter
   by Spell (multiple ids), rather than baked into one fixed node's two id
   lists.
-- **`encounter/first-event`** (`sources.ts`) — the terminal node that
+- **`events/first-event`** (`sources.ts`) — the terminal node that
   resolves a Source→Filter chain to a `moment`: the chain's first match
   in its window. What actually plugs into a Phase's `start`/`end`, or a
   Time Math/Threshold node's `after` input. A future Mechanics branch adds
   a sibling "every match" terminal node without changing Source/Filter at
   all.
-- **Collections** (`collections.ts`) — **`encounter/spell-id-list`** /
-  **`encounter/actor-id-list`** (a literal comma-separated id list, as a
+- **Collections** (`collections.ts`) — **`constants/spell-ids`** /
+  **`constants/actor-ids`** (a literal comma-separated id list, as a
   real connectable output so it can be shared or combined),
-  **`encounter/id-list-combine`** (Domain toggle spell/actor, Op
+  **`calculation/combine`** (Domain toggle spell/actor, Op
   union/subtract — "contains"/membership-test isn't here, it produces a
-  boolean, not a list, and has no graph node yet), **`encounter/name-match`**
+  boolean, not a list, and has no graph node yet), **`filter/name-match`**
   (Domain, Pattern, glob/regex Syntax — resolved once against the log's
-  interned unit/spell tables, not per event row), **`encounter/number-list-aggregate`**
+  interned unit/spell tables, not per event row), **`calculation/aggregate`**
   (an `actor-id-list` input, Op min/max/avg/count/stddev/first/last, Reads
   health/power, Which current/max — feeds a `number`-typed output, for the
   `NumberExpr` `aggregate` case above).
-- **`encounter/duration`** (`duration.ts`) — a fixed length of time
+- **`constants/duration`** (`duration.ts`) — a fixed length of time
   authored as Minutes/Seconds widgets (e.g. "5 minutes" for an enrage
   timer). An `interval`-typed output that plugs into a Time Math node.
-- **`encounter/time-math`** (`time-math.ts`) — combines two
+- **`calculation/time-math`** (`time-math.ts`) — combines two
   `moment,interval`-typed inputs (LiteGraph's comma-separated
   accepted-types syntax — either kind connects) with a `+`/`-` Op widget,
   e.g. "Encounter Start" (moment) + "Duration: 5 minutes" (interval) = a
@@ -476,7 +495,7 @@ evaluates:
   `moment − moment → interval` (`moment + moment` is invalid — an
   evaluator should reject it). No static type-checking for this exists,
   only at evaluation time.
-- **`encounter/phase`** (`phase.ts`) — one phase occurrence: `id`, `label`,
+- **`structure/phase`** (`phase.ts`) — one phase occurrence: `id`, `label`,
   `kind` widgets, `start`/`end` moment inputs, a `phase`-typed output, and
   **`start`/`end` moment outputs that re-expose those same two inputs**
   (pure pass-throughs, not new values) — see "Repeated conditions" above
@@ -489,34 +508,34 @@ evaluates:
   Phase List's `phase` inputs, slot type `mechanic`) — always compiles to
   `[]` today, no Mechanic node type exists yet to populate it (see the
   `mechanic` slot-type row in the value-contracts table above).
-- **`encounter/phase-list`** (`phase-list.ts`) — the ordered collection a
+- **`structure/phase-list`** (`phase-list.ts`) — the ordered collection a
   phase graph is built into: each numbered `phase`-typed input holds one
   Phase node, slot order is phase order. Always keeps one trailing empty
   slot open for the next connection. Its `phases` output plugs into
   Encounter Info's `phases` input.
-- **`encounter/unit-health-current`** / **`encounter/unit-health-max`**
+- **`states/unit-health-current`** / **`states/unit-health-max`**
   (`number.ts`) — that unit's current/max HP as of the instant being
   evaluated, off an NPC ID widget. Two separate single-output nodes
   rather than one node with two outputs, matching Encounter Start/End's
   precedent. A `number`-typed output.
-- **`encounter/unit-power-current`** / **`encounter/unit-power-max`**
+- **`states/unit-power-current`** / **`states/unit-power-max`**
   (`number.ts`) — like Unit Health, but with an added Power Type widget
   (a labeled dropdown over `Enum.PowerType`, since a unit can have more
   than one resource) — an NPC ID widget alone isn't enough to say which
   power. A `number`-typed output. See `NumberExpr`'s `unitPowerCurrent`/
   `unitPowerMax` doc comment (schema.ts) for the "less trustworthy than
   health" caveat.
-- **`encounter/number-value`** (`number.ts`) — a fixed float authored as
+- **`constants/number`** (`number.ts`) — a fixed float authored as
   a single Value widget, e.g. the "0.20" in "health drops below 20%". A
   `number`-typed output.
-- **`encounter/number-math`** (`number.ts`) — combines two `number`
+- **`calculation/number-math`** (`number.ts`) — combines two `number`
   inputs with a `+`/`-`/`*`/`/` Op widget, e.g. Unit Health (Current) ÷
   Unit Health (Max) for a 0-1 health fraction. A `number`-typed output.
-- **`encounter/unit-death-count`** (`number.ts`) — a running count of
+- **`states/unit-death-count`** (`number.ts`) — a running count of
   `UNIT_DIED` events off a comma-separated NPC IDs widget (blank = any
   unit), for counting conditions ("4 adds have died", "2 players have
   died"). A `number`-typed output.
-- **`encounter/threshold`** (`number.ts`) — the bridge back from `number`
+- **`calculation/threshold`** (`number.ts`) — the bridge back from `number`
   to `moment`: two `number` inputs (`value`, `threshold`), an optional
   `after` moment input (same as the cast/aura nodes -- "Repeated
   conditions" above), and an above/below/equal Op widget, firing at the
@@ -525,7 +544,7 @@ evaluates:
   real HP/death-count samples for it). A trigger node like Cast
   Start/Success — its `moment`-typed output plugs into a Phase's
   `start`/`end` or a Time Math node same as any other trigger.
-- **`encounter/comment`** (`comment.ts`) — a pure annotation: no inputs,
+- **`comment`** (`comment.ts`) — a pure annotation: no inputs,
   no outputs, one free-text widget, no effect on compilation or
   evaluation. Collected into `EncounterConfig.comments` (every Comment
   node in the graph, regardless of position — comments aren't reached via
