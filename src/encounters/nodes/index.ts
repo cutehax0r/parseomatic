@@ -78,6 +78,50 @@ function applyCategoryColors(): void {
   }
 }
 
+/** Menu entries to drop from LiteGraph's default right-click menus --
+ *  matched by a prefix of `content` rather than an exact string so an
+ *  emoji/wording tweak in a future library version doesn't silently stop
+ *  matching:
+ *  - "Convert to Subgraph" (canvas-level, shown for a multi-node
+ *    selection, and per-node) -- we don't use LiteGraph's Subgraph/
+ *    SubgraphNode feature at all (a heavier, differently-shaped feature
+ *    than it looks -- see docs/encounter-config.md's Source "window"
+ *    input note), so offering it just invites a confusing dead end.
+ *  - "Properties Panel" (per-node) -- genuinely broken in
+ *    @comfyorg/litegraph 0.17.2 (the latest release), not an app bug:
+ *    `LGraphCanvas.createPanel` builds the panel as a single element with
+ *    `className = "litegraph dialog"` (both classes on one node), but
+ *    `dist/css/litegraph.css`'s `.litegraph .dialog` rules (and every
+ *    nested rule under it) use a descendant combinator expecting two
+ *    separate nested elements -- so none of that stylesheet ever
+ *    matches, and the panel renders with no positioning/sizing/styling
+ *    at all. Fixing it properly means owning a parallel patched copy of
+ *    a third-party stylesheet for a feature that only duplicates what
+ *    every node's own inline canvas widgets already do (edit each
+ *    property directly), so it's dropped rather than patched. */
+const HIDDEN_MENU_ITEM_PREFIXES = ["Convert to Subgraph", "Properties Panel"];
+
+function isHiddenMenuItem(content: unknown): boolean {
+  return typeof content === "string" && HIDDEN_MENU_ITEM_PREFIXES.some((prefix) => content.startsWith(prefix));
+}
+
+/** Wraps `LGraphCanvas`'s default canvas- and node-context-menu builders
+ *  to filter out `HIDDEN_MENU_ITEM_PREFIXES` -- done once, globally,
+ *  rather than per node type, since both menus are built generically by
+ *  the canvas itself (`getCanvasMenuOptions`/`getNodeMenuOptions`), not
+ *  something each node type contributes to individually. */
+function pruneBrokenMenuItems(): void {
+  const originalCanvasMenu = LGraphCanvas.prototype.getCanvasMenuOptions;
+  LGraphCanvas.prototype.getCanvasMenuOptions = function (...args) {
+    return originalCanvasMenu.apply(this, args).filter((opt) => !isHiddenMenuItem(opt?.content));
+  };
+
+  const originalNodeMenu = LGraphCanvas.prototype.getNodeMenuOptions;
+  LGraphCanvas.prototype.getNodeMenuOptions = function (...args) {
+    return originalNodeMenu.apply(this, args).filter((opt) => !isHiddenMenuItem(opt?.content));
+  };
+}
+
 let registered = false;
 
 export function registerEncounterNodeTypes(): void {
@@ -124,4 +168,5 @@ export function registerEncounterNodeTypes(): void {
   LiteGraph.registerNodeType("filter/name-match", NameMatchNode);
   LiteGraph.registerNodeType("calculation/aggregate", NumberListAggregateNode);
   applyCategoryColors();
+  pruneBrokenMenuItems();
 }

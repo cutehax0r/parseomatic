@@ -7,7 +7,7 @@
 // see the category-deletion note below).
 
 import { describe, expect, test } from "bun:test";
-import { LiteGraph } from "@comfyorg/litegraph";
+import { LGraph, LGraphCanvas, LiteGraph } from "@comfyorg/litegraph";
 import { registerEncounterNodeTypes } from "./index";
 
 describe("registerEncounterNodeTypes -- Add Node menu categories", () => {
@@ -58,5 +58,36 @@ describe("registerEncounterNodeTypes -- Add Node menu categories", () => {
         .sort();
       expect(actual).toEqual([...types].sort());
     }
+  });
+});
+
+describe("registerEncounterNodeTypes -- pruned context menu items", () => {
+  test("Convert to Subgraph and Properties Panel are dropped from both the canvas and node menus", () => {
+    registerEncounterNodeTypes();
+    const graph = new LGraph();
+    const node = LiteGraph.createNode("structure/info")!;
+    graph.add(node);
+
+    // A canvas-like object with just enough state for the two default
+    // menu builders to run -- no real canvas element needed.
+    const fakeCanvas = Object.create(LGraphCanvas.prototype) as LGraphCanvas;
+    fakeCanvas.selected_nodes = { 1: node, 2: node } as unknown as LGraphCanvas["selected_nodes"];
+
+    const nodeMenuContents = fakeCanvas
+      .getNodeMenuOptions(node)
+      .filter((opt) => opt !== null)
+      .map((opt) => opt.content);
+    expect(nodeMenuContents.some((c) => typeof c === "string" && c.startsWith("Convert to Subgraph"))).toBe(false);
+    expect(nodeMenuContents).not.toContain("Properties Panel");
+
+    const canvasMenuContents = fakeCanvas
+      .getCanvasMenuOptions()
+      .filter((opt) => opt !== null)
+      .map((opt) => opt.content);
+    expect(canvasMenuContents.some((c) => typeof c === "string" && c.startsWith("Convert to Subgraph"))).toBe(false);
+    // Sanity check the filter isn't over-broad -- a real, unrelated entry
+    // (shown alongside Convert to Subgraph for a multi-node selection)
+    // must survive.
+    expect(canvasMenuContents).toContain("Align");
   });
 });
