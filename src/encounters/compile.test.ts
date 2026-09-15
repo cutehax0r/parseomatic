@@ -4,7 +4,7 @@
 // Open flow would, rather than needing a browser.
 
 import { describe, expect, test } from "bun:test";
-import { LGraph, LiteGraph, type LGraphNode } from "@comfyorg/litegraph";
+import { LGraph, LGraphGroup, LiteGraph, type LGraphNode } from "@comfyorg/litegraph";
 import { registerEncounterNodeTypes, findInfoNode } from "./nodes";
 import { graphToConfig, configToGraph } from "./compile";
 
@@ -175,5 +175,78 @@ describe("compile.ts -- Filter by Actor's Source/Target override", () => {
     const pStart = config.phases[0].start;
     if (pStart.type !== "query") throw new Error("expected a query trigger");
     expect(pStart.filters).toEqual([{ type: "actor", ids: { type: "literal", ids: [500] }, which: "target" }]);
+  });
+});
+
+describe("compile.ts -- persisted layout (position, collapse, groups)", () => {
+  test("a node's position and collapsed state survive a save -> reopen round trip", () => {
+    registerEncounterNodeTypes();
+    const graph = new LGraph();
+    const info = node<any>(graph, "structure/info");
+    info.pos = [42, 17];
+    info.setValues({ encounterId: 1, id: "boss", name: "Boss", difficulty: "mythic", mapId: 0 });
+    const phaseList = node<any>(graph, "structure/phase-list");
+    phaseList.pos = [200, 17];
+    phaseList.connect(0, info, "phases");
+    const phase = node<any>(graph, "structure/phase");
+    phase.pos = [400, 100];
+    phase.setValues({ id: "p1", label: "P1", kind: "phase" });
+    const start = node<any>(graph, "events/encounter-start");
+    start.pos = [400, 300];
+    start.collapse();
+    start.connect(0, phase, "start");
+    phase.connect(0, phaseList, 0);
+
+    const config = graphToConfig(info);
+    expect(config.ui?.layout["info"]).toMatchObject({ x: 42, y: 17 });
+    expect(config.ui?.layout["phases[0].start"]).toMatchObject({ x: 400, y: 300, collapsed: true });
+
+    const graph2 = new LGraph();
+    configToGraph(graph2, config);
+    const info2 = findInfoNode(graph2)!;
+    expect([...info2.pos]).toEqual([42, 17]);
+
+    const phase2 = graph2.nodes.find((n) => n.type === "structure/phase")!;
+    const startLink = graph2.links.get(phase2.inputs![0]!.link!)!;
+    const start2 = graph2.getNodeById(startLink.origin_id)!;
+    expect([...start2.pos]).toEqual([400, 300]);
+    expect(start2.collapsed).toBe(true);
+  });
+
+  test("group boxes survive a save -> reopen round trip", () => {
+    registerEncounterNodeTypes();
+    const graph = new LGraph();
+    const info = node<any>(graph, "structure/info");
+    info.setValues({ encounterId: 1, id: "boss", name: "Boss", difficulty: "mythic", mapId: 0 });
+    const group = new LGraphGroup("Phase 1 stuff");
+    group.pos = [10, 20];
+    group.size = [300, 150];
+    group.color = "#ff0000";
+    graph.add(group);
+
+    const config = graphToConfig(info);
+    expect(config.ui?.groups).toEqual([{ title: "Phase 1 stuff", color: "#ff0000", bounds: [10, 20, 300, 150] }]);
+
+    const graph2 = new LGraph();
+    configToGraph(graph2, config);
+    expect(graph2.groups).toHaveLength(1);
+    expect(graph2.groups[0]!.title).toBe("Phase 1 stuff");
+    expect([...graph2.groups[0]!.pos]).toEqual([10, 20]);
+    expect([...graph2.groups[0]!.size]).toEqual([300, 150]);
+  });
+
+  test("configToGraph falls back to auto-arrange when the config has no ui section", () => {
+    registerEncounterNodeTypes();
+    const graph = new LGraph();
+    const info = node<any>(graph, "structure/info");
+    info.setValues({ encounterId: 1, id: "boss", name: "Boss", difficulty: "mythic", mapId: 0 });
+    const config = graphToConfig(info);
+    delete (config as any).ui;
+
+    const graph2 = new LGraph();
+    // Should not throw, and should not require every node to have a
+    // ui.layout entry -- arrange() computes positions for all of them.
+    const warnings = configToGraph(graph2, config);
+    expect(warnings).toEqual([]);
   });
 });

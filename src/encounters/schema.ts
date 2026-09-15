@@ -86,6 +86,50 @@ export interface EncounterConfig {
    *  the graph regardless of position; order isn't meaningful. Omitted
    *  when there are none. */
   comments?: string[];
+  /** Persisted editor state -- node positions/collapse/color and group
+   *  boxes, restored on the next Open so the graph doesn't re-arrange
+   *  itself from scratch every time (v2 doc §13). Kept in its own
+   *  top-level section, separate from the semantic tree above, so the
+   *  evaluator never has to skip over presentation data. Omitted when the
+   *  graph has never been saved with layout info (an older/hand-authored
+   *  file) -- `configToGraph` falls back to auto-arranging in that case. */
+  ui?: EncounterUi;
+}
+
+export interface EncounterUi {
+  /** Keyed by a structural path describing where a node sits in the
+   *  compiled tree -- e.g. `"phases[1].start"` (the node feeding that
+   *  phase's start trigger), `"phases[1].start.filters[0]"` (the first
+   *  Filter in that chain), `"triggers.moment3"` (a hoisted/shared
+   *  trigger, keyed the same as `EncounterConfig.triggers`). Not a
+   *  permanent identity -- inserting/removing a node earlier in a chain
+   *  shifts every path after it, so a node whose path changed just falls
+   *  back to auto-layout on the next Open, rather than picking up the
+   *  wrong entry. Good enough for the common case (save, reopen later
+   *  without restructuring); see `src/encounters/compile.ts`'s path
+   *  construction for exactly which paths exist. */
+  layout: Record<string, NodeUiState>;
+  /** LiteGraph's group boxes (purely cosmetic -- title, color, bounding
+   *  box; no wiring) -- these don't belong to any single node, so they
+   *  need no path key, just a plain list. */
+  groups?: GroupUiState[];
+}
+
+export interface NodeUiState {
+  x: number;
+  y: number;
+  /** Omitted (not `false`) when not collapsed -- keeps a freshly-saved
+   *  file's layout entries small; the common case. */
+  collapsed?: true;
+  color?: string;
+  bgcolor?: string;
+}
+
+export interface GroupUiState {
+  title: string;
+  color?: string;
+  /** `[x, y, width, height]`, graph-space units (`LGraphGroup.pos`/`.size`). */
+  bounds: [number, number, number, number];
 }
 
 export type PhaseKind = "phase" | "intermission" | "enrage";

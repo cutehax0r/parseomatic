@@ -152,6 +152,59 @@ phase to imply it: the last phase of an encounter, whose `end` is usually
 `{ "type": "combatEnd" }`. A single-phase encounter is the minimal case
 this covers — one phase, `start: combatStart`, `end: combatEnd`.
 
+## Persisted editor state (`ui`)
+
+**Reverses v1's deliberate choice not to persist layout** (v2 doc §13):
+`EncounterConfig.ui` records node positions, collapsed state, per-node
+color, and group boxes, so opening a saved file restores the graph as it
+was left rather than re-arranging it from scratch every time. Kept in a
+separate top-level section rather than interleaved into the semantic
+tree above, so the evaluator (and anyone just reading the config) never
+has to skip over presentation data:
+
+```jsonc
+"ui": {
+  "layout": {
+    "info": { "x": 40, "y": 40 },
+    "info.phases": { "x": 260, "y": 40 },
+    "phases[0]": { "x": 480, "y": 40 },
+    "phases[0].start": { "x": 480, "y": 200 },
+    "phases[0].start.filters[0]": { "x": 300, "y": 200, "collapsed": true },
+    "triggers.moment3": { "x": 100, "y": 400, "color": "#223", "bgcolor": "#335" }
+  },
+  "groups": [
+    { "title": "Intermission wiring", "color": "#8A8", "bounds": [40, 300, 400, 200] }
+  ]
+}
+```
+
+- **No stable node ids** (the fuller version of §13 this doc's earlier
+  draft anticipated). Instead, `layout` is keyed by a **structural path**
+  describing where a node sits in the compiled tree --
+  `src/encounters/compile.ts`'s `recordLayout`/`applyLayout` build and
+  consume these paths in lock-step with the semantic compilation, e.g.
+  `phases[1].start.filters[0]` (the first Filter in Phase 2's start
+  chain) or `phases[1].start.window.end` (the Trigger feeding that
+  chain's Source's window's `end` input). A node whose output feeds more
+  than one consumer (hoisted into `triggers`/`collections`, "Shared
+  triggers" above) is keyed by that canonical `triggers.<id>`/
+  `collections.<id>` path instead of any one consumer's path, since it
+  has one true position, not one per consumer.
+- **Not a permanent identity.** Restructuring a chain (inserting or
+  removing a Filter mid-way, say) shifts every path after it, so a
+  repositioned node just falls back to auto-layout on the next Open
+  rather than picking up the wrong saved position -- a known, honest
+  limitation of path-based keys, not a crash. Good enough for the common
+  case (save, reopen later without restructuring); a future pass could
+  move to real per-node ids if this proves too fragile in practice.
+- **`configToGraph` only auto-arranges (`LGraph.arrange()`) when `ui` is
+  entirely absent** -- an older or hand-authored file with no layout
+  info. Once a file has been saved once with `ui.layout` populated,
+  every subsequent Open restores from it instead.
+- **Groups have no path** -- they're pure visual annotations with no
+  connection to any node, so `ui.groups` is a plain list, order not
+  meaningful.
+
 ## Every phase gets its own mechanic entries
 
 `phases[].mechanics` lists references into `mechanics`, but each phase
@@ -414,14 +467,13 @@ used by Open) — narrow on purpose: only the node types below round-trip,
 nothing about mechanics yet. The JSON view in the editor is a read-only
 preview of what Save would write, not a second way to edit the document.
 
-`configToGraph` finishes by calling LiteGraph's `LGraph.arrange()` (a
-built-in topological/column layout keyed off link order), so opening a
-file lays freshly-built nodes out left-to-right by dependency rather than
-stacking them all at the same position. Positions aren't persisted in the
-JSON — a plain declarative document, not a graph-editor save file — so
-opening the same file always re-lays-out from scratch. The editor's
-**Tidy** button re-runs the same layout on demand after you've been
-rewiring things by hand.
+**Positions, collapse, color, and groups persist** across save/reopen via
+the `ui` section above -- `configToGraph` only falls back to LiteGraph's
+`LGraph.arrange()` (a built-in topological/column layout keyed off link
+order) when `ui` is missing entirely, e.g. a file that's never been saved
+with layout info. The editor's **Tidy** button still re-runs `arrange()`
+on demand at any time, for when you want a fresh layout rather than the
+saved one.
 
 **Value contracts** for what a connection resolves to once evaluated
 against a real log live in `src/encounters/runtime.ts`. The evaluator
@@ -582,9 +634,11 @@ evaluates:
   no outputs, one free-text widget, no effect on compilation or
   evaluation. Collected into `EncounterConfig.comments` (every Comment
   node in the graph, regardless of position — comments aren't reached via
-  a connection like everything else here) so notes survive save/load;
-  a native LiteGraph comment/group decoration wouldn't, since graph
-  layout itself is never persisted (see `LGraph.arrange()` below).
+  a connection like everything else here) so notes survive save/load. A
+  double-click on any node's title bar collapses/expands it
+  (`nodes/index.ts`'s `enableTitleDoubleClickCollapse` -- LiteGraph
+  already fires this gesture, it just ships no default handler for any
+  node to opt into).
 
 First target, done: a Phase node (`start` → an Encounter Start trigger,
 `end` → a Time Math node computing Encounter Start + a 5-minute Duration)

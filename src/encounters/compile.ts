@@ -9,16 +9,25 @@
 // mirrors `triggerFromNode`'s hoist-if-shared/`ref` pattern for collections
 // (nodes/collections.ts) -- see `EncounterConfig.collections`.
 //
+// Every "fromNode" function also takes a `path` string -- a structural
+// description of where that node sits in the compiled tree (e.g.
+// "phases[1].start.filters[0]"), recorded into `EncounterConfig.ui.layout`
+// (schema.ts) alongside the node's semantic compilation, and reapplied to
+// the reconstructed node at the same path on the next Open. See
+// `recordLayout`/`applyLayout` below.
+//
 // Deliberately narrow: only the node types that exist today round-trip.
 // Mechanics (Phase/Info's growable "mechanic"-typed input lists) always
 // compile to `[]` -- no Mechanic node type exists yet (schema.ts's module
 // comment).
 
-import { LGraph, LGraphNode, LiteGraph } from "@comfyorg/litegraph";
+import { LGraph, LGraphGroup, LGraphNode, LiteGraph } from "@comfyorg/litegraph";
 import type {
   CollectionExpr,
   EncounterConfig,
   FilterSpec,
+  GroupUiState,
+  NodeUiState,
   NumberExpr,
   NumberListExpr,
   PhaseDef,
@@ -121,6 +130,9 @@ interface CompileCtx {
   collections: Record<string, CollectionExpr>;
   collectionIdFor: Map<LGraphNode, string>;
   nextCollectionId: () => string;
+  /** `EncounterConfig.ui.layout`, built up alongside the semantic
+   *  compilation -- see the module comment. */
+  layout: Record<string, NodeUiState>;
 }
 
 function makeCompileCtx(): CompileCtx {
@@ -137,14 +149,27 @@ function makeCompileCtx(): CompileCtx {
     collections,
     collectionIdFor,
     nextCollectionId: () => `collection${++c}`,
+    layout: {},
   };
+}
+
+/** Captures a node's position/collapse/color into `ctx.layout` at `path`
+ *  -- called once per compiled node, right where its semantic shape is
+ *  also decided, so the two never drift out of sync. */
+function recordLayout(ctx: CompileCtx, path: string, node: LGraphNode): void {
+  const state: NodeUiState = { x: node.pos[0], y: node.pos[1] };
+  if (node.flags?.collapsed) state.collapsed = true;
+  if (node.color) state.color = node.color;
+  if (node.bgcolor) state.bgcolor = node.bgcolor;
+  ctx.layout[path] = state;
 }
 
 /** Compiles a "number"-typed subgraph into a NumberExpr -- the graph-side
  *  equivalent of `triggerFromNodeUncached`, but for the value side of a
  *  Threshold node. Not shareable via `ctx` (schema.ts's `NumberExpr` has
  *  no `ref` case) -- a reused number expression just gets inlined twice. */
-function numberExprFromNode(node: LGraphNode, ctx: CompileCtx): NumberExpr {
+function numberExprFromNode(node: LGraphNode, ctx: CompileCtx, path: string): NumberExpr {
+  recordLayout(ctx, path, node);
   if (node instanceof UnitHealthCurrentNode) return { type: "unitHealthCurrent", npcId: node.properties.npcId };
   if (node instanceof UnitHealthMaxNode) return { type: "unitHealthMax", npcId: node.properties.npcId };
   if (node instanceof UnitPowerCurrentNode) {
@@ -168,9 +193,9 @@ function numberExprFromNode(node: LGraphNode, ctx: CompileCtx): NumberExpr {
     }
     return {
       type: "numberMath",
-      a: numberExprFromNode(aOrigin, ctx),
+      a: numberExprFromNode(aOrigin, ctx, `${path}.a`),
       op: node.properties.op,
-      b: numberExprFromNode(bOrigin, ctx),
+      b: numberExprFromNode(bOrigin, ctx, `${path}.b`),
     };
   }
   if (node instanceof NumberListAggregateNode) {
@@ -178,7 +203,7 @@ function numberExprFromNode(node: LGraphNode, ctx: CompileCtx): NumberExpr {
     if (!actorsOrigin) {
       throw new CompileError('An "Aggregate" node needs an Actor IDs input.');
     }
-    const actors = collectionExprFromNode(actorsOrigin, ctx);
+    const actors = collectionExprFromNode(actorsOrigin, ctx, `${path}.actors`);
     const of: NumberListExpr =
       node.properties.reads === "health"
         ? { type: "perActorHealth", actors, which: node.properties.which }
@@ -191,7 +216,8 @@ function numberExprFromNode(node: LGraphNode, ctx: CompileCtx): NumberExpr {
 /** Compiles a collection-typed ("spell-id-list"/"actor-id-list") subgraph
  *  into a `CollectionExpr` -- the collection-side equivalent of
  *  `triggerFromNodeUncached`. */
-function collectionExprFromNodeUncached(node: LGraphNode, ctx: CompileCtx): CollectionExpr {
+function collectionExprFromNodeUncached(node: LGraphNode, ctx: CompileCtx, path: string): CollectionExpr {
+  recordLayout(ctx, path, node);
   if (node instanceof SpellIdListNode || node instanceof ActorIdListNode) {
     return { type: "literal", ids: node.properties.ids };
   }
@@ -204,8 +230,8 @@ function collectionExprFromNodeUncached(node: LGraphNode, ctx: CompileCtx): Coll
     return {
       type: "combine",
       op: node.properties.op,
-      a: collectionExprFromNode(aOrigin, ctx),
-      b: collectionExprFromNode(bOrigin, ctx),
+      a: collectionExprFromNode(aOrigin, ctx, `${path}.a`),
+      b: collectionExprFromNode(bOrigin, ctx, `${path}.b`),
     };
   }
   if (node instanceof NameMatchNode) {
@@ -216,24 +242,33 @@ function collectionExprFromNodeUncached(node: LGraphNode, ctx: CompileCtx): Coll
 
 /** Resolves `node` to a CollectionExpr, hoisting it into `ctx.collections`
  *  and returning a `ref` instead of an inline value if it's shared -- same
- *  pattern as `triggerFromNode`. */
-function collectionExprFromNode(node: LGraphNode, ctx: CompileCtx): CollectionExpr {
+ *  pattern as `triggerFromNode`. A shared node's layout is recorded under
+ *  its canonical `collections.<id>` key (not the caller's contextual
+ *  `path`), matching where `nodeForCollectionExpr` looks it up on load --
+ *  a shared node has one true position, not one per consumer. */
+function collectionExprFromNode(node: LGraphNode, ctx: CompileCtx, path: string): CollectionExpr {
   const existingId = ctx.collectionIdFor.get(node);
   if (existingId) return { type: "ref", id: existingId };
-  if (!isShared(node)) return collectionExprFromNodeUncached(node, ctx);
+  if (!isShared(node)) return collectionExprFromNodeUncached(node, ctx, path);
 
   const id = ctx.nextCollectionId();
   ctx.collectionIdFor.set(node, id);
-  ctx.collections[id] = collectionExprFromNodeUncached(node, ctx);
+  ctx.collections[id] = collectionExprFromNodeUncached(node, ctx, `collections.${id}`);
   return { type: "ref", id };
 }
 
 /** A Filter node's collection input, preferring a connected node's
  *  compiled `CollectionExpr` over the node's own comma-separated-ids
  *  fallback widget (the "auto-wrap a scalar" convenience, v2 doc §4). */
-function collectionFromInputOrLiteral(node: LGraphNode, inputName: string, literalIds: number[], ctx: CompileCtx): CollectionExpr {
+function collectionFromInputOrLiteral(
+  node: LGraphNode,
+  inputName: string,
+  literalIds: number[],
+  ctx: CompileCtx,
+  path: string,
+): CollectionExpr {
   const origin = originOfInput(node, inputName);
-  return origin ? collectionExprFromNode(origin, ctx) : { type: "literal", ids: literalIds };
+  return origin ? collectionExprFromNode(origin, ctx, path) : { type: "literal", ids: literalIds };
 }
 
 function isSourceNode(node: LGraphNode): boolean {
@@ -245,7 +280,8 @@ function isSourceNode(node: LGraphNode): boolean {
   );
 }
 
-function sourceSpecFromNode(node: LGraphNode): SourceSpec {
+function sourceSpecFromNode(node: LGraphNode, ctx: CompileCtx, path: string): SourceSpec {
+  recordLayout(ctx, path, node);
   if (node instanceof CastsSourceNode) return { kind: "casts", mode: node.properties.mode };
   if (node instanceof AurasSourceNode) return { kind: "auras", mode: node.properties.mode };
   if (node instanceof DeathsSourceNode) return { kind: "deaths", mode: node.properties.mode };
@@ -253,21 +289,22 @@ function sourceSpecFromNode(node: LGraphNode): SourceSpec {
   throw new CompileError(`Don't know how to compile a "${node.title}" node into a Source yet.`);
 }
 
-function filterSpecFromNode(node: LGraphNode, ctx: CompileCtx): FilterSpec {
+function filterSpecFromNode(node: LGraphNode, ctx: CompileCtx, path: string): FilterSpec {
+  recordLayout(ctx, path, node);
   if (node instanceof FilterByActorNode) {
     return {
       type: "actor",
-      ids: collectionFromInputOrLiteral(node, "ids", node.properties.ids, ctx),
+      ids: collectionFromInputOrLiteral(node, "ids", node.properties.ids, ctx, `${path}.ids`),
       ...(node.properties.which !== "auto" ? { which: node.properties.which } : {}),
     };
   }
   if (node instanceof FilterBySpellNode) {
-    return { type: "spell", ids: collectionFromInputOrLiteral(node, "ids", node.properties.ids, ctx) };
+    return { type: "spell", ids: collectionFromInputOrLiteral(node, "ids", node.properties.ids, ctx, `${path}.ids`) };
   }
   if (node instanceof FilterByAuraStateNode) {
     return {
       type: "auraState",
-      spellIds: collectionFromInputOrLiteral(node, "ids", node.properties.spellIds, ctx),
+      spellIds: collectionFromInputOrLiteral(node, "ids", node.properties.spellIds, ctx, `${path}.ids`),
       has: node.properties.has,
     };
   }
@@ -283,45 +320,53 @@ function filterSpecFromNode(node: LGraphNode, ctx: CompileCtx): FilterSpec {
 /** Walks an event-stream chain backward from a "First Event" node to its
  *  originating Source, collecting each Filter it passes through along the
  *  way (in application order -- Source-nearest first), and compiles it
- *  into a `query` Trigger. */
-function queryTriggerFromEventStreamFirst(node: EventStreamFirstNode, ctx: CompileCtx): Trigger {
+ *  into a `query` Trigger. `path` is the trigger's own path (recorded
+ *  against the "First Event" node itself by the caller,
+ *  `triggerFromNodeUncached`); everything found walking backward from it
+ *  gets a sub-path under that. */
+function queryTriggerFromEventStreamFirst(node: EventStreamFirstNode, ctx: CompileCtx, path: string): Trigger {
   let current = originOfInput(node, "event-stream");
   if (!current) throw new CompileError('A "First Event" node needs something connected to it.');
 
   const filters: FilterSpec[] = [];
   while (!isSourceNode(current)) {
-    filters.unshift(filterSpecFromNode(current, ctx));
+    filters.unshift(filterSpecFromNode(current, ctx, `${path}.filters[${filters.length}]`));
     const next = originOfInput(current, "event-stream");
     if (!next) throw new CompileError(`A "${current.title}" node is missing its event-stream input.`);
     current = next;
   }
 
-  const source = sourceSpecFromNode(current);
+  const source = sourceSpecFromNode(current, ctx, `${path}.source`);
   const afterOrigin = originOfInput(current, "after");
   const windowOrigin = originOfInput(current, "window");
   let window: { start: Trigger; end: Trigger } | undefined;
   if (windowOrigin) {
+    recordLayout(ctx, `${path}.window`, windowOrigin);
     const startOrigin = originOfInput(windowOrigin, "start");
     const endOrigin = originOfInput(windowOrigin, "end");
     if (!startOrigin || !endOrigin) {
       throw new CompileError(`A "${windowOrigin.title}" node feeding a Source's "window" input is missing its start/end input.`);
     }
-    window = { start: triggerFromNode(startOrigin, ctx), end: triggerFromNode(endOrigin, ctx) };
+    window = {
+      start: triggerFromNode(startOrigin, ctx, `${path}.window.start`),
+      end: triggerFromNode(endOrigin, ctx, `${path}.window.end`),
+    };
   }
 
   return {
     type: "query",
     source,
     filters,
-    ...(afterOrigin ? { after: triggerFromNode(afterOrigin, ctx) } : {}),
+    ...(afterOrigin ? { after: triggerFromNode(afterOrigin, ctx, `${path}.after`) } : {}),
     ...(window ? { window } : {}),
   };
 }
 
-function triggerFromNodeUncached(node: LGraphNode, ctx: CompileCtx): Trigger {
+function triggerFromNodeUncached(node: LGraphNode, ctx: CompileCtx, path: string): Trigger {
+  recordLayout(ctx, path, node);
   if (node instanceof EncounterStartTriggerNode) return { type: "combatStart" };
   if (node instanceof EncounterEndTriggerNode) return { type: "combatEnd" };
-  if (node instanceof EventStreamFirstNode) return queryTriggerFromEventStreamFirst(node, ctx);
+  if (node instanceof EventStreamFirstNode) return queryTriggerFromEventStreamFirst(node, ctx, path);
   if (node instanceof ThresholdTriggerNode) {
     const valueOrigin = originOfInput(node, "value");
     const thresholdOrigin = originOfInput(node, "threshold");
@@ -331,10 +376,10 @@ function triggerFromNodeUncached(node: LGraphNode, ctx: CompileCtx): Trigger {
     const afterOrigin = originOfInput(node, "after");
     return {
       type: "threshold",
-      value: numberExprFromNode(valueOrigin, ctx),
+      value: numberExprFromNode(valueOrigin, ctx, `${path}.value`),
       op: node.properties.op,
-      threshold: numberExprFromNode(thresholdOrigin, ctx),
-      ...(afterOrigin ? { after: triggerFromNode(afterOrigin, ctx) } : {}),
+      threshold: numberExprFromNode(thresholdOrigin, ctx, `${path}.threshold`),
+      ...(afterOrigin ? { after: triggerFromNode(afterOrigin, ctx, `${path}.after`) } : {}),
     };
   }
   if (node instanceof TimeMathNode) {
@@ -354,7 +399,8 @@ function triggerFromNodeUncached(node: LGraphNode, ctx: CompileCtx): Trigger {
     }
     const momentOrigin = aIsDuration ? bOrigin : aOrigin;
     const durationNode = (aIsDuration ? aOrigin : bOrigin) as DurationNode;
-    const from = triggerFromNode(momentOrigin, ctx);
+    recordLayout(ctx, `${path}.duration`, durationNode);
+    const from = triggerFromNode(momentOrigin, ctx, `${path}.from`);
     const seconds = durationNode.properties.minutes * 60 + durationNode.properties.seconds;
     return { type: "offset", from, op: node.properties.op, seconds };
   }
@@ -364,19 +410,22 @@ function triggerFromNodeUncached(node: LGraphNode, ctx: CompileCtx): Trigger {
 /** Resolves `node` to a Trigger, hoisting it into `ctx.triggers` and
  *  returning a `ref` instead of an inline value if it's shared (checked
  *  once per node -- caches under the same id on repeat visits so a chain
- *  of shared nodes doesn't get a fresh name each time it's reached). */
-function triggerFromNode(node: LGraphNode, ctx: CompileCtx): Trigger {
+ *  of shared nodes doesn't get a fresh name each time it's reached). A
+ *  shared node's layout is recorded under its canonical `triggers.<id>`
+ *  key, same reasoning as `collectionExprFromNode`. */
+function triggerFromNode(node: LGraphNode, ctx: CompileCtx, path: string): Trigger {
   const existingId = ctx.idFor.get(node);
   if (existingId) return { type: "ref", id: existingId };
-  if (!isShared(node)) return triggerFromNodeUncached(node, ctx);
+  if (!isShared(node)) return triggerFromNodeUncached(node, ctx, path);
 
   const id = ctx.nextId();
   ctx.idFor.set(node, id);
-  ctx.triggers[id] = triggerFromNodeUncached(node, ctx);
+  ctx.triggers[id] = triggerFromNodeUncached(node, ctx, `triggers.${id}`);
   return { type: "ref", id };
 }
 
-function phaseDefFromNode(node: PhaseNode, ctx: CompileCtx): PhaseDef {
+function phaseDefFromNode(node: PhaseNode, ctx: CompileCtx, path: string): PhaseDef {
+  recordLayout(ctx, path, node);
   const label = node.properties.label || node.properties.id || "(untitled phase)";
   const startOrigin = originOfInput(node, "start");
   if (!startOrigin) {
@@ -386,37 +435,52 @@ function phaseDefFromNode(node: PhaseNode, ctx: CompileCtx): PhaseDef {
     id: node.properties.id,
     label: node.properties.label,
     kind: node.properties.kind,
-    start: triggerFromNode(startOrigin, ctx),
+    start: triggerFromNode(startOrigin, ctx, `${path}.start`),
     // Always empty -- no Mechanic node type exists yet to populate this
     // from `node.orderedMechanicNodes()` (schema.ts's module comment).
     mechanics: [],
   };
   const endOrigin = originOfInput(node, "end");
-  if (endOrigin) def.end = triggerFromNode(endOrigin, ctx);
+  if (endOrigin) def.end = triggerFromNode(endOrigin, ctx, `${path}.end`);
   return def;
 }
 
 /** Every Comment node's text, in whatever order `findNodesByType` walks
  *  the graph -- unlike everything else compiled here, comments aren't
  *  reached via a connection (they have none), so this walks the graph's
- *  full node list directly rather than following links from `info`. */
-function commentsFromGraph(graph: LGraph | null | undefined): string[] {
+ *  full node list directly rather than following links from `info`.
+ *  Layout is recorded by array index (`comments[i]`) -- comments have no
+ *  other structural position to key off of. */
+function commentsFromGraph(graph: LGraph | null | undefined, ctx: CompileCtx): string[] {
   if (!graph) return [];
   const found: LGraphNode[] = [];
   graph.findNodesByType("comment", found);
-  return (found as unknown as CommentNode[]).map((n) => n.properties.text.trim()).filter((t) => t.length > 0);
+  const nodes = found as unknown as CommentNode[];
+  nodes.forEach((n, i) => recordLayout(ctx, `comments[${i}]`, n));
+  return nodes.map((n) => n.properties.text.trim()).filter((t) => t.length > 0);
+}
+
+function groupsFromGraph(graph: LGraph | null | undefined): GroupUiState[] {
+  if (!graph) return [];
+  return graph.groups.map((g) => {
+    const [x, y, w, h] = g.boundingRect;
+    return { title: g.title, bounds: [x, y, w, h] as [number, number, number, number], ...(g.color ? { color: g.color } : {}) };
+  });
 }
 
 /** Compiles the graph reachable from `info` into a full EncounterConfig.
  *  Throws CompileError for a graph shape it can't yet turn into JSON. */
 export function graphToConfig(info: EncounterInfoNode): EncounterConfig {
   const ctx = makeCompileCtx();
+  recordLayout(ctx, "info", info);
   const phaseListOrigin = originOfInput(info, "phases");
-  const phases: PhaseDef[] =
-    phaseListOrigin instanceof PhaseListNode
-      ? phaseListOrigin.orderedPhaseNodes().map((n) => phaseDefFromNode(n as PhaseNode, ctx))
-      : [];
-  const comments = commentsFromGraph(info.graph);
+  let phases: PhaseDef[] = [];
+  if (phaseListOrigin instanceof PhaseListNode) {
+    recordLayout(ctx, "info.phases", phaseListOrigin);
+    phases = phaseListOrigin.orderedPhaseNodes().map((n, i) => phaseDefFromNode(n as PhaseNode, ctx, `phases[${i}]`));
+  }
+  const comments = commentsFromGraph(info.graph, ctx);
+  const groups = groupsFromGraph(info.graph);
   return {
     schemaVersion: 2,
     encounterId: info.properties.encounterId,
@@ -431,6 +495,7 @@ export function graphToConfig(info: EncounterInfoNode): EncounterConfig {
     // same reasoning applies to Encounter Info's global-mechanics slot.
     mechanics: {},
     ...(comments.length ? { comments } : {}),
+    ui: { layout: ctx.layout, ...(groups.length ? { groups } : {}) },
   };
 }
 
@@ -440,12 +505,6 @@ export function graphToConfig(info: EncounterInfoNode): EncounterConfig {
  *  still proceeds, just with that connection left empty. */
 export interface LoadWarning {
   message: string;
-}
-
-function addNode<T extends LGraphNode>(graph: LGraph, type: string): T {
-  const node = LiteGraph.createNode(type) as unknown as T;
-  graph.add(node as unknown as LGraphNode);
-  return node;
 }
 
 interface LoadCtx {
@@ -459,41 +518,63 @@ interface LoadCtx {
   collectionsBuilt: Map<string, LGraphNode | null>;
 }
 
+/** Reapplies a node's saved position/collapse/color from
+ *  `ctx.config.ui.layout[path]` -- the config->graph mirror of
+ *  `recordLayout`. A no-op (leaves the node at its freshly-constructed
+ *  default) when there's no entry for `path`, e.g. an older file with no
+ *  `ui` section, or a node whose path shifted because the graph was
+ *  restructured since the last save. */
+function applyLayout(ctx: LoadCtx, path: string, node: LGraphNode): void {
+  const state = ctx.config.ui?.layout[path];
+  if (!state) return;
+  node.pos = [state.x, state.y];
+  if (state.collapsed) node.collapse(true);
+  if (state.color) node.color = state.color;
+  if (state.bgcolor) node.bgcolor = state.bgcolor;
+}
+
+function addNode<T extends LGraphNode>(graph: LGraph, type: string, ctx: LoadCtx, path: string): T {
+  const node = LiteGraph.createNode(type) as unknown as T;
+  graph.add(node as unknown as LGraphNode);
+  applyLayout(ctx, path, node);
+  return node;
+}
+
 /** Reconstructs a "number"-typed subgraph from a NumberExpr -- the
  *  config->graph equivalent of `numberExprFromNode`. */
-function nodeForNumberExpr(graph: LGraph, expr: NumberExpr, ctx: LoadCtx): LGraphNode {
+function nodeForNumberExpr(graph: LGraph, expr: NumberExpr, ctx: LoadCtx, path: string): LGraphNode {
   if (expr.type === "unitHealthCurrent") {
-    const node = addNode<UnitHealthCurrentNode>(graph, "states/unit-health-current");
+    const node = addNode<UnitHealthCurrentNode>(graph, "states/unit-health-current", ctx, path);
     node.setValues({ npcId: expr.npcId });
     return node;
   }
   if (expr.type === "unitHealthMax") {
-    const node = addNode<UnitHealthMaxNode>(graph, "states/unit-health-max");
+    const node = addNode<UnitHealthMaxNode>(graph, "states/unit-health-max", ctx, path);
     node.setValues({ npcId: expr.npcId });
     return node;
   }
   if (expr.type === "unitPowerCurrent") {
-    const node = addNode<UnitPowerCurrentNode>(graph, "states/unit-power-current");
+    const node = addNode<UnitPowerCurrentNode>(graph, "states/unit-power-current", ctx, path);
     node.setValues({ npcId: expr.npcId, powerType: expr.powerType });
     return node;
   }
   if (expr.type === "unitPowerMax") {
-    const node = addNode<UnitPowerMaxNode>(graph, "states/unit-power-max");
+    const node = addNode<UnitPowerMaxNode>(graph, "states/unit-power-max", ctx, path);
     node.setValues({ npcId: expr.npcId, powerType: expr.powerType });
     return node;
   }
   if (expr.type === "numberValue") {
-    const node = addNode<NumberValueNode>(graph, "constants/number");
+    const node = addNode<NumberValueNode>(graph, "constants/number", ctx, path);
     node.setValues({ value: expr.value });
     return node;
   }
   if (expr.type === "unitDeathCount") {
-    const node = addNode<UnitDeathCountNode>(graph, "states/unit-death-count");
+    const node = addNode<UnitDeathCountNode>(graph, "states/unit-death-count", ctx, path);
     node.setValues({ npcIds: expr.npcIds ?? [] });
     return node;
   }
   if (expr.type === "aggregate") {
-    const node = addNode<NumberListAggregateNode>(graph, "calculation/aggregate");
+    const node = addNode<NumberListAggregateNode>(graph, "calculation/aggregate", ctx, path);
     const of = expr.of;
     node.setValues({
       op: expr.op,
@@ -501,14 +582,14 @@ function nodeForNumberExpr(graph: LGraph, expr: NumberExpr, ctx: LoadCtx): LGrap
       which: of.which,
       powerType: of.type === "perActorPower" ? of.powerType : 0,
     });
-    const actorsNode = nodeForCollectionExpr(graph, of.actors, "actor", ctx);
+    const actorsNode = nodeForCollectionExpr(graph, of.actors, "actor", ctx, `${path}.actors`);
     if (actorsNode) actorsNode.connect(0, node, "actors");
     return node;
   }
-  const node = addNode<NumberMathNode>(graph, "calculation/number-math");
+  const node = addNode<NumberMathNode>(graph, "calculation/number-math", ctx, path);
   node.setValues({ op: expr.op });
-  nodeForNumberExpr(graph, expr.a, ctx).connect(0, node, "a");
-  nodeForNumberExpr(graph, expr.b, ctx).connect(0, node, "b");
+  nodeForNumberExpr(graph, expr.a, ctx, `${path}.a`).connect(0, node, "a");
+  nodeForNumberExpr(graph, expr.b, ctx, `${path}.b`).connect(0, node, "b");
   return node;
 }
 
@@ -520,24 +601,31 @@ type CollectionDomain = "spell" | "actor";
  *  name-match node type to build (the JSON itself carries no domain tag --
  *  see schema.ts's `SpellIdListExpr`/`ActorIdListExpr` comment); a shared
  *  (`ref`) collection is assumed to be used consistently at one domain by
- *  its author. */
-function nodeForCollectionExpr(graph: LGraph, expr: CollectionExpr, domain: CollectionDomain, ctx: LoadCtx): LGraphNode | null {
+ *  its author. A `ref`'s layout is looked up under its own canonical
+ *  `collections.<id>` path, ignoring the caller's `path` -- mirrors
+ *  `collectionExprFromNode`'s recording side. */
+function nodeForCollectionExpr(graph: LGraph, expr: CollectionExpr, domain: CollectionDomain, ctx: LoadCtx, path: string): LGraphNode | null {
   if (expr.type === "literal") {
-    const node = addNode<SpellIdListNode | ActorIdListNode>(graph, domain === "spell" ? "constants/spell-ids" : "constants/actor-ids");
+    const node = addNode<SpellIdListNode | ActorIdListNode>(
+      graph,
+      domain === "spell" ? "constants/spell-ids" : "constants/actor-ids",
+      ctx,
+      path,
+    );
     node.setValues({ ids: expr.ids });
     return node;
   }
   if (expr.type === "combine") {
-    const node = addNode<IdListCombineNode>(graph, "calculation/combine");
+    const node = addNode<IdListCombineNode>(graph, "calculation/combine", ctx, path);
     node.setValues({ domain, op: expr.op });
-    const a = nodeForCollectionExpr(graph, expr.a, domain, ctx);
-    const b = nodeForCollectionExpr(graph, expr.b, domain, ctx);
+    const a = nodeForCollectionExpr(graph, expr.a, domain, ctx, `${path}.a`);
+    const b = nodeForCollectionExpr(graph, expr.b, domain, ctx, `${path}.b`);
     if (a) a.connect(0, node, "a");
     if (b) b.connect(0, node, "b");
     return node;
   }
   if (expr.type === "namePattern") {
-    const node = addNode<NameMatchNode>(graph, "filter/name-match");
+    const node = addNode<NameMatchNode>(graph, "filter/name-match", ctx, path);
     node.setValues({ domain, pattern: expr.pattern, syntax: expr.syntax });
     return node;
   }
@@ -550,28 +638,28 @@ function nodeForCollectionExpr(graph: LGraph, expr: CollectionExpr, domain: Coll
     return null;
   }
   ctx.collectionsBuilt.set(expr.id, null); // cycle guard, same shape as trigger `ref`s
-  const node = nodeForCollectionExpr(graph, def, domain, ctx);
+  const node = nodeForCollectionExpr(graph, def, domain, ctx, `collections.${expr.id}`);
   ctx.collectionsBuilt.set(expr.id, node);
   return node;
 }
 
-function nodeForSourceSpec(graph: LGraph, source: SourceSpec): LGraphNode {
+function nodeForSourceSpec(graph: LGraph, source: SourceSpec, ctx: LoadCtx, path: string): LGraphNode {
   if (source.kind === "casts") {
-    const node = addNode<CastsSourceNode>(graph, "events/casts");
+    const node = addNode<CastsSourceNode>(graph, "events/casts", ctx, path);
     node.setValues({ mode: source.mode });
     return node;
   }
   if (source.kind === "auras") {
-    const node = addNode<AurasSourceNode>(graph, "events/auras");
+    const node = addNode<AurasSourceNode>(graph, "events/auras", ctx, path);
     node.setValues({ mode: source.mode });
     return node;
   }
   if (source.kind === "deaths") {
-    const node = addNode<DeathsSourceNode>(graph, "events/deaths");
+    const node = addNode<DeathsSourceNode>(graph, "events/deaths", ctx, path);
     node.setValues({ mode: source.mode });
     return node;
   }
-  const node = addNode<InterruptsSourceNode>(graph, "events/interrupts");
+  const node = addNode<InterruptsSourceNode>(graph, "events/interrupts", ctx, path);
   node.setValues({});
   return node;
 }
@@ -588,9 +676,10 @@ function connectCollectionUnlessLiteral(
   expr: CollectionExpr,
   domain: CollectionDomain,
   ctx: LoadCtx,
+  path: string,
 ): void {
   if (expr.type === "literal") return;
-  const origin = nodeForCollectionExpr(graph, expr, domain, ctx);
+  const origin = nodeForCollectionExpr(graph, expr, domain, ctx, path);
   if (origin) origin.connect(0, targetNode, inputName);
 }
 
@@ -598,31 +687,31 @@ function literalIdsOf(expr: CollectionExpr): number[] {
   return expr.type === "literal" ? expr.ids : [];
 }
 
-function nodeForFilterSpec(graph: LGraph, filter: FilterSpec, ctx: LoadCtx): LGraphNode {
+function nodeForFilterSpec(graph: LGraph, filter: FilterSpec, ctx: LoadCtx, path: string): LGraphNode {
   if (filter.type === "actor") {
-    const node = addNode<FilterByActorNode>(graph, "filter/actor");
+    const node = addNode<FilterByActorNode>(graph, "filter/actor", ctx, path);
     node.setValues({ ids: literalIdsOf(filter.ids), which: filter.which ?? "auto" });
-    connectCollectionUnlessLiteral(graph, node, "ids", filter.ids, "actor", ctx);
+    connectCollectionUnlessLiteral(graph, node, "ids", filter.ids, "actor", ctx, `${path}.ids`);
     return node;
   }
   if (filter.type === "spell") {
-    const node = addNode<FilterBySpellNode>(graph, "filter/spell");
+    const node = addNode<FilterBySpellNode>(graph, "filter/spell", ctx, path);
     node.setValues({ ids: literalIdsOf(filter.ids) });
-    connectCollectionUnlessLiteral(graph, node, "ids", filter.ids, "spell", ctx);
+    connectCollectionUnlessLiteral(graph, node, "ids", filter.ids, "spell", ctx, `${path}.ids`);
     return node;
   }
   if (filter.type === "auraState") {
-    const node = addNode<FilterByAuraStateNode>(graph, "filter/aura-state");
+    const node = addNode<FilterByAuraStateNode>(graph, "filter/aura-state", ctx, path);
     node.setValues({ spellIds: literalIdsOf(filter.spellIds), has: filter.has });
-    connectCollectionUnlessLiteral(graph, node, "ids", filter.spellIds, "spell", ctx);
+    connectCollectionUnlessLiteral(graph, node, "ids", filter.spellIds, "spell", ctx, `${path}.ids`);
     return node;
   }
   if (filter.type === "position") {
-    const node = addNode<FilterByPositionNode>(graph, "filter/position");
+    const node = addNode<FilterByPositionNode>(graph, "filter/position", ctx, path);
     node.setValues({ x: filter.x, y: filter.y, radius: filter.radius });
     return node;
   }
-  const node = addNode<FilterByRoleNode>(graph, "filter/role");
+  const node = addNode<FilterByRoleNode>(graph, "filter/role", ctx, path);
   node.setValues({ roles: [...filter.roles] });
   return node;
 }
@@ -645,60 +734,61 @@ function nodeForEventStreamChain(
   graph: LGraph,
   trigger: { source: SourceSpec; filters: FilterSpec[]; after?: Trigger; window?: { start: Trigger; end: Trigger } },
   ctx: LoadCtx,
+  path: string,
 ): LGraphNode {
-  const sourceNode = nodeForSourceSpec(graph, trigger.source);
+  const sourceNode = nodeForSourceSpec(graph, trigger.source, ctx, `${path}.source`);
   if (trigger.after) {
-    const afterNode = nodeForTrigger(graph, trigger.after, ctx);
+    const afterNode = nodeForTrigger(graph, trigger.after, ctx, `${path}.after`);
     if (afterNode) afterNode.connect(0, sourceNode, "after");
   }
   if (trigger.window) {
-    const windowNode = addNode<WindowNode>(graph, "structure/window");
+    const windowNode = addNode<WindowNode>(graph, "structure/window", ctx, `${path}.window`);
     windowNode.setValues({});
-    const startNode = nodeForTrigger(graph, trigger.window.start, ctx);
-    const endNode = nodeForTrigger(graph, trigger.window.end, ctx);
+    const startNode = nodeForTrigger(graph, trigger.window.start, ctx, `${path}.window.start`);
+    const endNode = nodeForTrigger(graph, trigger.window.end, ctx, `${path}.window.end`);
     if (startNode) startNode.connect(0, windowNode, "start");
     if (endNode) endNode.connect(0, windowNode, "end");
     windowNode.connect(0, sourceNode, "window");
   }
   let current: LGraphNode = sourceNode;
-  for (const filter of trigger.filters) {
-    const filterNode = nodeForFilterSpec(graph, filter, ctx);
+  trigger.filters.forEach((filter, i) => {
+    const filterNode = nodeForFilterSpec(graph, filter, ctx, `${path}.filters[${i}]`);
     current.connect(0, filterNode, "event-stream");
     current = filterNode;
-  }
+  });
   return current;
 }
 
-function nodeForTrigger(graph: LGraph, trigger: Trigger, ctx: LoadCtx): LGraphNode | null {
-  if (trigger.type === "combatStart") return addNode(graph, "events/encounter-start");
-  if (trigger.type === "combatEnd") return addNode(graph, "events/encounter-end");
+function nodeForTrigger(graph: LGraph, trigger: Trigger, ctx: LoadCtx, path: string): LGraphNode | null {
+  if (trigger.type === "combatStart") return addNode(graph, "events/encounter-start", ctx, path);
+  if (trigger.type === "combatEnd") return addNode(graph, "events/encounter-end", ctx, path);
   if (trigger.type === "query") {
-    const chainEnd = nodeForEventStreamChain(graph, trigger, ctx);
-    const firstEventNode = addNode<EventStreamFirstNode>(graph, "events/first-event");
+    const chainEnd = nodeForEventStreamChain(graph, trigger, ctx, path);
+    const firstEventNode = addNode<EventStreamFirstNode>(graph, "events/first-event", ctx, path);
     firstEventNode.setValues({});
     chainEnd.connect(0, firstEventNode, "event-stream");
     return firstEventNode;
   }
   if (trigger.type === "threshold") {
-    const node = addNode<ThresholdTriggerNode>(graph, "calculation/threshold");
+    const node = addNode<ThresholdTriggerNode>(graph, "calculation/threshold", ctx, path);
     node.setValues({ op: trigger.op });
-    nodeForNumberExpr(graph, trigger.value, ctx).connect(0, node, "value");
-    nodeForNumberExpr(graph, trigger.threshold, ctx).connect(0, node, "threshold");
+    nodeForNumberExpr(graph, trigger.value, ctx, `${path}.value`).connect(0, node, "value");
+    nodeForNumberExpr(graph, trigger.threshold, ctx, `${path}.threshold`).connect(0, node, "threshold");
     if (trigger.after) {
-      const afterNode = nodeForTrigger(graph, trigger.after, ctx);
+      const afterNode = nodeForTrigger(graph, trigger.after, ctx, `${path}.after`);
       if (afterNode) afterNode.connect(0, node, "after");
     }
     return node;
   }
   if (trigger.type === "offset") {
-    const fromNode = nodeForTrigger(graph, trigger.from, ctx);
+    const fromNode = nodeForTrigger(graph, trigger.from, ctx, `${path}.from`);
     if (!fromNode) return null;
-    const durationNode = addNode<DurationNode>(graph, "constants/duration");
+    const durationNode = addNode<DurationNode>(graph, "constants/duration", ctx, `${path}.duration`);
     durationNode.setValues({
       minutes: Math.floor(trigger.seconds / 60),
       seconds: trigger.seconds % 60,
     });
-    const mathNode = addNode<TimeMathNode>(graph, "calculation/time-math");
+    const mathNode = addNode<TimeMathNode>(graph, "calculation/time-math", ctx, path);
     mathNode.setValues({ op: trigger.op });
     fromNode.connect(0, mathNode, "a");
     durationNode.connect(0, mathNode, "b");
@@ -715,7 +805,7 @@ function nodeForTrigger(graph: LGraph, trigger: Trigger, ctx: LoadCtx): LGraphNo
     // Set before recursing so a cycle (shouldn't happen in a valid file)
     // resolves to "not yet built" rather than looping forever.
     ctx.built.set(trigger.id, null);
-    const node = nodeForTrigger(graph, def, ctx);
+    const node = nodeForTrigger(graph, def, ctx, `triggers.${trigger.id}`);
     ctx.built.set(trigger.id, node);
     return node;
   }
@@ -723,13 +813,28 @@ function nodeForTrigger(graph: LGraph, trigger: Trigger, ctx: LoadCtx): LGraphNo
   return null;
 }
 
+function buildGroups(graph: LGraph, groups: GroupUiState[] | undefined): void {
+  for (const g of groups ?? []) {
+    const group = new LGraphGroup(g.title);
+    const [x, y, w, h] = g.bounds;
+    group.pos = [x, y];
+    group.size = [w, h];
+    if (g.color) group.color = g.color;
+    graph.add(group);
+  }
+}
+
 /** Clears `graph` and rebuilds it from `config`. Returns warnings for any
- *  JSON shape it couldn't reconstruct (the load still proceeds). */
+ *  JSON shape it couldn't reconstruct (the load still proceeds). Falls
+ *  back to auto-arranging (`LGraph.arrange()`) only when `config` has no
+ *  recorded layout at all (an older or hand-authored file) -- otherwise
+ *  every node's saved position/collapse/color (`applyLayout`, above) is
+ *  left as reconstructed. */
 export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarning[] {
   const ctx: LoadCtx = { config, warnings: [], built: new Map(), collectionsBuilt: new Map() };
   graph.clear();
 
-  const info = addNode<EncounterInfoNode>(graph, "structure/info");
+  const info = addNode<EncounterInfoNode>(graph, "structure/info", ctx, "info");
   info.setValues({
     encounterId: config.encounterId ?? 0,
     id: config.id,
@@ -739,15 +844,15 @@ export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarni
   });
 
   if (config.phases.length) {
-    const phaseListNode = addNode<PhaseListNode>(graph, "structure/phase-list");
+    const phaseListNode = addNode<PhaseListNode>(graph, "structure/phase-list", ctx, "info.phases");
 
-    config.phases.forEach((phaseDef) => {
-      const phaseNode = addNode<PhaseNode>(graph, "structure/phase");
+    config.phases.forEach((phaseDef, i) => {
+      const phaseNode = addNode<PhaseNode>(graph, "structure/phase", ctx, `phases[${i}]`);
       phaseNode.setValues({ id: phaseDef.id, label: phaseDef.label, kind: phaseDef.kind });
-      const startNode = nodeForTrigger(graph, phaseDef.start, ctx);
+      const startNode = nodeForTrigger(graph, phaseDef.start, ctx, `phases[${i}].start`);
       if (startNode) startNode.connect(0, phaseNode, "start");
       if (phaseDef.end) {
-        const endNode = nodeForTrigger(graph, phaseDef.end, ctx);
+        const endNode = nodeForTrigger(graph, phaseDef.end, ctx, `phases[${i}].end`);
         if (endNode) endNode.connect(0, phaseNode, "end");
       }
 
@@ -758,13 +863,19 @@ export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarni
     phaseListNode.connect(0, info, "phases");
   }
 
-  for (const text of config.comments ?? []) {
-    addNode<CommentNode>(graph, "comment").setValues({ text });
-  }
+  (config.comments ?? []).forEach((text, i) => {
+    addNode<CommentNode>(graph, "comment", ctx, `comments[${i}]`).setValues({ text });
+  });
 
-  // Freshly-built nodes have no meaningful position of their own -- lay
-  // them out left-to-right by dependency order (sources first, Encounter
-  // Info last).
-  graph.arrange();
+  buildGroups(graph, config.ui?.groups);
+
+  // Freshly-built nodes with no recorded layout have no meaningful
+  // position of their own -- lay them out left-to-right by dependency
+  // order (sources first, Encounter Info last). Skipped when `ui.layout`
+  // has entries: every node built above already got its saved position
+  // via `applyLayout`, so re-arranging would throw that away.
+  if (!config.ui?.layout || Object.keys(config.ui.layout).length === 0) {
+    graph.arrange();
+  }
   return ctx.warnings;
 }
