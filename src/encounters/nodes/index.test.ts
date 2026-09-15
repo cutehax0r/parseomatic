@@ -62,7 +62,7 @@ describe("registerEncounterNodeTypes -- Add Node menu categories", () => {
 });
 
 describe("registerEncounterNodeTypes -- pruned context menu items", () => {
-  test("Convert to Subgraph and Properties Panel are dropped from both the canvas and node menus", () => {
+  test("Convert to Subgraph, Properties Panel, and Shapes are dropped from both the canvas and node menus", () => {
     registerEncounterNodeTypes();
     const graph = new LGraph();
     const node = LiteGraph.createNode("structure/info")!;
@@ -79,6 +79,10 @@ describe("registerEncounterNodeTypes -- pruned context menu items", () => {
       .map((opt) => opt.content);
     expect(nodeMenuContents.some((c) => typeof c === "string" && c.startsWith("Convert to Subgraph"))).toBe(false);
     expect(nodeMenuContents).not.toContain("Properties Panel");
+    expect(nodeMenuContents).not.toContain("Shapes");
+    // Sanity check the filter isn't over-broad -- real, unrelated node
+    // menu entries must survive.
+    expect(nodeMenuContents).toContain("Colors");
 
     const canvasMenuContents = fakeCanvas
       .getCanvasMenuOptions()

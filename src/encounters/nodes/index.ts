@@ -98,8 +98,11 @@ function applyCategoryColors(): void {
  *    at all. Fixing it properly means owning a parallel patched copy of
  *    a third-party stylesheet for a feature that only duplicates what
  *    every node's own inline canvas widgets already do (edit each
- *    property directly), so it's dropped rather than patched. */
-const HIDDEN_MENU_ITEM_PREFIXES = ["Convert to Subgraph", "Properties Panel"];
+ *    property directly), so it's dropped rather than patched.
+ *  - "Shapes" (per-node) -- a submenu for the node's rendered corner
+ *    style (box/round/card); a cosmetic nicety that isn't worth the menu
+ *    real estate for this editor. */
+const HIDDEN_MENU_ITEM_PREFIXES = ["Convert to Subgraph", "Properties Panel", "Shapes"];
 
 function isHiddenMenuItem(content: unknown): boolean {
   return typeof content === "string" && HIDDEN_MENU_ITEM_PREFIXES.some((prefix) => content.startsWith(prefix));
