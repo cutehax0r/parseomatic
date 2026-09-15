@@ -2,7 +2,7 @@
 // "phases" input takes a Phase List's output, which resolves to a
 // PhaseTimeline (src/encounters/runtime.ts) once evaluated.
 
-import { LGraph, LGraphNode, LiteGraph } from "@comfyorg/litegraph";
+import { LGraph, LGraphNode, LiteGraph, type ISlotType } from "@comfyorg/litegraph";
 import type { NodeProperty } from "@comfyorg/litegraph/dist/LGraphNode";
 import type { Difficulty } from "../schema";
 
@@ -43,6 +43,7 @@ export class EncounterInfoNode extends LGraphNode {
     super("Encounter Info");
     this.properties = { encounterId: 0, id: "", name: "", difficulty: "mythic", mapId: 0 };
     this.addInput("phases", "phases");
+    this.addInput("Mechanic 1", "mechanic");
     this.addWidget(
       "number",
       "Encounter ID",
@@ -77,6 +78,34 @@ export class EncounterInfoNode extends LGraphNode {
       { min: 0, precision: 0, step2: 1 },
     );
     this.size = [220, 170];
+  }
+
+  /** Growable "mechanics" input list for encounter-wide mechanics (v2 doc
+   *  §10 -- a mechanic can be global, not owned by any one phase), same
+   *  variadic pattern as PhaseListNode's "phase" inputs. Only reacts to
+   *  the "mechanic"-typed slots (indices 1+); the fixed "phases" slot at
+   *  0 is untouched. Always compiles to `[]` today -- see PhaseNode's
+   *  identical scaffold for why. */
+  override onConnectionsChange(type: ISlotType, index: number, isConnected: boolean): void {
+    if (type !== LiteGraph.INPUT || index < 1) return;
+    const inputs = this.inputs ?? [];
+    const lastIndex = inputs.length - 1;
+    if (isConnected && index === lastIndex) {
+      this.addInput(`Mechanic ${inputs.length}`, "mechanic");
+    }
+  }
+
+  orderedGlobalMechanicNodes(): LGraphNode[] {
+    const graph = this.graph;
+    if (!graph) return [];
+    const nodes: LGraphNode[] = [];
+    for (const input of (this.inputs ?? []).slice(1)) {
+      if (input.link == null) continue;
+      const link = graph.links.get(input.link);
+      const node = link ? graph.getNodeById(link.origin_id) : null;
+      if (node) nodes.push(node);
+    }
+    return nodes;
   }
 
   setValues(values: EncounterInfoValues): void {

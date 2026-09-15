@@ -1,5 +1,15 @@
 # Encounter config — JSON schema
 
+**Reflects the v2 schema, implemented.** `encounter-config-v2.md` and
+`encounter-config-v2-nodes.md` are the design rationale behind the
+`query`/Source/Filter/Collection shapes below (kept as historical
+context, not restated here) — this doc describes what actually shipped.
+Mechanics, Views/Reports, Templates, and the Latch primitive from those
+docs are **not built yet**: `PhaseDef.mechanics`/`EncounterConfig.
+globalMechanics` exist as real, graph-wired slots (so the Mechanic node
+type can plug in later without reshaping Phase/Info again) but always
+compile to `[]` today.
+
 Concrete schema for the boss-parser idea in `boss-parsers.md`, specifically
 its "recyclable mechanic templates" section. An encounter config is a JSON
 file, one per `(encounterId, difficulty)` pair, loaded from the plugin
@@ -71,7 +81,7 @@ read by `find_encounter_config` yet — only `<app data dir>/encounters/`.
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "encounterId": 2549,
   "id": "twin-fangs",
   "name": "Twin Fangs",
@@ -84,11 +94,13 @@ read by `find_encounter_config` yet — only `<app data dir>/encounters/`.
       "mechanics": ["soakBalls", "adds", "tankSoak", "groupSoak", "redBalls"] },
 
     { "id": "intermission1", "label": "Intermission 1", "kind": "intermission",
-      "start": { "type": "castStart", "spellIds": [111111] },
+      "start": { "type": "query", "source": { "kind": "casts", "mode": "start" },
+        "filters": [{ "type": "spell", "ids": { "type": "literal", "ids": [111111] } }] },
       "mechanics": ["rotation"] },
 
     { "id": "phase2", "label": "Phase 2", "kind": "phase",
-      "start": { "type": "castSuccess", "spellIds": [111111] },
+      "start": { "type": "query", "source": { "kind": "casts", "mode": "success" },
+        "filters": [{ "type": "spell", "ids": { "type": "literal", "ids": [111111] } }] },
       "mechanics": ["soakBalls2", "adds2", "tankSoak2", "groupSoak2", "redBalls2"] },
 
     { "id": "enrage", "label": "Enrage", "kind": "enrage",
@@ -97,28 +109,42 @@ read by `find_encounter_config` yet — only `<app data dir>/encounters/`.
 
   "mechanics": {
     "soakBalls": { "label": "Soak Balls", "kind": "orbSoak",
-      "trigger": { "type": "castStart", "spellIds": [222222] },
+      "trigger": { "type": "query", "source": { "kind": "casts", "mode": "start" },
+        "filters": [{ "type": "spell", "ids": { "type": "literal", "ids": [222222] } }] },
       "params": { "debuffId": 222333, "orbCount": 6, "explodeAfterSec": 20, "explosionSpellId": 222444 } },
     "soakBalls2": { "label": "Soak Balls", "kind": "orbSoak",
-      "trigger": { "type": "castStart", "spellIds": [222222] },
+      "trigger": { "type": "query", "source": { "kind": "casts", "mode": "start" },
+        "filters": [{ "type": "spell", "ids": { "type": "literal", "ids": [222222] } }] },
       "params": { "debuffId": 222333, "orbCount": 6, "explodeAfterSec": 20, "explosionSpellId": 222444 } },
 
     "adds": { "label": "Adds", "kind": "addSpawn",
-      "trigger": { "type": "unitSpawn", "npcIds": [333111, 333112] },
+      "trigger": { "type": "query", "source": { "kind": "deaths", "mode": "died" },
+        "filters": [{ "type": "actor", "ids": { "type": "literal", "ids": [333111, 333112] } }] },
       "params": { "expectedCount": 4 } },
     "adds2": { "label": "Adds", "kind": "addSpawn",
-      "trigger": { "type": "unitSpawn", "npcIds": [333111, 333112] },
+      "trigger": { "type": "query", "source": { "kind": "deaths", "mode": "died" },
+        "filters": [{ "type": "actor", "ids": { "type": "literal", "ids": [333111, 333112] } }] },
       "params": { "expectedCount": 4 } },
 
     "groupSoak": { "label": "Group Soak", "kind": "groupSoak",
-      "trigger": { "type": "castStart", "spellIds": [444555] },
+      "trigger": { "type": "query", "source": { "kind": "casts", "mode": "start" },
+        "filters": [{ "type": "spell", "ids": { "type": "literal", "ids": [444555] } }] },
       "params": { "hits": 3, "hitIntervalSec": 2 } },
     "groupSoak2": { "label": "Group Soak", "kind": "groupSoak",
-      "trigger": { "type": "castStart", "spellIds": [444555] },
+      "trigger": { "type": "query", "source": { "kind": "casts", "mode": "start" },
+        "filters": [{ "type": "spell", "ids": { "type": "literal", "ids": [444555] } }] },
       "params": { "hits": 3, "hitIntervalSec": 2 } }
   }
 }
 ```
+
+`MechanicDef.trigger` above uses the same `Trigger` shape as a phase's
+`start`/`end` (a still-unevaluated placeholder -- see this doc's opening
+note: Mechanics aren't built yet, only phases resolve today), just to keep
+the example internally consistent with the schema actually in
+`src/encounters/schema.ts`, not because a mechanic's condition is
+evaluated the same way a phase boundary is (v2's real Mechanic node,
+next branch, resolves to a *list* of instances, not one moment).
 
 `start` is required; `end` is optional and normally omitted — a phase ends
 where the next one starts. It exists for the one case with no following
@@ -149,11 +175,8 @@ Shared by `phases[].start` and `mechanics[].trigger`:
 |---|---|---|
 | `combatStart` | — | `ENCOUNTER_START` |
 | `combatEnd` | — | `ENCOUNTER_END` |
-| `castStart` / `castSuccess` | `spellIds` (any one matches), optional `sourceNpcIds` (any one matches; omitted = any caster) | a matching `SPELL_CAST_START` / `SPELL_CAST_SUCCESS` |
-| `auraApplied` / `auraRemoved` | `spellIds` (any one matches), optional `sourceNpcIds` (any one matches; omitted = any caster) | a matching `SPELL_AURA_APPLIED` / `SPELL_AURA_REMOVED`. `auraRemoved` is a good exact alternative to an `offset` guess for a channeled ability's real end, when the caster carries a self-buff for the channel's duration |
-| `stackCount` | `spellId`, `atLeast` | an aura's stack count crosses a threshold |
-| `unitSpawn` / `unitDied` | `npcIds` | a unit matching one of the ids appears / dies |
-| `threshold` | `value`, `op` (`above`/`below`/`equal`), `threshold` (both `NumberExpr` -- see below) | `value op threshold` first holds, scanning each referenced unit's real HP/death-count samples |
+| `query` | `source` (`SourceSpec`), `filters` (`FilterSpec[]`), optional `window: { phaseId }` | the first matching event from a Source→Filter chain (see below) -- replaces v1's `castStart`/`castSuccess`/`auraApplied`/`auraRemoved`/`unitSpawn`/`unitDied`/`stackCount` with one generic shape |
+| `threshold` | `value`, `op` (`above`/`below`/`equal`), `threshold` (both `NumberExpr` -- see below) | `value op threshold` first holds, scanning each referenced unit's real HP/death-count/aggregate samples |
 | `timer` | `since` (a trigger reference, e.g. `"phase1.start"` or `"soakBalls.end"`), `seconds` | a fixed offset from another named trigger |
 | `offset` | `from` (an inline `Trigger`), `op` (`+`/`-`), `seconds` | a Time Math node's result — `from` offset by `seconds` |
 | `ref` | `id` | points at `EncounterConfig.triggers[id]` — see "Shared triggers" below |
@@ -162,23 +185,61 @@ Shared by `phases[].start` and `mechanics[].trigger`:
 or `<mechanicId>.end` (a mechanic kind defines what "end" means for it —
 see below).
 
+### `query` — Source, Filter, and Collection shapes
+
+Authored in the graph as a Source node (`nodes/sources.ts`) feeding
+zero-or-more Filter nodes (`nodes/filters.ts`) feeding a "First Event"
+node, which is what actually plugs into a Phase's `start`/`end`
+(`src/encounters/compile.ts`'s `queryTriggerFromEventStreamFirst` walks
+this chain backward to compile it, and `nodeForEventStreamChain`
+reconstructs it on load). Compiles straight to `src/ui/query.ts`'s
+`QuerySpec` DSL (`src-tauri/src/query.rs`), not bespoke per-kind Rust code.
+
+**`SourceSpec`** — a kind-scoped event stream, time-window-scoped
+implicitly (the whole encounter, or, if the Source's `window` input is
+wired to a Phase node's `phase` output, that phase's own span):
+
+| `kind` | `mode` | fires on |
+|---|---|---|
+| `casts` | `start` \| `success` | `SPELL_CAST_START` / `SPELL_CAST_SUCCESS` |
+| `auras` | `applied` \| `removed` | `SPELL_AURA_APPLIED` / `SPELL_AURA_REMOVED` |
+| `deaths` | `died` \| `destroyed` \| `dissipates` | `UNIT_DIED` / `UNIT_DESTROYED` / `UNIT_DISSIPATES` |
+| `interrupts` | — | `SPELL_INTERRUPT` |
+
+**`FilterSpec`** — narrows a Source, chainable (applied in order):
+
+| `type` | fields | narrows to rows where |
+|---|---|---|
+| `actor` | `ids` (`CollectionExpr`) | the acting unit (caster/interrupter; the *victim* for a `deaths` Source, since `UNIT_DIED` interns it as the target) matches |
+| `spell` | `ids` (`CollectionExpr`) | the spell id matches |
+| `auraState` | `spellIds` (`CollectionExpr`), `has` (bool) | the same unit has/lacks a matching buff/debuff *at that row's own timestamp* -- resolved client-side (`evaluate.ts`'s `resolveAuraStateFilter`), not pushed into `query.rs` |
+| `position` | `x`, `y`, `radius` | the row's own position is within `radius` of `(x, y)` (`query.rs`'s `Field::Position`/`Op::WithinRadius`, squared-distance, point+radius only, no polygon) |
+| `role` | `roles: ("tank"\|"healer"\|"ranged")[]` | **not yet backed by real data** -- currently a documented no-op (matches everything); needs `COMBATANT_INFO` spec-id data threaded into `EvalDeps`, not just interned units/spells |
+
+**`CollectionExpr`** — a domain-tagged (spell-id-list / actor-id-list,
+tag is graph-slot-only, not in the JSON) reusable id list, authored as
+Spell/Actor ID list nodes, a Combine node (union/subtract), a Match-by-Name
+node (glob/regex against the log's own interned tables, resolved once, not
+per event row), or a `ref` into `EncounterConfig.collections` (config-local
+sharing, same hoist-if-shared pattern as `EncounterConfig.triggers`).
+
 ### Repeated conditions: `after` and phase chaining
 
-`castStart`, `castSuccess`, `auraApplied`, `auraRemoved`, and `threshold`
-all take an optional `after: Trigger` — resolve `after` first, then only
-look for a match strictly later than it, rather than scanning from the
-encounter's own start. Without it, the *same* condition reused for a
-repeating mechanic (a council fight's second intermission triggered by
-the same cast as the first, a boss buff that hits 100 power twice) would
-resolve to the fight's very first occurrence every time it's evaluated,
-regardless of which phase is asking — `after` is what lets "the second
-time this happens" mean something different from "the first."
+`query` and `threshold` both take an optional `after: Trigger` — resolve
+`after` first, then only look for a match strictly later than it, rather
+than scanning from the encounter's own start (or the phase window's own
+start, if the Source has a `window`). Without it, the *same* condition
+reused for a repeating mechanic (a council fight's second intermission
+triggered by the same cast as the first, a boss buff that hits 100 power
+twice) would resolve to the fight's very first occurrence every time it's
+evaluated, regardless of which phase is asking — `after` is what lets "the
+second time this happens" mean something different from "the first."
 
 Phase nodes make this easy to wire without extra bookkeeping: a Phase
 node's `start`/`end` **outputs** re-expose whatever's wired into that
 same node's `start`/`end` **inputs** (`phase.ts`) — pure pass-throughs,
 not new values. So "Phase 1 ends" can feed both Phase 1 itself and,
-directly, "Phase 2 starts" or a Threshold/Cast/Aura node's `after` input
+directly, "Phase 2 starts" or a Threshold/Source node's `after` input
 elsewhere, without duplicating the trigger definition or routing it
 through `EncounterConfig.triggers`/`ref` at all. Chained this way, a
 repeating fight structure (phase — intermission — phase, twice or more)
@@ -203,6 +264,7 @@ just inlined twice.
 | `unitPowerCurrent` / `unitPowerMax` | `npcId`, `powerType` (`Enum.PowerType` -- see below) | that unit's current/max power *of that type*, as of the instant being evaluated. Less trustworthy than health -- see below |
 | `unitDeathCount` | optional `npcIds` (omitted/empty = any unit) | a running count of `UNIT_DIED` events matching one of `npcIds`, as of the instant being evaluated |
 | `numberMath` | `a`, `op` (`+`/`-`/`*`/`/`), `b` (both `NumberExpr`) | e.g. `unitHealthCurrent / unitHealthMax` for a 0-1 health fraction |
+| `aggregate` | `op` (`min`/`max`/`avg`/`count`/`stddev`/`first`/`last`), `of` (a `NumberListExpr`: `perActorHealth`/`perActorPower` over an actor `CollectionExpr`) | one generic reduction over a collection's per-member current health/power, evaluated at the instant being evaluated (a member with no sample yet is skipped, not treated as 0) -- the "keep 2 of 3 turtles apart" / any-of-N style checks all fold into this plus a comparison, rather than a node per operation |
 
 E.g. "boss enrages at 20% health": `{ "type": "threshold", "op": "below", "value": { "type": "numberMath", "a": { "type": "unitHealthCurrent", "npcId": 12345 }, "op": "/", "b": { "type": "unitHealthMax", "npcId": 12345 } }, "threshold": { "type": "numberValue", "value": 0.20 } }`.
 Since both sides of a `threshold` are full `NumberExpr` trees, "unit A's
@@ -214,9 +276,10 @@ have died" is `{ "type": "threshold", "op": "equal", "value": { "type":
 "unitDeathCount", "npcIds": [333111] }, "threshold": { "type":
 "numberValue", "value": 4 } }`; leaving `npcIds` off counts *any* unit's
 death, for "this many players have died" regardless of which ones. There's
-no equivalent spawn counter yet -- `unitSpawn` (above) has no evaluator
-case, since WoW's combat log has no reliable universal "this unit just
-appeared" event to detect it from.
+no equivalent spawn counter -- WoW's combat log has no reliable universal
+"this unit just appeared" event to detect it from (a "Lifetime/lifecycle"
+concept anchored on first observed activity is a future direction, not
+built -- see `encounter-config-v2.md` §6/§14).
 
 `powerType` (`unitPowerCurrent`/`unitPowerMax`) is `Enum.PowerType`
 (https://wowwiki-archive.fandom.com/wiki/API_COMBAT_LOG_EVENT's "Power
@@ -251,6 +314,13 @@ gets hoisted into `EncounterConfig.triggers` under a generated id
 use, and reused for every other reference to the same id, reconstructing
 the original shared wiring rather than duplicating it. `triggers` is
 omitted from the JSON entirely when nothing needed it.
+
+`EncounterConfig.collections` is the exact same pattern, applied to
+`CollectionExpr` (a Combine/Match-by-Name node used by more than one
+Filter gets hoisted under a generated id like `collection1`, referenced
+via `{ "type": "ref", "id": "collection1" }`) — config-local sharing only
+(`encounter-config-v2.md` §5 level 1); app-global, Settings-managed
+categories are a separate, not-yet-built concept.
 
 ## Mechanic kinds — the standard library
 
@@ -320,11 +390,12 @@ rewiring things by hand.
 against a real log live in `src/encounters/runtime.ts`. The evaluator
 (`src/encounters/evaluate.ts`) walks the compiled JSON's
 `combatStart`/`combatEnd`/`offset`/`ref` triggers with pure arithmetic,
-`castStart`/`castSuccess` by querying the real log for a matching cast,
-and `threshold` by scanning each referenced unit's real HP samples (see
-"Matching a log encounter" above and the "NumberExpr vocabulary" table) —
-every graph node type below compiles down to one of those, so anything
-buildable in the editor already evaluates:
+`query` by compiling its Source/Filters to a real `query.rs` `QuerySpec`
+and fetching the first match, and `threshold` by scanning each referenced
+unit's real HP/power/aggregate samples (see "Matching a log encounter"
+above and the "NumberExpr vocabulary" table) — every graph node type below
+compiles down to one of those, so anything buildable in the editor already
+evaluates:
 
 | slot type | resolves to |
 |---|---|
@@ -333,6 +404,9 @@ buildable in the editor already evaluates:
 | `number` | `ResolvedNumber` — a plain float that may change over the encounter (e.g. a unit's health) |
 | `phase` | `TimeRange` — `{ startMs, endMs }`. Node identity (id/label/kind) stays on the Phase node itself, not in this value |
 | `phases` | `PhaseTimeline` — `TimeRange[]`, in slot order. Exactly what a playback scrollbar, timeline, or kanban view needs |
+| `event-stream` | not independently resolved — an intermediate Source→Filter chain value, only meaningful once a "First Event" node turns it into a `moment` |
+| `spell-id-list` / `actor-id-list` | `ResolvedCollection` (`number[]`) — the domain tag is a graph-slot distinction only, both resolve the same way |
+| `mechanic` | nothing yet — the slot type exists (Phase/Encounter Info's growable "mechanics" input lists) so a future Mechanic node type can plug in without reshaping those nodes, but nothing produces it today |
 
 - **`encounter/info`** (`info.ts`) — the encounter's identity: encounter id
   (the log's real WoW encounter id, stored as `encounterId` — together
@@ -344,22 +418,50 @@ buildable in the editor already evaluates:
   — fixed-value carriers for `{ type: "combatStart" }` /
   `{ type: "combatEnd" }`. A `moment`-typed output that plugs into a Phase
   node's `start`/`end` input, or a Time Math node's inputs.
-- **`encounter/cast-start`** / **`encounter/cast-success`** (`cast-trigger.ts`)
-  and **`encounter/aura-applied`** / **`encounter/aura-removed`**
-  (`aura-trigger.ts`) — fire on the first `SPELL_CAST_START` /
-  `SPELL_CAST_SUCCESS` / `SPELL_AURA_APPLIED` / `SPELL_AURA_REMOVED`
-  matching a comma-separated Spell IDs widget, optionally narrowed by a
-  comma-separated Source NPC IDs widget (blank = any caster) — all four
-  share one base (`spell-filter-trigger.ts`), differing only in which
-  event kind the evaluator scans for. Both id lists take more than one
-  entry so one node covers a council fight's "any of these bosses casts
-  any of these spells" phase-change condition, not just a single
-  caster/spell pair. A `moment`-typed output, same slot as the two
-  Encounter Start/End nodes above. All four (and Threshold, below) also
-  carry an optional `after` moment **input** -- see "Repeated conditions"
-  above -- unconnected by default (search from the encounter's own
-  start). The rest of the trigger vocabulary (`stackCount`, `timer`, ...)
-  gets its own node once a phase actually needs one.
+- **Sources** (`sources.ts`) — **`encounter/casts`** (Mode: start/success),
+  **`encounter/auras`** (Mode: applied/removed), **`encounter/deaths`**
+  (Mode: died/destroyed/dissipates), **`encounter/interrupts`** — each an
+  `event-stream`-typed output, an optional `after` moment **input** (same
+  "Repeated conditions" semantics as v1's cast/aura nodes), and an
+  optional `window` input typed `phase`: wiring a Phase node's `phase`
+  output into it scopes that Source to that phase's own span instead of
+  the whole encounter (compiles to `query`'s `window: { phaseId }`). No
+  window *widget* — v2's design doc originally called for automatic scope
+  inheritance via real LiteGraph subgraph nesting, dropped after
+  inspecting LiteGraph's actual `Subgraph` API (a heavier, differently-
+  shaped feature built around packaging a canvas selection into a
+  reusable block, not a lightweight container primitive) in favor of this
+  explicit wire.
+- **Filters** (`filters.ts`) — **`encounter/filter-actor`** /
+  **`encounter/filter-spell`** (an `actor-id-list`/`spell-id-list` input,
+  auto-wrapping a comma-separated-ids fallback widget — the "auto-wrap a
+  scalar" convenience carried over from v1), **`encounter/filter-aura-state`**
+  (a `spell-id-list` input + Has/Lacks toggle), **`encounter/filter-position`**
+  (X/Y/Radius widgets), **`encounter/filter-role`** (tank/healer/ranged
+  checkboxes — currently a documented no-op, see the Trigger vocabulary's
+  `FilterSpec` table). Each: one `event-stream` input, one `event-stream`
+  output — chainable, Source → Filter → Filter → ... A council fight's
+  "any of these bosses casts any of these spells" phase-change condition
+  is now a Casts Source → one Filter by Actor (multiple ids) → one Filter
+  by Spell (multiple ids), rather than baked into one fixed node's two id
+  lists.
+- **`encounter/first-event`** (`sources.ts`) — the terminal node that
+  resolves a Source→Filter chain to a `moment`: the chain's first match
+  in its window. What actually plugs into a Phase's `start`/`end`, or a
+  Time Math/Threshold node's `after` input. A future Mechanics branch adds
+  a sibling "every match" terminal node without changing Source/Filter at
+  all.
+- **Collections** (`collections.ts`) — **`encounter/spell-id-list`** /
+  **`encounter/actor-id-list`** (a literal comma-separated id list, as a
+  real connectable output so it can be shared or combined),
+  **`encounter/id-list-combine`** (Domain toggle spell/actor, Op
+  union/subtract — "contains"/membership-test isn't here, it produces a
+  boolean, not a list, and has no graph node yet), **`encounter/name-match`**
+  (Domain, Pattern, glob/regex Syntax — resolved once against the log's
+  interned unit/spell tables, not per event row), **`encounter/number-list-aggregate`**
+  (an `actor-id-list` input, Op min/max/avg/count/stddev/first/last, Reads
+  health/power, Which current/max — feeds a `number`-typed output, for the
+  `NumberExpr` `aggregate` case above).
 - **`encounter/duration`** (`duration.ts`) — a fixed length of time
   authored as Minutes/Seconds widgets (e.g. "5 minutes" for an enrage
   timer). An `interval`-typed output that plugs into a Time Math node.
@@ -382,8 +484,11 @@ buildable in the editor already evaluates:
   directly, "Phase 2 starts" or another trigger's `after` input, with no
   `EncounterConfig.triggers`/`ref` indirection needed for a simple
   chained fight structure. Matches "every phase gets its own mechanic
-  entries" above — repeated phases are separate nodes, not one reused. No
-  `mechanics` input yet (no mechanic node types exist).
+  entries" above — repeated phases are separate nodes, not one reused.
+  Also has a growable `mechanics` input list (same variadic pattern as
+  Phase List's `phase` inputs, slot type `mechanic`) — always compiles to
+  `[]` today, no Mechanic node type exists yet to populate it (see the
+  `mechanic` slot-type row in the value-contracts table above).
 - **`encounter/phase-list`** (`phase-list.ts`) — the ordered collection a
   phase graph is built into: each numbered `phase`-typed input holds one
   Phase node, slot order is phase order. Always keeps one trailing empty
@@ -448,3 +553,15 @@ mechanics half below still entirely unbuilt).
   input, not the runtime engine or its frontend payload.
 - Where the standard mechanic-kind library's code lives (in-repo vs a
   separate package importable from `custom` modules) — undecided.
+- `FilterSpec`'s `role` case has no real data behind it yet -- currently a
+  documented no-op (matches everything). Needs `COMBATANT_INFO` spec-id
+  data (`src/types.ts`'s `CombatantSnapshot`) threaded into `EvalDeps`,
+  which today only carries interned spells/units.
+- Mechanics, Views/Reports, Templates, and the Latch primitive
+  (`encounter-config-v2.md` §8/§10/§11/§12) are designed but not built --
+  `PhaseDef.mechanics`/`EncounterConfig.globalMechanics` and Phase/
+  Encounter Info's growable `mechanic`-typed input lists exist as scaffold
+  for the first of these, always compiling to `[]` for now.
+- App-global (Settings-managed) Sources (`encounter-config-v2.md` §5 level
+  2) and Lifetime/lifecycle + Spawn detection (§6) are noted future
+  directions, not designed.

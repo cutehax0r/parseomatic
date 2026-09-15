@@ -6,8 +6,6 @@
 import { LiteGraph } from "@comfyorg/litegraph";
 import { EncounterInfoNode } from "./info";
 import { EncounterStartTriggerNode, EncounterEndTriggerNode } from "./trigger";
-import { CastStartTriggerNode, CastSuccessTriggerNode } from "./cast-trigger";
-import { AuraAppliedTriggerNode, AuraRemovedTriggerNode } from "./aura-trigger";
 import { PhaseNode } from "./phase";
 import { PhaseListNode } from "./phase-list";
 import { DurationNode } from "./duration";
@@ -23,18 +21,27 @@ import {
   ThresholdTriggerNode,
 } from "./number";
 import { CommentNode } from "./comment";
+import { CastsSourceNode, AurasSourceNode, DeathsSourceNode, InterruptsSourceNode, EventStreamFirstNode } from "./sources";
+import {
+  FilterByActorNode,
+  FilterBySpellNode,
+  FilterByAuraStateNode,
+  FilterByPositionNode,
+  FilterByRoleNode,
+} from "./filters";
+import { SpellIdListNode, ActorIdListNode, IdListCombineNode, NameMatchNode, NumberListAggregateNode } from "./collections";
 
 export * from "./info";
 export * from "./trigger";
-export * from "./spell-filter-trigger";
-export * from "./cast-trigger";
-export * from "./aura-trigger";
 export * from "./phase";
 export * from "./phase-list";
 export * from "./duration";
 export * from "./time-math";
 export * from "./number";
 export * from "./comment";
+export * from "./sources";
+export * from "./filters";
+export * from "./collections";
 
 let registered = false;
 
@@ -44,10 +51,6 @@ export function registerEncounterNodeTypes(): void {
   LiteGraph.registerNodeType("V1/info", EncounterInfoNode);
   LiteGraph.registerNodeType("V1/trigger-start", EncounterStartTriggerNode);
   LiteGraph.registerNodeType("V1/trigger-end", EncounterEndTriggerNode);
-  LiteGraph.registerNodeType("V1/cast-start", CastStartTriggerNode);
-  LiteGraph.registerNodeType("V1/cast-success", CastSuccessTriggerNode);
-  LiteGraph.registerNodeType("V1/aura-applied", AuraAppliedTriggerNode);
-  LiteGraph.registerNodeType("V1/aura-removed", AuraRemovedTriggerNode);
   LiteGraph.registerNodeType("V1/phase", PhaseNode);
   LiteGraph.registerNodeType("V1/phase-list", PhaseListNode);
   LiteGraph.registerNodeType("V1/duration", DurationNode);
@@ -61,4 +64,19 @@ export function registerEncounterNodeTypes(): void {
   LiteGraph.registerNodeType("V1/unit-death-count", UnitDeathCountNode);
   LiteGraph.registerNodeType("V1/threshold", ThresholdTriggerNode);
   LiteGraph.registerNodeType("V1/comment", CommentNode);
+  LiteGraph.registerNodeType("V2/casts", CastsSourceNode);
+  LiteGraph.registerNodeType("V2/auras", AurasSourceNode);
+  LiteGraph.registerNodeType("V2/deaths", DeathsSourceNode);
+  LiteGraph.registerNodeType("V2/interrupts", InterruptsSourceNode);
+  LiteGraph.registerNodeType("V2/first-event", EventStreamFirstNode);
+  LiteGraph.registerNodeType("V2/filter-actor", FilterByActorNode);
+  LiteGraph.registerNodeType("V2/filter-spell", FilterBySpellNode);
+  LiteGraph.registerNodeType("V2/filter-aura-state", FilterByAuraStateNode);
+  LiteGraph.registerNodeType("V2/filter-position", FilterByPositionNode);
+  LiteGraph.registerNodeType("V2/filter-role", FilterByRoleNode);
+  LiteGraph.registerNodeType("V2/spell-id-list", SpellIdListNode);
+  LiteGraph.registerNodeType("V2/actor-id-list", ActorIdListNode);
+  LiteGraph.registerNodeType("V2/id-list-combine", IdListCombineNode);
+  LiteGraph.registerNodeType("V2/name-match", NameMatchNode);
+  LiteGraph.registerNodeType("V2/number-list-aggregate", NumberListAggregateNode);
 }

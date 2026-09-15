@@ -41,3 +41,13 @@ export interface TimeRange {
  *  TimeRange, in slot order. Carried by the "phases"-typed connection
  *  from a Phase List node into Encounter Info. */
 export type PhaseTimeline = TimeRange[];
+
+/** A resolved spell-id-list / actor-id-list (v2 doc §4) -- the domain tag
+ *  (spell vs. actor) is a compile-time/graph-slot distinction only; both
+ *  resolve to the same plain id array at runtime. */
+export type ResolvedCollection = number[];
+
+/** A resolved `BooleanExpr` (v2 doc §1) -- "is this true right now,"
+ *  evaluated at one instant, as opposed to `ResolvedMoment`'s "the instant
+ *  this became true." */
+export type ResolvedBoolean = boolean;

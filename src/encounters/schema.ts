@@ -2,9 +2,25 @@
 // per (encounterId, difficulty) pair, loaded from <app data dir>/encounters/
 // or a plugin's encounters/ subtree.
 //
-// DRAFT: the Trigger union and MechanicKind list are a first pass off one
-// encounter's worth of examples (docs/encounter-config.md). Expect
-// renames and additions once checked against more fights/logs.
+// v2 (docs/encounter-config-v2.md, docs/encounter-config-v2-nodes.md):
+// replaces v1's fixed castStart/castSuccess/auraApplied/auraRemoved/
+// unitSpawn/unitDied/stackCount trigger kinds with one generic `query`
+// trigger, authored via a Source->Filter chain that compiles to
+// `src/ui/query.ts`'s QuerySpec shape (v2 doc §6). `schemaVersion: 2` is a
+// breaking change from v1 -- no migration, no back-compat shim (v1's
+// problems were bad enough to justify burning it down, per the design
+// doc's own framing).
+//
+// DRAFT: still a first pass off a handful of worked examples. Expect
+// renames and additions once checked against more fights/logs. Mechanics
+// (MechanicDef/MechanicKind), Views/Templates, and the Latch primitive are
+// explicitly not part of this pass -- see docs/encounter-config-v2.md's
+// "Explicitly deferred" section. `PhaseDef.mechanics`/
+// `EncounterConfig.globalMechanics` exist as real, graph-wired slots
+// (mechanics can be phase-scoped or global, never owned by exactly one
+// phase -- v2 doc §10) so the Mechanic node type can plug into them
+// without reshaping Phase/Info again once it exists; they always compile
+// to `[]` today since no Mechanic node type ships yet.
 
 export type Difficulty = "lfr" | "normal" | "heroic" | "mythic";
 
@@ -26,7 +42,7 @@ export function difficultyFromId(difficultyId: number): Difficulty | null {
 }
 
 export interface EncounterConfig {
-  schemaVersion: 1;
+  schemaVersion: 2;
   /** The real WoW encounter id (from the log's ENCOUNTER_START event).
    *  Also *is* the file's name (`<encounterId>.<difficulty>.json` --
    *  "Matching a log encounter" below) -- kept here too so the value
@@ -49,7 +65,20 @@ export interface EncounterConfig {
    *  would produce the same value twice, and loading that back would
    *  reconstruct two duplicate node trees instead of one shared node. */
   triggers?: Record<string, Trigger>;
+  /** Named, config-local (this file only -- v2 doc §5 level 1)
+   *  collections, referenced by `{ type: "ref", id }` from a
+   *  `CollectionExpr` elsewhere in this file. Same hoist-if-shared pattern
+   *  as `triggers`. App-global (Settings-managed) categories are a
+   *  separate, not-yet-built concept (v2 doc §5 level 2) -- not this. */
+  collections?: Record<string, CollectionExpr>;
   phases: PhaseDef[];
+  /** Mechanic ids (keys into `mechanics`) active for the whole encounter,
+   *  regardless of phase -- e.g. Lost Explorers' "keep 2 of 3 turtles
+   *  apart" positioning rule, which holds no matter which turtle happens
+   *  to be empowered (v2 doc §10). Distinct from a `PhaseDef`'s own
+   *  `mechanics` list, which is phase-scoped. Always `[]` for now -- no
+   *  Mechanic node type exists yet to populate it. */
+  globalMechanics?: string[];
   mechanics: Record<string, MechanicDef>;
   /** Free-text author notes -- Comment nodes in the graph
    *  (`src/encounters/nodes/comment.ts`), unconnected to anything and
@@ -67,16 +96,17 @@ export interface PhaseDef {
   kind: PhaseKind;
   start: Trigger;
   /** Usually omitted -- a phase normally ends where the next resolvable
-   *  phase starts (src/encounters/evaluate.ts scans forward through
-   *  `phases` for the first one whose `start` actually resolves, not
-   *  just the very next array entry -- so mutually-exclusive named
-   *  phases, e.g. a council fight's "King" / "Queen" / "Prince" phases
-   *  where only one ever fires, don't need `phases` to be in strict
-   *  chronological order). Only needed for the last resolvable phase of
-   *  an encounter (end = ENCOUNTER_END) or another case with nothing
-   *  after it to imply an end. */
+   *  phase starts. `src/encounters/evaluate.ts` computes this globally --
+   *  the soonest *any other* phase's start that occurs strictly after this
+   *  phase's own start, not just the next array entry -- so mutually
+   *  exclusive named phases (a council fight's "King"/"Queen"/"Prince", or
+   *  Lost Explorers' three turtles, any of which can activate first) don't
+   *  need to sit in `phases` in chronological order. Only needed for the
+   *  last resolvable phase of an encounter (end = ENCOUNTER_END) or
+   *  another case with nothing after it to imply an end. */
   end?: Trigger;
-  /** Mechanic ids (keys into EncounterConfig.mechanics) active in this phase. */
+  /** Mechanic ids (keys into EncounterConfig.mechanics) active while this
+   *  phase is active. Always `[]` for now -- see the module comment. */
   mechanics: string[];
 }
 
@@ -98,13 +128,12 @@ export type MechanicKind =
   | "custom";
 
 /** Mixed into every "search the log for the next occurrence" Trigger
- *  variant (`castStart`, `castSuccess`, `auraApplied`, `auraRemoved`,
- *  `threshold`) -- one named place for what `after` means, so a future
- *  search-based trigger kind gets it by intersecting this instead of
- *  retyping the field. Deliberately *not* mixed into `combatStart`/
- *  `combatEnd`/`timer`/`offset`/`ref`: those resolve to a fixed instant
- *  or a pure computation rather than searching, so "start searching after
- *  X" doesn't apply to them.
+ *  variant (`query`, `threshold`) -- one named place for what `after`
+ *  means, so a future search-based trigger kind gets it by intersecting
+ *  this instead of retyping the field. Deliberately *not* mixed into
+ *  `combatStart`/`combatEnd`/`timer`/`offset`/`ref`: those resolve to a
+ *  fixed instant or a pure computation rather than searching, so "start
+ *  searching after X" doesn't apply to them.
  *
  *  Resolves another Trigger first and only looks for a match strictly
  *  later than it -- for a repeating ability, "the *second* time this
@@ -116,39 +145,90 @@ export interface WithAfter {
   after?: Trigger;
 }
 
+/** A kind-scoped event stream (v2 doc §6) -- the base of a Source->Filter
+ *  chain, before any `FilterSpec` narrows it. Window is never authored
+ *  here: it's always implicit, either the whole encounter or (for a
+ *  Source nested inside a Phase's subgraph) that phase's own span --
+ *  resolved by the graph/compiler, not part of this JSON shape at all. */
+export type SourceSpec =
+  | { kind: "casts"; mode: "start" | "success" }
+  | { kind: "auras"; mode: "applied" | "removed" }
+  /** `mode` picks which of the three log kinds counts -- death and
+   *  despawn are semantically distinct events, but selected on this one
+   *  Source's parameter, not as separate Source kinds (v2 doc §6,
+   *  decided). */
+  | { kind: "deaths"; mode: "died" | "destroyed" | "dissipates" }
+  | { kind: "interrupts" };
+
+/** Narrows a Source's event stream by actor/spell collection membership,
+ *  aura state, position, or role (v2 doc §7 -- a real family of filter
+ *  kinds, not one catch-all). Chainable: a `query` Trigger's `filters` is
+ *  applied in order, each one further narrowing what the previous left. */
+export type FilterSpec =
+  | { type: "actor"; ids: ActorIdListExpr }
+  | { type: "spell"; ids: SpellIdListExpr }
+  /** Whether the row's unit has (or lacks) a buff/debuff matching one of
+   *  `spellIds` *at the row's own timestamp* -- resolved client-side in
+   *  `evaluate.ts` as a fold over that unit's own apply/remove timeline
+   *  (the same "latest known value" shape as `resolveThreshold`), not
+   *  pushed into `query.rs` -- "does unit U have aura A at time T" isn't a
+   *  per-row column comparison. */
+  | { type: "auraState"; spellIds: SpellIdListExpr; has: boolean }
+  /** Point + radius only (no polygon) -- `src-tauri/src/query.rs`'s
+   *  `Field::Position`/`Op::WithinRadius`. */
+  | { type: "position"; x: number; y: number; radius: number }
+  /** Backed by `src/format.ts`'s existing `TANK_SPECS`/`HEALER_SPECS`/
+   *  `RANGED_DPS_SPECS` -- no new detection, just a node wrapping existing
+   *  data (v2 doc §10). */
+  | { type: "role"; roles: Array<"tank" | "healer" | "ranged"> };
+
+/** A domain-tagged, connectable "list of ids" (v2 doc §4) -- generalizes
+ *  v1's inline `spellIds`/`npcIds` arrays into a real graph value.
+ *  `SpellIdListExpr`/`ActorIdListExpr` are structurally identical but kept
+ *  as two distinct TS types (not one `CollectionExpr<T>`) so a wrong-kind
+ *  hookup (an actor list plugged into a spell-id input) is a type error at
+ *  the point the graph compiles a chain, not just a runtime surprise. */
+export type CollectionExpr =
+  | { type: "literal"; ids: number[] }
+  /** One generic combinator (union/subtract) rather than a node per
+   *  operation (v2 doc §4, decided) -- membership-test ("contains") is a
+   *  `BooleanExpr`, not a `CollectionExpr`, since it doesn't produce a
+   *  list. */
+  | { type: "combine"; op: "union" | "subtract"; a: CollectionExpr; b: CollectionExpr }
+  /** Resolved once against the log's own interned unit/spell tables to a
+   *  concrete id list -- not a per-event-row string comparison (v2 doc
+   *  §17). Glob is the recommended default; regex for power users. */
+  | { type: "namePattern"; pattern: string; syntax: "glob" | "regex" }
+  /** Points at `EncounterConfig.collections[id]` -- config-local sharing,
+   *  same hoist-if-shared/`ref` pattern as `Trigger`'s `EncounterConfig.triggers`. */
+  | { type: "ref"; id: string };
+
+export type SpellIdListExpr = CollectionExpr;
+export type ActorIdListExpr = CollectionExpr;
+
 export type Trigger =
   | { type: "combatStart" }
   | { type: "combatEnd" }
-  /** Fires on the first SPELL_CAST_START / SPELL_CAST_SUCCESS matching
-   *  any id in `spellIds`, optionally restricted to a caster in
-   *  `sourceNpcIds` (omitted/empty = any source). Both take more than one
-   *  entry so one trigger covers "any of these bosses casts any of these
-   *  spells" (a council fight's phase-change condition) as well as the
-   *  single-spell/single-caster case (a one-element list). See
-   *  `WithAfter` for the optional ordering constraint. */
-  | ({ type: "castStart"; spellIds: number[]; sourceNpcIds?: number[] } & WithAfter)
-  | ({ type: "castSuccess"; spellIds: number[]; sourceNpcIds?: number[] } & WithAfter)
-  /** Fires on the first SPELL_AURA_APPLIED / SPELL_AURA_REMOVED matching
-   *  any id in `spellIds`, optionally restricted to a caster in
-   *  `sourceNpcIds` (omitted/empty = any source) -- same "any of these"
-   *  semantics as `castStart`/`castSuccess` above. `auraRemoved` is
-   *  useful as an exact alternative to an `offset` guess for a channeled
-   *  ability's real end (a self-buff on the caster for the channel's
-   *  duration, if one exists, ends exactly when the channel does). */
-  | ({ type: "auraApplied"; spellIds: number[]; sourceNpcIds?: number[] } & WithAfter)
-  | ({ type: "auraRemoved"; spellIds: number[]; sourceNpcIds?: number[] } & WithAfter)
-  | { type: "stackCount"; spellId: number; atLeast: number }
-  | { type: "unitSpawn"; npcIds: number[] }
-  | { type: "unitDied"; npcIds: number[] }
+  /** Resolves to the first event's timestamp from a Source->Filter chain
+   *  (v2 doc §6) -- replaces v1's `castStart`/`castSuccess`/`auraApplied`/
+   *  `auraRemoved` (four near-identical trigger kinds) with one generic
+   *  shape that compiles straight to `query.rs`'s QuerySpec: `source`
+   *  becomes the base `kind` clause, each `filters` entry becomes an
+   *  additional `where` clause (or, for `auraState`, a client-side
+   *  post-filter -- see `FilterSpec`). See `WithAfter` for the optional
+   *  ordering constraint. `window`, when present, scopes the search to
+   *  another named phase's own resolved span (e.g. "starts on an
+   *  interrupt during Phase 2") instead of the whole encounter -- set when
+   *  a Source node's "window" input is wired to a Phase node's `phase`
+   *  output (sources.ts); omitted defaults to the whole encounter. */
+  | ({ type: "query"; source: SourceSpec; filters: FilterSpec[]; window?: { phaseId: string } } & WithAfter)
   /** Fires at the first point where `value op threshold` holds, scanning
    *  the real log for whatever `NumberExpr`s `value`/`threshold` actually
    *  reference (e.g. a unit's health%, or a fixed number) -- see
-   *  `NumberExpr` below and src/encounters/evaluate.ts. Supersedes the
-   *  narrower single-purpose `healthPct` this replaced: `threshold` with
-   *  a `unitHealthCurrent`/`unitHealthMax` ratio on one side and a
-   *  `numberValue` on the other covers that case, plus unit-vs-unit
-   *  comparisons ("boss A drops 10% under boss B") a fixed-field trigger
-   *  couldn't. */
+   *  `NumberExpr` below and src/encounters/evaluate.ts. A boss's HP%/power
+   *  condition is a genuinely different authoring shape from an event
+   *  stream (there's no "cast" to filter), so this stays a separate,
+   *  parallel path from `query` rather than being folded into it. */
   | ({
       type: "threshold";
       value: NumberExpr;
@@ -169,8 +249,8 @@ export type Trigger =
   | { type: "ref"; id: string };
 
 /** A plain numeric expression -- the "number" slot type's JSON shape,
- *  parallel to `Trigger`'s "moment" one. Only ever appears nested inside
- *  a `threshold` Trigger today (`value`/`threshold`), not standalone or
+ *  parallel to `Trigger`'s "moment" one. Only ever appears nested inside a
+ *  `threshold` Trigger or a `numberMath`/`aggregate` node today, not
  *  shareable via `EncounterConfig.triggers` (that dictionary is keyed for
  *  `Trigger`s only) -- a reused number expression is simply inlined
  *  twice, accepted since sharing one is expected to be rare. */
@@ -199,12 +279,35 @@ export type NumberExpr =
   /** A running count of UNIT_DIED events for a unit matching one of
    *  `npcIds` -- omitted/empty means any unit's death counts (e.g. "this
    *  many players have died"). Paired with a `threshold` trigger's
-   *  `equal` op for "N adds have died" / "N players have died" -- there's
-   *  no equivalent *spawn* counter yet (`unitSpawn` above has no
-   *  evaluator case: WoW's combat log has no reliable universal "this
-   *  unit just appeared" event to detect it from). */
+   *  `equal` op for "N adds have died" / "N players have died". */
   | { type: "unitDeathCount"; npcIds?: number[] }
-  | { type: "numberMath"; a: NumberExpr; op: "+" | "-" | "*" | "/"; b: NumberExpr };
+  | { type: "numberMath"; a: NumberExpr; op: "+" | "-" | "*" | "/"; b: NumberExpr }
+  /** The generic collection-aggregate node (v2 doc §4/§7): one flexible
+   *  reduction over a `NumberListExpr` rather than a node per operation
+   *  (min/max/count/any/all/positioning-style checks all fold into this
+   *  plus a comparison afterward). */
+  | { type: "aggregate"; op: NumberListAggregateOp; of: NumberListExpr };
+
+export type NumberListAggregateOp = "min" | "max" | "avg" | "count" | "stddev" | "first" | "last";
+
+/** A collection of *values*, not ids (v2 doc §4) -- e.g. "each raid
+ *  member's current health." Only leaf shape needed so far: one
+ *  `NumberExpr`-shaped read (health/power) applied per member of an
+ *  `ActorIdListExpr`, rather than one npcId at a time. */
+export type NumberListExpr =
+  | { type: "perActorHealth"; actors: ActorIdListExpr; which: "current" | "max" }
+  | { type: "perActorPower"; actors: ActorIdListExpr; which: "current" | "max"; powerType: number };
+
+/** The "is this true right now" primitive (v2 doc §1/catalog §1, new in
+ *  v2 -- v1 has no boolean slot type, every condition resolves to a moment
+ *  or nothing). Deliberately minimal for this pass: just enough for
+ *  `FilterSpec`'s position/role/auraState checks to compose internally.
+ *  No consumer needs a *standalone* boolean output yet -- that's the
+ *  Latch/Mechanics primitive's job, a later branch -- so this isn't wired
+ *  up as a first-class graph node with its own output slot yet. */
+export type BooleanExpr =
+  | { type: "collectionContains"; ids: CollectionExpr; test: CollectionExpr }
+  | { type: "numberCompare"; a: NumberExpr; op: "gt" | "lt" | "gte" | "lte" | "eq" | "ne"; b: NumberExpr };
 
 // Kind-specific `params` shapes -- not yet enforced in MechanicDef.params
 // (kept as Record<string, unknown> until a loader validates by `kind`).

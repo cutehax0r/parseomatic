@@ -1,5 +1,11 @@
 # Encounter config v2 — design notes
 
+**Foundations implemented in `docs/encounter-config.md`.** This doc is
+kept as historical design rationale — read `docs/encounter-config.md` for
+what the schema/evaluator/editor actually do today. Mechanics, Views/
+Reports, Templates, and the Latch primitive below are still design-only,
+not built.
+
 Planning notes for a ground-up rework of the encounter-config subsystem
 (`docs/encounter-config.md`, `src/encounters/**`). v1 is functional but has
 two problems serious enough to justify burning it down rather than patching

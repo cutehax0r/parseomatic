@@ -1,5 +1,10 @@
 # Encounter config v2 — node catalog
 
+**Foundations implemented in `docs/encounter-config.md`'s "Graph node
+types" section.** This doc is kept as historical design rationale for the
+node vocabulary that shipped (and the parts — Mechanics, Templates, Latch —
+that didn't yet).
+
 A working list of the specific graph nodes v2 needs, organized by what kind
 of thing each one is. Companion to `docs/encounter-config-v2.md` (the design
 rationale) — this doc is the concrete vocabulary that design implies, not a

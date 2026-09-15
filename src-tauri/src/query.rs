@@ -68,7 +68,12 @@ impl QuerySpec {
 /// `current_power`/`max_power` describe on that same row (`Enum.PowerType`
 /// -- a unit with more than one resource, e.g. a mage's mana and arcane
 /// charges, reports whichever one a given line is about, so a power
-/// trigger has to filter to one type, not just `posUnit`).
+/// trigger has to filter to one type, not just `posUnit`). `Position` is
+/// only usable with `Op::WithinRadius` (`docs/encounter-config-v2.md`
+/// §6/§17's Filter-by-position/area, point+radius) -- it reads the row's
+/// own `pos_x`/`pos_y` directly rather than going through `row_value`,
+/// since those are `f32` and `Val` has no float variant; using it with any
+/// other `Op` never matches (see `passes`).
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum Field {
@@ -85,6 +90,7 @@ pub enum Field {
     Crit,
     PosUnit,
     PowerType,
+    Position,
 }
 
 impl Field {
@@ -103,6 +109,7 @@ impl Field {
             Field::PowerType => "powerType",
             Field::Amount => "amount",
             Field::Crit => "crit",
+            Field::Position => "position",
         }
     }
 }
@@ -121,6 +128,11 @@ pub enum Op {
     /// a string-valued field never matches.
     InRange,
     OutOfRange,
+    /// `Field::Position` only. `value` is `[x, y, radiusSq]` -- matches a
+    /// row whose `pos_x`/`pos_y` is within `radiusSq` (squared, so no
+    /// per-row `sqrt`) of `(x, y)`. A row with no position (`pos_x` is
+    /// `NAN`) never matches.
+    WithinRadius,
 }
 
 #[derive(Deserialize)]
@@ -235,6 +247,14 @@ fn row_value(field: Field, row: usize, events: &EventStore, tables: &InternTable
         Field::Crit => Val::Int((events.flags[row] & FLAG_CRIT != 0) as i64),
         Field::PosUnit => Val::Int(unit_id(events.pos_unit[row])),
         Field::PowerType => Val::Int(events.power_type[row]),
+        // Never actually read: `passes` special-cases `Field::Position`
+        // before calling `row_value` (it needs `pos_x`/`pos_y` as `f32`,
+        // which `Val` can't hold). Kept here only so this match stays
+        // exhaustive against a `Field::Position` reaching row_value some
+        // other way (e.g. `group_by`), which is a caller bug, not
+        // something to matter -- resolving to a value equal to `PosUnit`
+        // when no unit is set is an arbitrary-but-harmless placeholder.
+        Field::Position => Val::Int(-1),
     }
 }
 
@@ -273,6 +293,9 @@ fn effective_target_kind(row: usize, events: &EventStore, tables: &InternTables)
 }
 
 fn passes(clause: &FilterClause, row: usize, events: &EventStore, tables: &InternTables) -> bool {
+    if matches!(clause.op, Op::WithinRadius) {
+        return within_radius(row, events, &clause.value);
+    }
     let v = row_value(clause.field, row, events, tables);
     match clause.op {
         Op::Eq => json_eq(&v, &clause.value),
@@ -288,7 +311,28 @@ fn passes(clause: &FilterClause, row: usize, events: &EventStore, tables: &Inter
         Op::Gte => cmp(&v, &clause.value).map(|o| o.is_ge()).unwrap_or(false),
         Op::InRange => in_range(&v, &clause.value),
         Op::OutOfRange => !in_range(&v, &clause.value),
+        Op::WithinRadius => unreachable!("handled above"),
     }
+}
+
+/// `Op::WithinRadius` -- `j` is `[x, y, radiusSq]`. Reads the row's own
+/// `pos_x`/`pos_y` directly (bypassing `row_value`/`Val`, which has no
+/// float variant) and compares squared distance against `radiusSq` so no
+/// per-row `sqrt` is needed. `false` for a malformed `value` or a row with
+/// no position (`pos_x` is `NAN`, `event.rs`'s existing sentinel --
+/// `NAN`'s comparisons are always `false`, so this falls out naturally).
+fn within_radius(row: usize, events: &EventStore, j: &Value) -> bool {
+    let Some(bounds) = j.as_array() else { return false };
+    let (Some(x), Some(y), Some(radius_sq)) = (
+        bounds.first().and_then(Value::as_f64),
+        bounds.get(1).and_then(Value::as_f64),
+        bounds.get(2).and_then(Value::as_f64),
+    ) else {
+        return false;
+    };
+    let dx = events.pos_x[row] as f64 - x;
+    let dy = events.pos_y[row] as f64 - y;
+    dx * dx + dy * dy <= radius_sq
 }
 
 /// `j` as `[lo, hi]` (inclusive) -- `false` for a non-numeric `v`, a
@@ -604,8 +648,39 @@ mod tests {
         AggregateClause { op: AggOp::Sum, field: Some(Field::Amount), as_: as_.into(), where_ }
     }
 
+    fn count_clause(as_: &str, where_: Vec<FilterClause>) -> AggregateClause {
+        AggregateClause { op: AggOp::Count, field: None, as_: as_.into(), where_ }
+    }
+
     fn kind_in(kinds: &[&str]) -> FilterClause {
         FilterClause { field: Field::Kind, op: Op::In, value: serde_json::json!(kinds) }
+    }
+
+    /// Same shape as `spell_damage`, but with a real (non-zero) position in
+    /// the advanced block's field 15/16 (`docs/combat-log-format.md` §5).
+    fn spell_damage_at(ts: &str, amount: i64, x: f64, y: f64) -> String {
+        format!(
+            "{ts}  SPELL_DAMAGE,Player-1-00000001,\"Mage-Realm-US\",0x511,0x0,\
+             Creature-0-0-0-0-1-0,\"Add\",0xa48,0x0,1449,\"Arcane Explosion\",0x40,\
+             Player-1-00000001,0000000000000000,100,100,0,0,0,0,0,0,0,0,100,0,{x},{y},0,0,0,\
+             {amount},0,64,0,0,0,0,nil,nil,nil,AOE"
+        )
+    }
+
+    /// A basic (non-advanced) line -- no position at all (`pos_x` is `NAN`).
+    fn cast_start_no_position(ts: &str) -> String {
+        format!(
+            "{ts}  SPELL_CAST_START,Player-60-0EAB9EC3,\"Jmackascends-Stormrage-US\",0x512,0x80000000,\
+             0000000000000000,nil,0x80000000,0x80000000,188196,\"Lightning Bolt\",0x8"
+        )
+    }
+
+    fn within_radius(x: f64, y: f64, radius: f64) -> FilterClause {
+        FilterClause {
+            field: Field::Position,
+            op: Op::WithinRadius,
+            value: serde_json::json!([x, y, radius * radius]),
+        }
     }
 
     #[test]
@@ -687,5 +762,47 @@ mod tests {
         // its own owner).
         assert!(r["sourceOwner"].is_i64());
         assert_eq!(r["sourceOwner"], r["sourceUnit"]);
+    }
+
+    #[test]
+    fn within_radius_matches_inclusive_and_excludes_outside() {
+        // Row 0 is exactly `radius` away (on the boundary -- inclusive);
+        // row 1 is just past it.
+        let l0 = spell_damage_at("4/14/2026 19:00:00.000-6", 100, 100.0, 100.0);
+        let l1 = spell_damage_at("4/14/2026 19:00:01.000-6", 200, 106.0, 100.0);
+        let (_, tables, store) = store_from(&[&l0, &l1]);
+        let spec = QuerySpec {
+            start_ms: store.timestamp_ms[0],
+            end_ms: store.timestamp_ms[1],
+            where_: vec![],
+            group_by: vec![],
+            aggregate: vec![count_clause("n", vec![within_radius(100.0, 100.0, 5.0)])],
+            bucket: None,
+            limit: None,
+            offset: None,
+        };
+        let rows = run_aggregate(&spec, &store, &tables);
+        assert_eq!(rows[0]["n"].as_f64().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn within_radius_never_matches_a_row_with_no_position() {
+        let l0 = cast_start_no_position("4/14/2026 19:00:00.000-6");
+        let (_, tables, store) = store_from(&[&l0]);
+        assert!(store.pos_x[0].is_nan());
+        let spec = QuerySpec {
+            start_ms: store.timestamp_ms[0],
+            end_ms: store.timestamp_ms[0],
+            where_: vec![],
+            group_by: vec![],
+            // A huge radius around the origin would swallow almost any
+            // real position -- still must not match a position-less row.
+            aggregate: vec![count_clause("n", vec![within_radius(0.0, 0.0, 1_000_000.0)])],
+            bucket: None,
+            limit: None,
+            offset: None,
+        };
+        let rows = run_aggregate(&spec, &store, &tables);
+        assert_eq!(rows[0]["n"].as_f64().unwrap(), 0.0);
     }
 }

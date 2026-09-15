@@ -14,7 +14,9 @@ import { invoke } from "@tauri-apps/api/core";
 // `powerType` is which resource current/max power describe on that row
 // (Enum.PowerType, src/encounters/power-type.ts) -- a unit with more than
 // one resource reports whichever one a given line is about, so a power
-// series has to filter to one type, not just `posUnit`.
+// series has to filter to one type, not just `posUnit`. `position` is
+// only usable with the `withinRadius` op (below) -- it reads the row's own
+// x/y directly rather than being a plain scalar column.
 export type QueryField =
   | "time"
   | "kind"
@@ -28,10 +30,25 @@ export type QueryField =
   | "amount"
   | "crit"
   | "posUnit"
-  | "powerType";
+  | "powerType"
+  | "position";
 
-// "inRange"/"outOfRange": value is [lo, hi], inclusive both ends, numeric fields only.
-export type FilterOp = "eq" | "ne" | "in" | "lt" | "lte" | "gt" | "gte" | "inRange" | "outOfRange";
+// "inRange"/"outOfRange": value is [lo, hi], inclusive both ends, numeric
+// fields only. "withinRadius": `field` must be "position", `value` is
+// `[x, y, radiusSq]` (squared, so no per-row sqrt) -- matches a row whose
+// pos_x/pos_y is within radiusSq of (x, y); a row with no position never
+// matches (src-tauri/src/query.rs's `within_radius`).
+export type FilterOp =
+  | "eq"
+  | "ne"
+  | "in"
+  | "lt"
+  | "lte"
+  | "gt"
+  | "gte"
+  | "inRange"
+  | "outOfRange"
+  | "withinRadius";
 
 export interface FilterClause {
   field: QueryField;
