@@ -54,10 +54,48 @@ abstract class FilterByIdsNode extends FilterNode {
   }
 }
 
+export const FILTER_BY_ACTOR_WHICH = ["auto", "source", "target"] as const;
+export type FilterByActorWhich = (typeof FILTER_BY_ACTOR_WHICH)[number];
+
+interface FilterByActorValues extends FilterByIdsValues {
+  /** Which side of the event this filters -- "auto" infers it from the
+   *  Source kind (the caster for Casts/Auras/Interrupts, the victim for
+   *  Deaths, per `evaluate.ts`'s `actorFieldForSource`), matching v1's
+   *  only behavior; "source"/"target" overrides that, e.g. filtering a
+   *  Casts Source by *target* ("boss casts X on the current tank") rather
+   *  than by caster. */
+  which: FilterByActorWhich;
+}
+
+/** Same `event-stream` in/out + ids-with-fallback-widget shape as every
+ *  other Filter, plus the Which toggle above -- kept as one node with a
+ *  toggle rather than split into "Filter by Source Actor"/"Filter by
+ *  Target Actor," matching this project's existing convention of one
+ *  node + a Mode toggle over near-identical node types (Casts/Auras/
+ *  Deaths, sources.ts). */
 export class FilterByActorNode extends FilterByIdsNode {
   static override title = "Filter by Actor";
+
+  declare properties: FilterByActorValues;
+
   constructor() {
     super("Filter by Actor", "actor", "Actor (NPC) IDs");
+    this.properties = { ids: [], which: "auto" };
+    this.addWidget(
+      "combo",
+      "Which",
+      "auto",
+      (v: string) => {
+        this.properties.which = v as FilterByActorWhich;
+      },
+      { values: FILTER_BY_ACTOR_WHICH as unknown as string[] },
+    );
+    this.size = [220, 110];
+  }
+
+  override setValues(values: FilterByActorValues): void {
+    this.properties = { ids: values.ids, which: values.which };
+    syncWidgets(this, [formatIdList(values.ids), values.which]);
   }
 }
 

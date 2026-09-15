@@ -165,7 +165,16 @@ export type SourceSpec =
  *  kinds, not one catch-all). Chainable: a `query` Trigger's `filters` is
  *  applied in order, each one further narrowing what the previous left. */
 export type FilterSpec =
-  | { type: "actor"; ids: ActorIdListExpr }
+  /** `which` picks which side of the event this checks: "auto" infers it
+   *  from the Source kind (the caster for Casts/Auras/Interrupts, the
+   *  victim for Deaths -- `evaluate.ts`'s `actorFieldForSource`), matching
+   *  every Source's only behavior before this field existed;
+   *  "source"/"target" overrides that explicitly (e.g. filtering a Casts
+   *  Source by *target* -- "boss casts X on the current tank" -- rather
+   *  than by caster). Omitted is equivalent to "auto". One node with a
+   *  toggle rather than two node types, matching how Casts/Auras/Deaths
+   *  each collapse a mode choice into one node (v2 doc §6). */
+  | { type: "actor"; ids: ActorIdListExpr; which?: "auto" | "source" | "target" }
   | { type: "spell"; ids: SpellIdListExpr }
   /** Whether the row's unit has (or lacks) a buff/debuff matching one of
    *  `spellIds` *at the row's own timestamp* -- resolved client-side in
@@ -216,12 +225,17 @@ export type Trigger =
    *  becomes the base `kind` clause, each `filters` entry becomes an
    *  additional `where` clause (or, for `auraState`, a client-side
    *  post-filter -- see `FilterSpec`). See `WithAfter` for the optional
-   *  ordering constraint. `window`, when present, scopes the search to
-   *  another named phase's own resolved span (e.g. "starts on an
-   *  interrupt during Phase 2") instead of the whole encounter -- set when
-   *  a Source node's "window" input is wired to a Phase node's `phase`
-   *  output (sources.ts); omitted defaults to the whole encounter. */
-  | ({ type: "query"; source: SourceSpec; filters: FilterSpec[]; window?: { phaseId: string } } & WithAfter)
+   *  ordering constraint. `window`, when present, scopes the search to an
+   *  arbitrary `start`/`end` range instead of the whole encounter -- both
+   *  are plain `Trigger`s, inlined the same way `offset`'s `from` is (and
+   *  hoisted into `EncounterConfig.triggers` if shared, same as any other
+   *  Trigger). Set when a Source node's "window" input is wired to
+   *  anything exposing "start"/"end" moment inputs -- a Phase node's
+   *  `phase` output (scoping to that phase's own span) or a standalone
+   *  Window node (an ad hoc range, e.g. "the last 30 seconds of the
+   *  pull") -- both compile identically (sources.ts, nodes/window.ts).
+   *  Omitted defaults to the whole encounter. */
+  | ({ type: "query"; source: SourceSpec; filters: FilterSpec[]; window?: { start: Trigger; end: Trigger } } & WithAfter)
   /** Fires at the first point where `value op threshold` holds, scanning
    *  the real log for whatever `NumberExpr`s `value`/`threshold` actually
    *  reference (e.g. a unit's health%, or a fixed number) -- see

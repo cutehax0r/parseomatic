@@ -57,6 +57,7 @@ import {
   UnitHealthMaxNode,
   UnitPowerCurrentNode,
   UnitPowerMaxNode,
+  WindowNode,
 } from "./nodes";
 
 /** A graph shape the compiler doesn't know how to turn into JSON --
@@ -254,7 +255,11 @@ function sourceSpecFromNode(node: LGraphNode): SourceSpec {
 
 function filterSpecFromNode(node: LGraphNode, ctx: CompileCtx): FilterSpec {
   if (node instanceof FilterByActorNode) {
-    return { type: "actor", ids: collectionFromInputOrLiteral(node, "ids", node.properties.ids, ctx) };
+    return {
+      type: "actor",
+      ids: collectionFromInputOrLiteral(node, "ids", node.properties.ids, ctx),
+      ...(node.properties.which !== "auto" ? { which: node.properties.which } : {}),
+    };
   }
   if (node instanceof FilterBySpellNode) {
     return { type: "spell", ids: collectionFromInputOrLiteral(node, "ids", node.properties.ids, ctx) };
@@ -294,15 +299,14 @@ function queryTriggerFromEventStreamFirst(node: EventStreamFirstNode, ctx: Compi
   const source = sourceSpecFromNode(current);
   const afterOrigin = originOfInput(current, "after");
   const windowOrigin = originOfInput(current, "window");
-  let window: { phaseId: string } | undefined;
+  let window: { start: Trigger; end: Trigger } | undefined;
   if (windowOrigin) {
-    if (!(windowOrigin instanceof PhaseNode)) {
-      throw new CompileError('A Source\'s "window" input must come from a Phase node.');
+    const startOrigin = originOfInput(windowOrigin, "start");
+    const endOrigin = originOfInput(windowOrigin, "end");
+    if (!startOrigin || !endOrigin) {
+      throw new CompileError(`A "${windowOrigin.title}" node feeding a Source's "window" input is missing its start/end input.`);
     }
-    if (!windowOrigin.properties.id) {
-      throw new CompileError('The Phase feeding a Source\'s "window" input needs an Id.');
-    }
-    window = { phaseId: windowOrigin.properties.id };
+    window = { start: triggerFromNode(startOrigin, ctx), end: triggerFromNode(endOrigin, ctx) };
   }
 
   return {
@@ -453,12 +457,6 @@ interface LoadCtx {
   built: Map<string, LGraphNode | null>;
   /** Same idea for `collections` ids. */
   collectionsBuilt: Map<string, LGraphNode | null>;
-  /** Every `PhaseDef.id` -> its reconstructed `PhaseNode`, built in a
-   *  first pass before any phase's start/end/window is wired, so a
-   *  Source's `window` reference can point at *any* phase (including one
-   *  defined later in `config.phases`) without a forward-reference
-   *  ordering problem. */
-  phaseNodesById: Map<string, PhaseNode>;
 }
 
 /** Reconstructs a "number"-typed subgraph from a NumberExpr -- the
@@ -603,7 +601,7 @@ function literalIdsOf(expr: CollectionExpr): number[] {
 function nodeForFilterSpec(graph: LGraph, filter: FilterSpec, ctx: LoadCtx): LGraphNode {
   if (filter.type === "actor") {
     const node = addNode<FilterByActorNode>(graph, "filter/actor");
-    node.setValues({ ids: literalIdsOf(filter.ids) });
+    node.setValues({ ids: literalIdsOf(filter.ids), which: filter.which ?? "auto" });
     connectCollectionUnlessLiteral(graph, node, "ids", filter.ids, "actor", ctx);
     return node;
   }
@@ -633,10 +631,19 @@ function nodeForFilterSpec(graph: LGraph, filter: FilterSpec, ctx: LoadCtx): LGr
  *  node -- callers that need a "moment" add one) from a `query` Trigger's
  *  `source`/`filters`, wiring `after`/`window` onto the Source node.
  *  Returns the chain's last node (the Source itself if `filters` is
- *  empty). */
+ *  empty). A `window` always reconstructs as a standalone Window node
+ *  (nodes/window.ts) with its `start`/`end` rebuilt via `nodeForTrigger` --
+ *  even when the original graph had a Phase node feeding the window, since
+ *  the compiled JSON only ever carries the inlined `start`/`end` Triggers,
+ *  not "which phase" (schema.ts's `window` doc comment). If those Triggers
+ *  were shared with a Phase's own start/end (the common case: a Source
+ *  scoped to Phase X usually reads Phase X's own boundary), `nodeForTrigger`'s
+ *  `ref` handling reconnects to the *same* already-built node instead of
+ *  duplicating it, so the reconstructed graph still visibly shares that
+ *  dependency with the Phase, just not via a direct Phase-to-Source wire. */
 function nodeForEventStreamChain(
   graph: LGraph,
-  trigger: { source: SourceSpec; filters: FilterSpec[]; after?: Trigger; window?: { phaseId: string } },
+  trigger: { source: SourceSpec; filters: FilterSpec[]; after?: Trigger; window?: { start: Trigger; end: Trigger } },
   ctx: LoadCtx,
 ): LGraphNode {
   const sourceNode = nodeForSourceSpec(graph, trigger.source);
@@ -645,9 +652,13 @@ function nodeForEventStreamChain(
     if (afterNode) afterNode.connect(0, sourceNode, "after");
   }
   if (trigger.window) {
-    const phaseNode = ctx.phaseNodesById.get(trigger.window.phaseId);
-    if (phaseNode) phaseNode.connect(0, sourceNode, "window");
-    else ctx.warnings.push({ message: `Window reference to phase "${trigger.window.phaseId}" has no matching phase -- left unconnected.` });
+    const windowNode = addNode<WindowNode>(graph, "structure/window");
+    windowNode.setValues({});
+    const startNode = nodeForTrigger(graph, trigger.window.start, ctx);
+    const endNode = nodeForTrigger(graph, trigger.window.end, ctx);
+    if (startNode) startNode.connect(0, windowNode, "start");
+    if (endNode) endNode.connect(0, windowNode, "end");
+    windowNode.connect(0, sourceNode, "window");
   }
   let current: LGraphNode = sourceNode;
   for (const filter of trigger.filters) {
@@ -715,7 +726,7 @@ function nodeForTrigger(graph: LGraph, trigger: Trigger, ctx: LoadCtx): LGraphNo
 /** Clears `graph` and rebuilds it from `config`. Returns warnings for any
  *  JSON shape it couldn't reconstruct (the load still proceeds). */
 export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarning[] {
-  const ctx: LoadCtx = { config, warnings: [], built: new Map(), collectionsBuilt: new Map(), phaseNodesById: new Map() };
+  const ctx: LoadCtx = { config, warnings: [], built: new Map(), collectionsBuilt: new Map() };
   graph.clear();
 
   const info = addNode<EncounterInfoNode>(graph, "structure/info");
@@ -730,19 +741,9 @@ export function configToGraph(graph: LGraph, config: EncounterConfig): LoadWarni
   if (config.phases.length) {
     const phaseListNode = addNode<PhaseListNode>(graph, "structure/phase-list");
 
-    // First pass: create every Phase node and register it by id, before
-    // wiring any start/end/window -- a Source's "window" input can
-    // reference any phase, including one that appears later in
-    // `config.phases` (see LoadCtx.phaseNodesById's doc comment).
-    const phaseNodes = config.phases.map((phaseDef) => {
+    config.phases.forEach((phaseDef) => {
       const phaseNode = addNode<PhaseNode>(graph, "structure/phase");
       phaseNode.setValues({ id: phaseDef.id, label: phaseDef.label, kind: phaseDef.kind });
-      if (phaseDef.id) ctx.phaseNodesById.set(phaseDef.id, phaseNode);
-      return phaseNode;
-    });
-
-    config.phases.forEach((phaseDef, i) => {
-      const phaseNode = phaseNodes[i];
       const startNode = nodeForTrigger(graph, phaseDef.start, ctx);
       if (startNode) startNode.connect(0, phaseNode, "start");
       if (phaseDef.end) {

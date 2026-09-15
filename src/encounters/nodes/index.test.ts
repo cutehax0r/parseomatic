@@ -25,7 +25,7 @@ describe("registerEncounterNodeTypes -- Add Node menu categories", () => {
   test("every other node type lands in its intended category", () => {
     registerEncounterNodeTypes();
     const expected: Record<string, string[]> = {
-      structure: ["structure/info", "structure/phase", "structure/phase-list"],
+      structure: ["structure/info", "structure/phase", "structure/phase-list", "structure/window"],
       constants: ["constants/duration", "constants/number", "constants/spell-ids", "constants/actor-ids"],
       filter: ["filter/actor", "filter/spell", "filter/aura-state", "filter/position", "filter/role", "filter/name-match"],
       calculation: [

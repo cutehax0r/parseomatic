@@ -3,11 +3,12 @@
 // compile to -- that compilation step isn't built yet, this is just the
 // graph vocabulary itself.
 
-import { LiteGraph } from "@comfyorg/litegraph";
+import { LGraphCanvas, LiteGraph } from "@comfyorg/litegraph";
 import { EncounterInfoNode } from "./info";
 import { EncounterStartTriggerNode, EncounterEndTriggerNode } from "./trigger";
 import { PhaseNode } from "./phase";
 import { PhaseListNode } from "./phase-list";
+import { WindowNode } from "./window";
 import { DurationNode } from "./duration";
 import { TimeMathNode } from "./time-math";
 import {
@@ -35,6 +36,7 @@ export * from "./info";
 export * from "./trigger";
 export * from "./phase";
 export * from "./phase-list";
+export * from "./window";
 export * from "./duration";
 export * from "./time-math";
 export * from "./number";
@@ -42,6 +44,39 @@ export * from "./comment";
 export * from "./sources";
 export * from "./filters";
 export * from "./collections";
+
+/** Top-level Add Node menu category (nodes/index.ts's registration prefix,
+ *  e.g. "filter/actor") -> one of `LGraphCanvas.node_colors`'s preset
+ *  names, purely a visual grouping cue on the canvas -- glance at a node's
+ *  color to place it in Constants/Filter/Calculation/Events/States without
+ *  reading its title. Comment (no category -- see below) gets its own
+ *  entry keyed by its bare type string instead. */
+const CATEGORY_COLORS: Record<string, keyof (typeof LGraphCanvas)["node_colors"]> = {
+  structure: "brown",
+  constants: "green",
+  filter: "purple",
+  calculation: "blue",
+  events: "red",
+  states: "cyan",
+  comment: "yellow",
+};
+
+/** Applies `CATEGORY_COLORS` to every currently-registered node type's
+ *  class -- set on the prototype (not per instance) so it's the default
+ *  every new node of that type picks up; an author can still override an
+ *  individual node's color from the canvas's own right-click "Colors"
+ *  menu without affecting the type's default. */
+function applyCategoryColors(): void {
+  for (const type in LiteGraph.registered_node_types) {
+    const cls = LiteGraph.registered_node_types[type];
+    const category = type.includes("/") ? type.slice(0, type.indexOf("/")) : type;
+    const colorName = CATEGORY_COLORS[category];
+    if (!colorName) continue;
+    const preset = LGraphCanvas.node_colors[colorName];
+    cls.prototype.color = preset.color;
+    cls.prototype.bgcolor = preset.bgcolor;
+  }
+}
 
 let registered = false;
 
@@ -53,6 +88,7 @@ export function registerEncounterNodeTypes(): void {
   LiteGraph.registerNodeType("events/encounter-end", EncounterEndTriggerNode);
   LiteGraph.registerNodeType("structure/phase", PhaseNode);
   LiteGraph.registerNodeType("structure/phase-list", PhaseListNode);
+  LiteGraph.registerNodeType("structure/window", WindowNode);
   LiteGraph.registerNodeType("constants/duration", DurationNode);
   LiteGraph.registerNodeType("calculation/time-math", TimeMathNode);
   LiteGraph.registerNodeType("states/unit-health-current", UnitHealthCurrentNode);
@@ -87,4 +123,5 @@ export function registerEncounterNodeTypes(): void {
   LiteGraph.registerNodeType("calculation/combine", IdListCombineNode);
   LiteGraph.registerNodeType("filter/name-match", NameMatchNode);
   LiteGraph.registerNodeType("calculation/aggregate", NumberListAggregateNode);
+  applyCategoryColors();
 }

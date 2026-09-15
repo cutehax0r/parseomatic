@@ -307,9 +307,10 @@ async function resolveQueryTrigger(
 
   for (const filter of trigger.filters) {
     if (filter.type === "actor") {
+      const field = filter.which === "source" ? "sourceUnit" : filter.which === "target" ? "targetUnit" : actorField;
       const indices = internSourceIndices(resolveCollectionIds(filter.ids, "actor", config, deps), deps.units);
       if (!indices) return null;
-      where.push({ field: actorField, op: "in", value: indices });
+      where.push({ field, op: "in", value: indices });
     } else if (filter.type === "spell") {
       const indices = internSpellIndices(resolveCollectionIds(filter.ids, "spell", config, deps), deps.spells);
       if (!indices) return null;
@@ -662,61 +663,13 @@ async function resolveSearchStart(
   windowStartMs: number,
   deps: EvalDeps,
   cache: QueryCache,
-  phaseRangeCache: Map<string, Promise<TimeRange | null>>,
   combatStartMs: number,
   combatEndMs: number,
 ): Promise<number | null> {
   if (!after) return windowStartMs;
-  const afterMs = await resolveTrigger(after, config, combatStartMs, combatEndMs, deps, new Set(), cache, phaseRangeCache);
+  const afterMs = await resolveTrigger(after, config, combatStartMs, combatEndMs, deps, new Set(), cache);
   if (afterMs === null) return null;
   return Math.max(afterMs + 1, windowStartMs);
-}
-
-/** Resolves a named phase's own `{ startMs, endMs }` -- shared by
- *  `evaluatePhases`' main loop and a `query` trigger's `window` lookup
- *  (schema.ts), so "scope this Source to Phase 2's span" and "what is
- *  Phase 2's span" are the exact same computation, cached once per phase
- *  id for the life of one `evaluatePhases()` call. Cycle guard: a phase
- *  whose own start/end (transitively) depends on its own window resolves
- *  to `null` rather than looping forever -- `resolving` tracks in-flight
- *  ids across the whole call, not per top-level phase, since a window
- *  reference can jump to any phase, not just an ancestor in one linear
- *  chain. */
-async function resolvePhaseRange(
-  phaseId: string,
-  config: EncounterConfig,
-  combatStartMs: number,
-  combatEndMs: number,
-  deps: EvalDeps,
-  cache: QueryCache,
-  phaseRangeCache: Map<string, Promise<TimeRange | null>>,
-  resolving: Set<string>,
-): Promise<TimeRange | null> {
-  const cached = phaseRangeCache.get(phaseId);
-  if (cached) return cached;
-  if (resolving.has(phaseId)) return null; // cycle
-
-  const phase = config.phases.find((p) => p.id === phaseId);
-  if (!phase) return null;
-  resolving.add(phaseId);
-
-  const promise = (async (): Promise<TimeRange | null> => {
-    const startMs = await resolveTrigger(phase.start, config, combatStartMs, combatEndMs, deps, new Set(), cache, phaseRangeCache, resolving);
-    if (startMs === null) return null;
-    let endMs: number;
-    if (phase.end) {
-      const resolved = await resolveTrigger(phase.end, config, combatStartMs, combatEndMs, deps, new Set(), cache, phaseRangeCache, resolving);
-      if (resolved === null) return null;
-      endMs = resolved;
-    } else {
-      endMs = await globalNextStart(phase, startMs, config, combatStartMs, combatEndMs, deps, cache, phaseRangeCache, resolving);
-    }
-    return { startMs, endMs };
-  })();
-  phaseRangeCache.set(phaseId, promise);
-  const result = await promise;
-  resolving.delete(phaseId);
-  return result;
 }
 
 /** The soonest *any other* phase's start that occurs strictly after
@@ -736,13 +689,11 @@ async function globalNextStart(
   combatEndMs: number,
   deps: EvalDeps,
   cache: QueryCache,
-  phaseRangeCache: Map<string, Promise<TimeRange | null>>,
-  resolving: Set<string>,
 ): Promise<number> {
   const otherStarts = await Promise.all(
     config.phases
       .filter((p) => p !== phase)
-      .map((p) => resolveTrigger(p.start, config, combatStartMs, combatEndMs, deps, new Set(), cache, phaseRangeCache, resolving)),
+      .map((p) => resolveTrigger(p.start, config, combatStartMs, combatEndMs, deps, new Set(), cache)),
   );
   const laterStarts = otherStarts.filter((s): s is number => s !== null && s > ownStart);
   return laterStarts.length ? Math.min(...laterStarts) : combatEndMs;
@@ -756,8 +707,6 @@ async function resolveTrigger(
   deps: EvalDeps,
   seen: Set<string>,
   cache: QueryCache,
-  phaseRangeCache: Map<string, Promise<TimeRange | null>>,
-  resolving: Set<string> = new Set(),
 ): Promise<ResolvedMoment | null> {
   switch (trigger.type) {
     case "combatStart":
@@ -768,49 +717,27 @@ async function resolveTrigger(
       let windowStartMs = combatStartMs;
       let windowEndMs = combatEndMs;
       if (trigger.window) {
-        const range = await resolvePhaseRange(
-          trigger.window.phaseId,
-          config,
-          combatStartMs,
-          combatEndMs,
-          deps,
-          cache,
-          phaseRangeCache,
-          resolving,
-        );
-        if (!range) return null;
-        windowStartMs = range.startMs;
-        windowEndMs = range.endMs;
+        // A fresh `seen` set for each -- `window` points at a different
+        // part of the trigger graph, same reasoning as `after` below.
+        const [start, end] = await Promise.all([
+          resolveTrigger(trigger.window.start, config, combatStartMs, combatEndMs, deps, new Set(), cache),
+          resolveTrigger(trigger.window.end, config, combatStartMs, combatEndMs, deps, new Set(), cache),
+        ]);
+        if (start === null || end === null) return null;
+        windowStartMs = start;
+        windowEndMs = end;
       }
-      const searchStartMs = await resolveSearchStart(
-        trigger.after,
-        config,
-        windowStartMs,
-        deps,
-        cache,
-        phaseRangeCache,
-        combatStartMs,
-        combatEndMs,
-      );
+      const searchStartMs = await resolveSearchStart(trigger.after, config, windowStartMs, deps, cache, combatStartMs, combatEndMs);
       if (searchStartMs === null) return null;
       return resolveQueryTrigger(trigger, config, searchStartMs, windowEndMs, deps, cache);
     }
     case "threshold": {
-      const searchStartMs = await resolveSearchStart(
-        trigger.after,
-        config,
-        combatStartMs,
-        deps,
-        cache,
-        phaseRangeCache,
-        combatStartMs,
-        combatEndMs,
-      );
+      const searchStartMs = await resolveSearchStart(trigger.after, config, combatStartMs, deps, cache, combatStartMs, combatEndMs);
       if (searchStartMs === null) return null;
       return resolveThreshold(trigger.value, trigger.op, trigger.threshold, searchStartMs, combatEndMs, config, deps, cache);
     }
     case "offset": {
-      const from = await resolveTrigger(trigger.from, config, combatStartMs, combatEndMs, deps, seen, cache, phaseRangeCache, resolving);
+      const from = await resolveTrigger(trigger.from, config, combatStartMs, combatEndMs, deps, seen, cache);
       if (from === null) return null;
       return trigger.op === "+" ? from + trigger.seconds * 1000 : from - trigger.seconds * 1000;
     }
@@ -819,7 +746,7 @@ async function resolveTrigger(
       const def = config.triggers?.[trigger.id];
       if (!def) return null;
       seen.add(trigger.id);
-      return resolveTrigger(def, config, combatStartMs, combatEndMs, deps, seen, cache, phaseRangeCache, resolving);
+      return resolveTrigger(def, config, combatStartMs, combatEndMs, deps, seen, cache);
     }
     default:
       return null; // no detector yet for this trigger kind
@@ -838,17 +765,16 @@ export async function evaluatePhases(
   deps: EvalDeps,
 ): Promise<EvaluatedPhase[]> {
   const cache = new QueryCache();
-  const phaseRangeCache = new Map<string, Promise<TimeRange | null>>();
 
   const starts = await Promise.all(
-    config.phases.map((p) => resolveTrigger(p.start, config, combatStartMs, combatEndMs, deps, new Set(), cache, phaseRangeCache)),
+    config.phases.map((p) => resolveTrigger(p.start, config, combatStartMs, combatEndMs, deps, new Set(), cache)),
   );
 
   const ends = await Promise.all(
     config.phases.map(async (phase, i) => {
       if (starts[i] === null) return null;
-      if (phase.end) return resolveTrigger(phase.end, config, combatStartMs, combatEndMs, deps, new Set(), cache, phaseRangeCache);
-      return globalNextStart(phase, starts[i]!, config, combatStartMs, combatEndMs, deps, cache, phaseRangeCache, new Set());
+      if (phase.end) return resolveTrigger(phase.end, config, combatStartMs, combatEndMs, deps, new Set(), cache);
+      return globalNextStart(phase, starts[i]!, config, combatStartMs, combatEndMs, deps, cache);
     }),
   );
 

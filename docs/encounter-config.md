@@ -175,7 +175,7 @@ Shared by `phases[].start` and `mechanics[].trigger`:
 |---|---|---|
 | `combatStart` | — | `ENCOUNTER_START` |
 | `combatEnd` | — | `ENCOUNTER_END` |
-| `query` | `source` (`SourceSpec`), `filters` (`FilterSpec[]`), optional `window: { phaseId }` | the first matching event from a Source→Filter chain (see below) -- replaces v1's `castStart`/`castSuccess`/`auraApplied`/`auraRemoved`/`unitSpawn`/`unitDied`/`stackCount` with one generic shape |
+| `query` | `source` (`SourceSpec`), `filters` (`FilterSpec[]`), optional `window: { start, end }` (both `Trigger`) | the first matching event from a Source→Filter chain (see below) -- replaces v1's `castStart`/`castSuccess`/`auraApplied`/`auraRemoved`/`unitSpawn`/`unitDied`/`stackCount` with one generic shape |
 | `threshold` | `value`, `op` (`above`/`below`/`equal`), `threshold` (both `NumberExpr` -- see below) | `value op threshold` first holds, scanning each referenced unit's real HP/death-count/aggregate samples |
 | `timer` | `since` (a trigger reference, e.g. `"phase1.start"` or `"soakBalls.end"`), `seconds` | a fixed offset from another named trigger |
 | `offset` | `from` (an inline `Trigger`), `op` (`+`/`-`), `seconds` | a Time Math node's result — `from` offset by `seconds` |
@@ -197,7 +197,14 @@ reconstructs it on load). Compiles straight to `src/ui/query.ts`'s
 
 **`SourceSpec`** — a kind-scoped event stream, time-window-scoped
 implicitly (the whole encounter, or, if the Source's `window` input is
-wired to a Phase node's `phase` output, that phase's own span):
+wired to anything exposing `start`/`end` moment inputs, that range).
+Wiring a Phase node's `phase` output in scopes it to that phase's own span
+(`window`'s `start`/`end` inline the same triggers feeding the Phase's own
+`start`/`end` inputs); wiring a standalone **Window** node (`nodes/window.ts`
+— just `start`/`end` moment inputs, no id/label/kind) in scopes it to any
+manually-authored range, e.g. "the last 30 seconds of the pull." Both
+compile identically — the JSON never records *which phase* a window came
+from, only the two inlined `Trigger`s (see the `query` row above):
 
 | `kind` | `mode` | fires on |
 |---|---|---|
@@ -210,7 +217,7 @@ wired to a Phase node's `phase` output, that phase's own span):
 
 | `type` | fields | narrows to rows where |
 |---|---|---|
-| `actor` | `ids` (`CollectionExpr`) | the acting unit (caster/interrupter; the *victim* for a `deaths` Source, since `UNIT_DIED` interns it as the target) matches |
+| `actor` | `ids` (`CollectionExpr`), optional `which` (`"auto"` default \| `"source"` \| `"target"`) | the chosen unit matches -- `"auto"` (or omitted) infers the acting unit (caster/interrupter; the *victim* for a `deaths` Source, since `UNIT_DIED` interns it as the target); `"source"`/`"target"` overrides that explicitly, e.g. filtering a `casts` Source by *target* ("boss casts X on the current tank") rather than by caster |
 | `spell` | `ids` (`CollectionExpr`) | the spell id matches |
 | `auraState` | `spellIds` (`CollectionExpr`), `has` (bool) | the same unit has/lacks a matching buff/debuff *at that row's own timestamp* -- resolved client-side (`evaluate.ts`'s `resolveAuraStateFilter`), not pushed into `query.rs` |
 | `position` | `x`, `y`, `radius` | the row's own position is within `radius` of `(x, y)` (`query.rs`'s `Field::Position`/`Op::WithinRadius`, squared-distance, point+radius only, no polygon) |
@@ -376,7 +383,7 @@ the last `/` — `LiteGraph.registerNodeType`'s `base_class.category =
 type.substring(0, type.lastIndexOf("/"))`) -- so the category below isn't
 just documentation, it's literally which submenu a node shows up under:
 
-- **Structure** — Encounter Info, Phase, Phase List
+- **Structure** — Encounter Info, Phase, Phase List, Window
 - **Constants** — Duration, Number, Spell IDs, Actor IDs
 - **Filter** — Filter by Actor/Spell/Aura State/Position/Role, Match by Name
 - **Calculation** — Time Math, Number Math, Threshold, Combine, Aggregate
@@ -387,6 +394,17 @@ just documentation, it's literally which submenu a node shows up under:
 (bare type string `"comment"`) so it shows up directly in the top-level
 Add Node list instead of nested in a submenu — it's common/annotation-only
 enough to want one click away, not two.
+
+**Color-coded by category** (`nodes/index.ts`'s `applyCategoryColors`,
+run once after every node type registers): each category above maps to
+one of LiteGraph's built-in `LGraphCanvas.node_colors` presets (Structure
+brown, Constants green, Filter purple, Calculation blue, Events red,
+States cyan, Comment yellow) and is applied to that node class's
+`prototype.color`/`bgcolor` — a glance at a node's color on the canvas
+places it in a category without reading its title. Set on the prototype
+(the default for every new node of that type), so an author can still
+recolor one specific node instance from the canvas's own right-click
+"Colors" menu without affecting the type's default.
 
 The encounter editor's node graph (LiteGraph, `src/views/encounter-editor.ts`)
 is how this JSON gets authored. `src/encounters/compile.ts` compiles the
@@ -442,19 +460,29 @@ evaluates:
   (Mode: died/destroyed/dissipates), **`events/interrupts`** — each an
   `event-stream`-typed output, an optional `after` moment **input** (same
   "Repeated conditions" semantics as v1's cast/aura nodes), and an
-  optional `window` input typed `phase`: wiring a Phase node's `phase`
-  output into it scopes that Source to that phase's own span instead of
-  the whole encounter (compiles to `query`'s `window: { phaseId }`). No
-  window *widget* — v2's design doc originally called for automatic scope
-  inheritance via real LiteGraph subgraph nesting, dropped after
-  inspecting LiteGraph's actual `Subgraph` API (a heavier, differently-
-  shaped feature built around packaging a canvas selection into a
-  reusable block, not a lightweight container primitive) in favor of this
-  explicit wire.
+  optional `window` input typed `phase`: wiring anything exposing
+  `start`/`end` moment inputs into it scopes that Source to that range
+  instead of the whole encounter, compiling to `query`'s `window: { start,
+  end }` (both inlined `Trigger`s — the JSON never records *which node*
+  the window came from). Two things fit that "exposes start/end" shape
+  today: a Phase node's `phase` output (scopes to that phase's own span)
+  and a standalone **`structure/window`** node (`window.ts`) with nothing
+  but its own `start`/`end` inputs and no id/label/kind, for an ad hoc
+  range that isn't a named phase ("the last 30 seconds of the pull," "5
+  minutes in for 2 minutes"). No window *widget* on the Source itself —
+  v2's design doc originally called for automatic scope inheritance via
+  real LiteGraph subgraph nesting, dropped after inspecting LiteGraph's
+  actual `Subgraph` API (a heavier, differently-shaped feature built
+  around packaging a canvas selection into a reusable block, not a
+  lightweight container primitive) in favor of this explicit wire.
 - **Filters** (`filters.ts`) — **`filter/actor`** /
   **`filter/spell`** (an `actor-id-list`/`spell-id-list` input,
   auto-wrapping a comma-separated-ids fallback widget — the "auto-wrap a
-  scalar" convenience carried over from v1), **`filter/aura-state`**
+  scalar" convenience carried over from v1). `filter/actor` also has a
+  Which widget (`"auto"` default \| `"source"` \| `"target"`) overriding
+  which side of the event it checks -- one node with a toggle rather than
+  two node types, matching how Casts/Auras/Deaths each collapse a mode
+  choice into one node. **`filter/aura-state`**
   (a `spell-id-list` input + Has/Lacks toggle), **`filter/position`**
   (X/Y/Radius widgets), **`filter/role`** (tank/healer/ranged
   checkboxes — currently a documented no-op, see the Trigger vocabulary's
@@ -513,6 +541,12 @@ evaluates:
   Phase node, slot order is phase order. Always keeps one trailing empty
   slot open for the next connection. Its `phases` output plugs into
   Encounter Info's `phases` input.
+- **`structure/window`** (`window.ts`) — a plain, manually-authored time
+  range: `start`/`end` moment inputs, one `phase`-typed output (same
+  contract as a Phase node's own `phase` output -- a `TimeRange` once
+  evaluated). No id/label/kind/mechanics -- exists purely so a Source's
+  `window` input can be scoped to an ad hoc range without declaring a
+  named phase for it.
 - **`states/unit-health-current`** / **`states/unit-health-max`**
   (`number.ts`) — that unit's current/max HP as of the instant being
   evaluated, off an NPC ID widget. Two separate single-output nodes

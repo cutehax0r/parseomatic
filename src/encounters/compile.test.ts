@@ -90,8 +90,8 @@ describe("compile.ts -- query trigger (Source -> Filter -> First Event)", () => 
   });
 });
 
-describe("compile.ts -- Source window input scopes a query to a Phase", () => {
-  test("wiring a Phase's `phase` output into a Source's `window` input compiles to `window: { phaseId }`", () => {
+describe("compile.ts -- Source window input", () => {
+  test("wiring a Phase's `phase` output into a Source's `window` input inlines that phase's start/end", () => {
     registerEncounterNodeTypes();
     const graph = new LGraph();
     const info = node<any>(graph, "structure/info");
@@ -103,6 +103,8 @@ describe("compile.ts -- Source window input scopes a query to a Phase", () => {
     phase1.setValues({ id: "phase1", label: "Phase 1", kind: "phase" });
     const start1 = node<any>(graph, "events/encounter-start");
     start1.connect(0, phase1, "start");
+    const end1 = node<any>(graph, "events/encounter-end");
+    end1.connect(0, phase1, "end");
     phase1.connect(0, phaseList, 0);
 
     const phase2 = node<any>(graph, "structure/phase");
@@ -117,6 +119,61 @@ describe("compile.ts -- Source window input scopes a query to a Phase", () => {
     const config = graphToConfig(info);
     const p2Start = config.phases[1].start;
     if (p2Start.type !== "query") throw new Error("expected a query trigger");
-    expect(p2Start.window).toEqual({ phaseId: "phase1" });
+    expect(p2Start.window).toEqual({ start: { type: "combatStart" }, end: { type: "combatEnd" } });
+  });
+
+  test("a standalone Window node with its own start/end also compiles to `window: { start, end }`", () => {
+    registerEncounterNodeTypes();
+    const graph = new LGraph();
+    const info = node<any>(graph, "structure/info");
+    info.setValues({ encounterId: 1, id: "boss", name: "Boss", difficulty: "mythic", mapId: 0 });
+    const phaseList = node<any>(graph, "structure/phase-list");
+    phaseList.connect(0, info, "phases");
+
+    const phase = node<any>(graph, "structure/phase");
+    phase.setValues({ id: "p1", label: "P1", kind: "phase" });
+    const window = node<any>(graph, "structure/window");
+    const start = node<any>(graph, "events/encounter-start");
+    start.connect(0, window, "start");
+    const end = node<any>(graph, "events/encounter-end");
+    end.connect(0, window, "end");
+    const interrupts = node<any>(graph, "events/interrupts");
+    window.connect(0, interrupts, "window");
+    const firstEvent = node<any>(graph, "events/first-event");
+    interrupts.connect(0, firstEvent, "event-stream");
+    firstEvent.connect(0, phase, "start");
+    phase.connect(0, phaseList, 0);
+
+    const config = graphToConfig(info);
+    const pStart = config.phases[0].start;
+    if (pStart.type !== "query") throw new Error("expected a query trigger");
+    expect(pStart.window).toEqual({ start: { type: "combatStart" }, end: { type: "combatEnd" } });
+  });
+});
+
+describe("compile.ts -- Filter by Actor's Source/Target override", () => {
+  test("\"auto\" (default) omits `which`; an explicit override is compiled", () => {
+    registerEncounterNodeTypes();
+    const graph = new LGraph();
+    const info = node<any>(graph, "structure/info");
+    info.setValues({ encounterId: 1, id: "boss", name: "Boss", difficulty: "mythic", mapId: 0 });
+    const phaseList = node<any>(graph, "structure/phase-list");
+    phaseList.connect(0, info, "phases");
+    const phase = node<any>(graph, "structure/phase");
+    phase.setValues({ id: "p1", label: "P1", kind: "phase" });
+    const casts = node<any>(graph, "events/casts");
+    casts.setValues({ mode: "start" });
+    const filterActor = node<any>(graph, "filter/actor");
+    filterActor.setValues({ ids: [500], which: "target" });
+    casts.connect(0, filterActor, "event-stream");
+    const firstEvent = node<any>(graph, "events/first-event");
+    filterActor.connect(0, firstEvent, "event-stream");
+    firstEvent.connect(0, phase, "start");
+    phase.connect(0, phaseList, 0);
+
+    const config = graphToConfig(info);
+    const pStart = config.phases[0].start;
+    if (pStart.type !== "query") throw new Error("expected a query trigger");
+    expect(pStart.filters).toEqual([{ type: "actor", ids: { type: "literal", ids: [500] }, which: "target" }]);
   });
 });
